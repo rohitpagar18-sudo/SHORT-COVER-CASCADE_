@@ -1,0 +1,112 @@
+# =====================================================
+# SHORT COVER CASCADE — MASTER CONTROL FILE
+# Bot reads config at startup AND between each 5-min candle scan.
+# Exceptions (require restart): order_place_mode, feeds.active_feed
+# =====================================================
+
+# ---------- BROKER FEED SELECTION ----------
+feeds:
+  active_feed: kite               # kite OR upstox
+  healthcheck_timeout_seconds: 10
+  upstox:
+    enabled: ON
+    token_validity_days: 365      # 1 = daily refresh, 365 = analytics-tab long token
+  kite:
+    enabled: ON
+    token_validity_days: 1        # Kite forces daily (SEBI)
+
+# ---------- MODE CONTROLS (most-changed) ----------
+mode:
+  alert_mode: ON                  # ON = send Telegram alerts
+  order_place_mode: OFF           # OFF = no orders placed (default until Phase 8)
+  paper_trade_mode: ON            # ON = simulate orders, log only
+
+# ---------- INSTRUMENT SELECTION ----------
+instruments:
+  nifty_enabled: ON
+  banknifty_enabled: ON
+  nifty_lot_size: 65              # Auto-verified at 9:15 AM
+  banknifty_lot_size: 30          # Auto-verified at 9:15 AM
+
+# ---------- STOP LOSS ----------
+stop_loss:
+  method: 1                       # 1 = point buffer, 2 = percentage
+  use_vix_multiplier: ON
+  hard_exit_red_candle_below_vwap: ON
+
+# ---------- RISK / REWARD ----------
+risk_reward:
+  target_risk_per_trade: 3000
+  risk_range_min: 2500
+  risk_range_max: 3500
+  normal_day_tp1_r: 1.5
+  normal_day_tp2_r: 2.5
+  expiry_day_tp1_r: 2.0
+  expiry_day_tp2_r: 3.0
+  move_sl_to_breakeven_after_tp1: ON
+  trail_sl_after_tp1: OFF
+
+# ---------- POSITION SIZING ----------
+position_sizing:
+  lot_cap_enabled: ON
+  nifty_max_lots: 5
+  banknifty_max_lots: 3
+
+# ---------- DAILY CIRCUIT BREAKERS ----------
+circuit_breakers:
+  daily_sl_count_breaker: ON
+  max_sl_per_day: 2
+  daily_loss_breaker: ON
+  max_loss_per_day_rupees: 6000
+
+# ---------- ORDER PLACEMENT ----------
+orders:
+  order_type: limit               # limit OR market
+  cancel_if_price_touches_tp1: ON
+  fallback_to_market_if_limit_disabled: ON
+
+# ---------- TIME RULES ----------
+time_rules:
+  normal_start_time: "09:45"
+  gap_day_start_time: "10:15"
+  gap_day_filter_enabled: ON
+  gap_threshold_percent: 1.0
+  last_entry_time: "14:30"
+  soft_squareoff_time: "14:55"
+  hard_squareoff_time: "15:00"    # Cannot be disabled in code
+
+# ---------- RE-ENTRY RULES ----------
+re_entry:
+  cooldown_minutes_after_sl: 15
+  same_strike_kill_after_2_sl: ON
+
+# ---------- STRIKE SELECTION ----------
+strike:
+  max_deviation_from_atm: 1
+  late_entry_threshold_percent: 30
+
+# ---------- CONDITION THRESHOLDS ----------
+conditions:
+  c3_rsi_min: 50
+  c3_rsi_max: 80
+
+# ---------- ALERTS ----------
+telegram:
+  send_signal_alerts: ON
+  send_rejection_alerts: OFF
+  send_eod_summary: ON
+  send_circuit_breaker_alerts: ON
+  send_startup_alert: ON
+
+# ---------- LOGGING ----------
+logging:
+  log_level: INFO
+  log_every_signal_check: ON
+  log_indicator_values: ON
+
+# ---------- BOT BEHAVIOR ----------
+bot:
+  scan_buffer_seconds: 5
+  api_retry_count: 3
+  api_retry_delay_seconds: 2
+  state_persistence_enabled: ON

@@ -148,8 +148,15 @@ C:\trading\short-cover-cascade\
 └── CLAUDE.md            — This file
 
 ## Current Phase
-Phase 0: Project foundation setup
+Phase 2: Indicator calculations (code complete, awaiting live calibration)
 (Update this line as we progress)
+
+## Phase Status
+- Phase 0: Project foundation — DONE. Verified on second laptop, ran perfectly.
+- Phase 1: Multi-feed data layer — DONE. Verified on second laptop, ran perfectly.
+- Phase 2: Indicator calculations — code + unit tests done on this machine
+  (all 10 indicator tests + 26 total tests pass). Live calibration against
+  Kite chart still to be done on the second laptop during market hours.
 
 ## How Phases Work
 - Each phase has a doc in docs/phases/

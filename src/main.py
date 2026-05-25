@@ -1,9 +1,10 @@
 """Bot entry point.
 
-Phase 0 behavior: load config + secrets, configure logging, validate that
-the active broker has a token-date recorded, print a startup banner, exit.
+Phase 1 behavior: load config + secrets, configure logging, instantiate the
+active feed via feed_factory.get_feed(), verify token validity (without
+calling broker APIs), print a startup banner, exit.
 
-NO feed instantiation, NO API calls, NO strategy logic.
+Connect-to-broker happens in Phase 5 when the orchestrator starts.
 """
 
 from __future__ import annotations
@@ -22,6 +23,7 @@ LOGS_DIR = PROJECT_ROOT / "logs"
 LOG_FILE = LOGS_DIR / "bot.log"
 
 from src.config_loader import AppConfig, ConfigError, load_config
+from src.data.feed_factory import get_feed
 
 
 def _configure_logging(level: str) -> None:
@@ -88,18 +90,27 @@ def main() -> int:
 
     active = config.feeds.active_feed
     token_date = _resolve_token_date(active)
-    if not token_date:
-        var = "KITE_TOKEN_DATE" if active == "kite" else "UPSTOX_TOKEN_DATE"
-        print(
-            f"ERROR: {var} is missing from {SECRETS_PATH}. "
-            f"Run scripts/refresh_token_{active}.py to set it.",
-            file=sys.stderr,
-        )
+    _print_banner(config, token_date)
+
+    feed = get_feed(config)
+    if not feed.is_token_valid():
+        if active == "kite":
+            print(
+                "ERROR: Kite token is stale. Run: "
+                "python scripts\\refresh_token_kite.py",
+                file=sys.stderr,
+            )
+        else:
+            print(
+                "ERROR: Upstox token missing. Run: "
+                "python scripts\\refresh_token_upstox.py --manual",
+                file=sys.stderr,
+            )
         return 1
 
-    _print_banner(config, token_date)
-    print("Phase 0 setup complete — bot foundation ready")
-    logger.info("Phase 0 startup complete (active broker: {})", active)
+    print(f"Token check: PASS (active feed: {active})")
+    print("Phase 1 complete — token valid, feed ready to connect")
+    logger.info("Phase 1 startup complete (active broker: {})", active)
     return 0
 
 

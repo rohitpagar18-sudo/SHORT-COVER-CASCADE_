@@ -297,3 +297,45 @@ class UpstoxFeed(BaseFeed):
         spot = self.get_spot_price(symbol)
         interval = _STRIKE_INTERVAL[symbol]
         return int(round(spot / interval) * interval)
+
+    def get_spot_instrument_key(self, symbol: str) -> str:
+        if symbol not in _UPSTOX_SPOT_KEY:
+            raise ValueError(f"Unknown spot symbol for Upstox: {symbol}")
+        return _UPSTOX_SPOT_KEY[symbol]
+
+    def list_expiries(self, symbol: str) -> list:
+        from datetime import date as _date, datetime as _dt
+
+        instrument_key = _UPSTOX_SPOT_KEY[symbol]
+        try:
+            resp = self._option_chain_api.get_option_contracts(
+                instrument_key=instrument_key
+            )
+        except Exception as e:
+            logger.warning("Upstox list_expiries failed for {}: {}", symbol, e)
+            return []
+
+        data = getattr(resp, "data", None) or []
+        today = _dt.now(IST).date()
+        seen: set = set()
+        for item in data:
+            getter = (
+                (lambda k: item.get(k))
+                if isinstance(item, dict)
+                else (lambda k: getattr(item, k, None))
+            )
+            raw = getter("expiry")
+            if not raw:
+                continue
+            try:
+                if isinstance(raw, _dt):
+                    d = raw.date()
+                elif isinstance(raw, _date):
+                    d = raw
+                else:
+                    d = _dt.fromisoformat(str(raw)[:10]).date()
+            except Exception:
+                continue
+            if d >= today:
+                seen.add(d)
+        return sorted(seen)

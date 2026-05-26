@@ -87,3 +87,38 @@ class BaseFeed(ABC):
     def get_broker_name(self) -> str:
         """Short broker identifier, e.g. 'kite' or 'upstox'."""
         raise NotImplementedError
+
+    @abstractmethod
+    def get_spot_instrument_key(self, symbol: str) -> str:
+        """Broker-specific instrument key for the spot index's 5-min candles.
+
+        Strategy code calls ``get_5min_candles(feed.get_spot_instrument_key(sym), ...)``
+        when it needs spot candles (e.g. C0 spot VWAP). The exact string
+        is opaque to strategy code — Kite returns its numeric instrument
+        token as a string, Upstox returns its ``NSE_INDEX|...`` key.
+
+        Args:
+            symbol: "NIFTY" or "BANKNIFTY".
+
+        Returns:
+            Opaque broker-specific identifier that ``get_5min_candles``
+            accepts.
+        """
+        raise NotImplementedError
+
+    @abstractmethod
+    def list_expiries(self, symbol: str) -> list:
+        """Return the sorted, deduplicated list of upcoming expiry dates
+        (``datetime.date``) for the given index symbol.
+
+        Source-of-truth: each broker's instrument dump. Past expiries
+        are filtered out by the caller — implementations may include or
+        exclude them at their discretion, but must be consistent.
+
+        Args:
+            symbol: "NIFTY" or "BANKNIFTY".
+
+        Returns:
+            list of ``datetime.date`` sorted oldest first.
+        """
+        raise NotImplementedError

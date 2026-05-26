@@ -30,6 +30,14 @@ _KITE_NAME_LOOKUP = {
 }
 _STRIKE_INTERVAL = {"NIFTY": 50, "BANKNIFTY": 100}
 
+# Stable spot-index instrument tokens used by Kite's historical_data
+# endpoint. These do not appear in the NFO instrument dump (they live
+# in the NSE cash segment), so we keep them as constants.
+_KITE_SPOT_INDEX_TOKEN = {
+    "NIFTY": 256265,      # NIFTY 50 index
+    "BANKNIFTY": 260105,  # NIFTY BANK index
+}
+
 
 class KiteFeed(BaseFeed):
     def __init__(self, config: AppConfig) -> None:
@@ -260,6 +268,29 @@ class KiteFeed(BaseFeed):
         spot = self.get_spot_price(symbol)
         interval = _STRIKE_INTERVAL[symbol]
         return int(round(spot / interval) * interval)
+
+    def get_spot_instrument_key(self, symbol: str) -> str:
+        if symbol not in _KITE_SPOT_INDEX_TOKEN:
+            raise ValueError(f"Unknown spot symbol for Kite: {symbol}")
+        return str(_KITE_SPOT_INDEX_TOKEN[symbol])
+
+    def list_expiries(self, symbol: str) -> list[date]:
+        instruments = self._load_instruments()
+        name = _KITE_NAME_LOOKUP[symbol]
+        today = date.today()
+        seen: set[date] = set()
+        for row in instruments:
+            if row.get("name") != name:
+                continue
+            if row.get("instrument_type") not in ("CE", "PE"):
+                continue
+            exp = row.get("expiry")
+            if not exp:
+                continue
+            d = self._as_date(exp)
+            if d >= today:
+                seen.add(d)
+        return sorted(seen)
 
     def _get_instrument_token(self, trading_symbol: str, exchange: str = "NFO") -> int:
         if trading_symbol.isdigit():

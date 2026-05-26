@@ -185,7 +185,8 @@ C:\trading\short-cover-cascade\
 └── CLAUDE.md            — This file
 
 ## Current Phase
-Phase 2: Indicator calculations (code complete, awaiting live calibration)
+Phase 3: Conditions C0–C4 + dynamic expiry helper (code complete on this
+machine; awaiting live calibration on second laptop).
 (Update this line as we progress)
 
 ## Phase Status
@@ -194,6 +195,11 @@ Phase 2: Indicator calculations (code complete, awaiting live calibration)
 - Phase 2: Indicator calculations — code + unit tests done on this machine
   (all 10 indicator tests + 26 total tests pass). Live calibration against
   Kite chart still to be done on the second laptop during market hours.
+- Phase 3: Conditions C0–C4 + expiry resolver — code + unit tests done on
+  this machine (74 total tests pass: 26 prior + 31 condition tests +
+  17 expiry-resolver tests). Live calibration via
+  scripts/check_conditions.py and scripts/list_expiries.py still to be
+  done on the second laptop during market hours.
 
 ## How Phases Work
 - Each phase has a doc in docs/phases/

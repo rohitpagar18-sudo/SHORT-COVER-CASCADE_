@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import sys
+from datetime import datetime
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -59,19 +60,24 @@ def main() -> int:
         instrument_key = row.iloc[0]["instrument_token"]
 
     if "tradingsymbol" in row.columns:
-        trading_symbol = str(row.iloc[0]["tradingsymbol"])
+        broker_symbol = str(row.iloc[0]["tradingsymbol"])
     elif "trading_symbol" in row.columns:
-        trading_symbol = str(row.iloc[0]["trading_symbol"])
+        broker_symbol = str(row.iloc[0]["trading_symbol"])
     else:
-        trading_symbol = ""
+        broker_symbol = ""
+
+    expiry_dt = datetime.strptime(args.expiry, "%Y-%m-%d")
+    pretty_name = (
+        f"{args.symbol} {expiry_dt.strftime('%d %b %Y')} "
+        f"{args.strike} {args.option_type}"
+    )
 
     print("=" * 60)
-    print(f"  Strike: {args.symbol} {args.strike}{args.option_type}")
-    if trading_symbol:
-        print(f"  Symbol: {trading_symbol}")
-    print(f"  Expiry: {args.expiry}")
+    print(f"  {pretty_name}")
+    if broker_symbol:
+        print(f"  Broker symbol: {broker_symbol}")
     print("=" * 60)
-    print(f"Fetching {args.candles} candles for {args.symbol} {args.strike}{args.option_type} expiry {args.expiry}...")
+    print(f"Fetching {args.candles} candles for {pretty_name}...")
     df = feed.get_5min_candles(str(instrument_key), args.candles)
     print(f"Fetched {len(df)} candles, latest timestamp: {df['timestamp'].iloc[-1]}")
 
@@ -81,11 +87,10 @@ def main() -> int:
     print()
 
     snap = get_latest_snapshot(df)
-    header = f"{args.symbol} {args.strike}{args.option_type}"
-    if trading_symbol:
-        header = f"{header}  [{trading_symbol}]"
     print("=" * 60)
-    print(f"  Latest indicators for {header}")
+    print(f"  Latest indicators for {pretty_name}")
+    if broker_symbol:
+        print(f"  Broker symbol: {broker_symbol}")
     print("=" * 60)
     print(f"  Timestamp    : {snap.timestamp}")
     print(f"  OHLC         : {snap.open:.2f} / {snap.high:.2f} / {snap.low:.2f} / {snap.close:.2f}")

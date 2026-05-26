@@ -233,6 +233,8 @@ class KiteFeed(BaseFeed):
         return int(round(spot / interval) * interval)
 
     def _get_instrument_token(self, trading_symbol: str, exchange: str = "NFO") -> int:
+        if trading_symbol.isdigit():
+            return int(trading_symbol)
         if ":" in trading_symbol:
             _, sym = trading_symbol.split(":", 1)
         else:

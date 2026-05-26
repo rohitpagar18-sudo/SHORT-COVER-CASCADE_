@@ -89,6 +89,43 @@ Exception: feeds.active_feed change requires explicit bot restart.
   (including active broker name)
 - Bot sends Telegram alert on any unhandled exception
 
+## Expiry Day Rules — NSE/SEBI 2024–2025 reform
+
+Authoritative reference: docs/expiry_calendar.md (includes 2026 calendar
+and holiday-shift handling).
+
+| Index     | Weekly        | Monthly                          |
+|-----------|---------------|----------------------------------|
+| NIFTY     | **Tuesday**   | Last Tuesday of the month        |
+| BankNifty | None — discontinued 2024-11-20 | Last Tuesday of the month |
+| BSE Sensex | Thursday (not traded — BSE) | (not traded)         |
+
+- NIFTY weekly expiry day moved to Tuesday on **2025-09-02** (SEBI circular,
+  superseding earlier Monday plan). Do NOT use Thursday or Monday.
+- Weekly BankNifty options were **discontinued on 2024-11-20**. Only the
+  monthly BankNifty contract exists. For BankNifty, "this week's expiry"
+  is always the current-month last Tuesday (rolling on the day after
+  expiry into next month's last Tuesday).
+- **Holiday shift:** if the Tuesday expiry falls on an NSE trading
+  holiday, the contract expires on the **previous trading day**.
+- The strategy's "Expiry Day" mode (different TP multipliers per
+  config.yaml `risk_reward.expiry_day_tp*_r`) applies only on the actual
+  expiry trading day (calendar Tuesday adjusted for holidays).
+
+### Phase 3+ rule
+Every code path that picks an expiry — strike selection, candle
+fetch, signal log fields, backtest harness — must go through a single
+helper `get_next_expiry(symbol: str, today: date) -> date` that follows
+the rules above. Never hardcode a weekday. Keep the weekday config-driven
+so a future regulator change doesn't require a code release:
+
+```yaml
+instruments:
+  nifty_weekly_expiry_day: tuesday  # SEBI 2025-09-02
+  banknifty_monthly_expiry_day: tuesday  # last <day> of month
+  # BankNifty weekly: none — discontinued 2024-11-20
+```
+
 ## Indicator Calculation Standards
 
 These formulas are confirmed from real Upstox/TradingView chart screenshots.

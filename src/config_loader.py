@@ -252,9 +252,45 @@ class ReEntryConfig(_Base):
 # ---------- STRIKE ----------
 
 
+class AlertStrikesConfig(_Base):
+    itm: bool
+    atm: bool
+    otm: bool
+
+    @field_validator("itm", "atm", "otm", mode="before")
+    @classmethod
+    def _onoff(cls, v: Any) -> Any:
+        return _onoff_to_bool(v)
+
+    @model_validator(mode="after")
+    def _at_least_one_on(self) -> "AlertStrikesConfig":
+        if not (self.itm or self.atm or self.otm):
+            raise ValueError(
+                "strike.alert_strikes: at least one of itm/atm/otm must be ON "
+                "(otherwise the bot would never alert)"
+            )
+        return self
+
+
+class OrderStrikesConfig(_Base):
+    itm: bool
+    atm: bool
+    otm: bool
+
+    @field_validator("itm", "atm", "otm", mode="before")
+    @classmethod
+    def _onoff(cls, v: Any) -> Any:
+        return _onoff_to_bool(v)
+
+    def any_on(self) -> bool:
+        return self.itm or self.atm or self.otm
+
+
 class StrikeConfig(_Base):
     max_deviation_from_atm: int = Field(ge=0)
     late_entry_threshold_percent: float = Field(gt=0)
+    alert_strikes: AlertStrikesConfig
+    order_strikes: OrderStrikesConfig
 
 
 # ---------- CONDITIONS ----------
@@ -342,6 +378,15 @@ class AppConfig(_Base):
     telegram: TelegramConfig
     logging: LoggingConfig
     bot: BotConfig
+
+    @model_validator(mode="after")
+    def _order_strikes_require_when_order_place_on(self) -> "AppConfig":
+        if self.mode.order_place_mode and not self.strike.order_strikes.any_on():
+            raise ValueError(
+                "mode.order_place_mode is ON but strike.order_strikes has all "
+                "ITM/ATM/OTM set to OFF — bot would never place an order"
+            )
+        return self
 
 
 def load_config(path: str | Path) -> AppConfig:

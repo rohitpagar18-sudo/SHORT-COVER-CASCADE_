@@ -18,6 +18,7 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from src.config_loader import load_config, load_secrets
 from src.data.feed_factory import connect_feed
+from src.data.strike_selector import get_strike_interval
 from src.indicators.calculator import get_latest_snapshot
 
 CONFIG_PATH = PROJECT_ROOT / "config" / "config.yaml"
@@ -27,8 +28,12 @@ SECRETS_PATH = PROJECT_ROOT / "config" / "secrets.env"
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--symbol", choices=["NIFTY", "BANKNIFTY"], required=True)
-    parser.add_argument("--strike", type=int, required=True,
-                        help="Strike price, e.g. 24500")
+    parser.add_argument(
+        "--strike",
+        type=str,
+        required=True,
+        help="Strike price (e.g. 24500) or ATM / ATM+1 / ATM-1",
+    )
     parser.add_argument("--option-type", choices=["CE", "PE"], required=True)
     parser.add_argument("--expiry", required=True,
                         help="Expiry date YYYY-MM-DD")
@@ -45,13 +50,29 @@ def main() -> int:
     config = load_config(CONFIG_PATH)
     feed = connect_feed(config)
 
+    s_arg = args.strike.strip().upper()
+    if s_arg.startswith("ATM"):
+        atm = feed.get_atm_strike(args.symbol)
+        interval = get_strike_interval(args.symbol)
+        if s_arg == "ATM":
+            strike = atm
+        elif s_arg == "ATM+1":
+            strike = atm + interval
+        elif s_arg == "ATM-1":
+            strike = atm - interval
+        else:
+            print(f"ERROR: invalid strike spec {args.strike!r}", file=sys.stderr)
+            return 1
+    else:
+        strike = int(args.strike)
+
     chain = feed.get_option_chain(args.symbol, args.expiry)
     row = chain[
-        (chain["strike"] == args.strike)
+        (chain["strike"] == strike)
         & (chain["instrument_type"] == args.option_type)
     ]
     if len(row) == 0:
-        print(f"ERROR: Strike {args.strike}{args.option_type} not found in {args.symbol} {args.expiry} chain")
+        print(f"ERROR: Strike {strike}{args.option_type} not found in {args.symbol} {args.expiry} chain")
         return 1
 
     if "instrument_key" in row.columns:
@@ -69,7 +90,7 @@ def main() -> int:
     expiry_dt = datetime.strptime(args.expiry, "%Y-%m-%d")
     pretty_name = (
         f"{args.symbol} {expiry_dt.strftime('%d %b %Y')} "
-        f"{args.strike} {args.option_type}"
+        f"{strike} {args.option_type}"
     )
 
     print("=" * 60)

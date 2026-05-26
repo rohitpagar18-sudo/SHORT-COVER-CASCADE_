@@ -40,22 +40,39 @@ def _is_last_weekday_of_month(d: date) -> bool:
 
 
 def _detect_pattern(expiries: list[date]) -> str:
-    """Derive 'weekly <Day>' vs 'monthly <Day>' from the data alone.
+    """Derive expiry-cadence label from the dates themselves.
 
-    No weekday is assumed. We pick the modal weekday across the
-    upcoming expiries and check expiry-per-month density: if there is
-    on average more than one expiry per month, it's weekly; otherwise
-    monthly. This way the same logic survives any SEBI weekday change.
+    Looks at the gaps between consecutive expiries, NOT day-of-week:
+
+      - many ~7-day gaps           -> weekly (with monthly folded in)
+      - many ~28-day gaps          -> monthly only
+      - both kinds of gaps         -> weekly + monthly stream
+
+    The modal weekday across the expiries is used purely for the human
+    label ("Tuesday", "Thursday", ...). If SEBI changes the weekday in
+    future, the modal weekday updates automatically — no code change.
     """
     if not expiries:
         return "no upcoming expiries"
 
     weekday_name = Counter(d.strftime("%A") for d in expiries).most_common(1)[0][0]
-    per_month = Counter((d.year, d.month) for d in expiries)
-    avg_per_month = sum(per_month.values()) / len(per_month)
-    if avg_per_month > 1.5:
-        return f"weekly {weekday_name}"
-    return f"monthly last-{weekday_name}"
+
+    if len(expiries) < 2:
+        return f"monthly last-{weekday_name}"
+
+    gaps = [
+        (expiries[i + 1] - expiries[i]).days for i in range(len(expiries) - 1)
+    ]
+    weekly_gaps = sum(1 for g in gaps if 5 <= g <= 10)
+    monthly_gaps = sum(1 for g in gaps if 21 <= g <= 35)
+
+    if weekly_gaps >= 1 and monthly_gaps >= 1:
+        return f"weekly {weekday_name} + monthly last-{weekday_name}"
+    if weekly_gaps >= 1:
+        return f"weekly {weekday_name} + monthly last-{weekday_name}"
+    if monthly_gaps >= 1:
+        return f"monthly last-{weekday_name}"
+    return f"irregular ({weekday_name} most common)"
 
 
 def _normalise_symbol(symbol: str) -> str:
@@ -135,15 +152,22 @@ def is_expiry_day(
     return d in expiries and d == expiries[0]
 
 
-def get_expiry_summary(feed: BaseFeed) -> dict[str, Any]:
+def get_expiry_summary(feed: BaseFeed, n: int = 8) -> dict[str, Any]:
     """Return a debug summary for both NIFTY and BANKNIFTY.
 
     Shape::
 
         {
-          "NIFTY":     {"next_4_expiries": [...], "weekday_pattern": "weekly Tuesday"},
-          "BANKNIFTY": {"next_4_expiries": [...], "weekday_pattern": "monthly last-Tuesday"},
+          "NIFTY":     {"next_expiries": [...], "weekday_pattern": "weekly Tuesday + monthly last-Tuesday",
+                        "total_count": 12},
+          "BANKNIFTY": {"next_expiries": [...], "weekday_pattern": "monthly last-Tuesday",
+                        "total_count": 3},
         }
+
+    Args:
+        feed: active BaseFeed implementation.
+        n: number of upcoming expiries to include in ``next_expiries``.
+            ``total_count`` is always the full count returned by the broker.
 
     The ``weekday_pattern`` is DERIVED from the broker's instrument
     dump — not hardcoded.
@@ -152,8 +176,11 @@ def get_expiry_summary(feed: BaseFeed) -> dict[str, Any]:
     for sym in ("NIFTY", "BANKNIFTY"):
         expiries = get_all_expiries(feed, sym)
         summary[sym] = {
+            "next_expiries": expiries[:n],
+            # Legacy key kept for backwards-compat with any older readers.
             "next_4_expiries": expiries[:4],
             "weekday_pattern": _detect_pattern(expiries),
+            "total_count": len(expiries),
         }
     return summary
 

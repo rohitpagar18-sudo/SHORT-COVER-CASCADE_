@@ -29,6 +29,7 @@ from src.conditions.all_conditions import check_all_conditions
 from src.config_loader import load_config, load_secrets
 from src.data.expiry_resolver import get_next_expiry
 from src.data.feed_factory import connect_feed
+from src.data.strike_selector import get_strike_interval
 from src.indicators.calculator import get_latest_snapshot
 
 CONFIG_PATH = PROJECT_ROOT / "config" / "config.yaml"
@@ -38,7 +39,12 @@ SECRETS_PATH = PROJECT_ROOT / "config" / "secrets.env"
 def _parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Check all 5 conditions for a strike.")
     p.add_argument("--symbol", required=True, choices=["NIFTY", "BANKNIFTY"])
-    p.add_argument("--strike", type=int, required=True)
+    p.add_argument(
+        "--strike",
+        type=str,
+        required=True,
+        help="Strike price (e.g. 24050) or ATM / ATM+1 / ATM-1",
+    )
     p.add_argument(
         "--option-type", required=True, choices=["CE", "PE"], dest="option_type"
     )
@@ -48,6 +54,25 @@ def _parse_args() -> argparse.Namespace:
         help="ISO date YYYY-MM-DD. If omitted, the nearest expiry is used.",
     )
     return p.parse_args()
+
+
+def _resolve_strike(feed, symbol: str, strike_arg: str) -> int:
+    """Resolve a strike spec to an integer strike.
+
+    Accepts ``"24050"`` (literal), ``"ATM"``, ``"ATM+1"``, or ``"ATM-1"``.
+    """
+    s = strike_arg.strip().upper()
+    if s.startswith("ATM"):
+        atm = feed.get_atm_strike(symbol)
+        interval = get_strike_interval(symbol)
+        if s == "ATM":
+            return atm
+        if s == "ATM+1":
+            return atm + interval
+        if s == "ATM-1":
+            return atm - interval
+        raise ValueError(f"Invalid strike spec: {strike_arg!r}")
+    return int(strike_arg)
 
 
 def _resolve_expiry(feed, symbol: str, expiry_arg: str | None) -> date:
@@ -104,6 +129,7 @@ def main() -> int:
     feed = connect_feed(config)
 
     expiry = _resolve_expiry(feed, args.symbol, args.expiry)
+    strike = _resolve_strike(feed, args.symbol, args.strike)
 
     spot_key = feed.get_spot_instrument_key(args.symbol)
     spot_df = feed.get_5min_candles(spot_key, n_candles=0)
@@ -113,11 +139,11 @@ def main() -> int:
     spot_snapshot = get_latest_snapshot(spot_df)
 
     chain = feed.get_option_chain(args.symbol, expiry.isoformat())
-    option_key = _find_option_instrument_key(chain, args.strike, args.option_type)
+    option_key = _find_option_instrument_key(chain, strike, args.option_type)
     option_df = feed.get_5min_candles(option_key, n_candles=0)
     if option_df.empty:
         print(
-            f"ERROR: no option candles returned for {args.symbol} {args.strike} "
+            f"ERROR: no option candles returned for {args.symbol} {strike} "
             f"{args.option_type} {expiry}",
             file=sys.stderr,
         )
@@ -135,7 +161,7 @@ def main() -> int:
     width = 60
     print("=" * width)
     print("  Condition Check Report")
-    print(f"  {args.symbol} {expiry.isoformat()} {args.strike} {args.option_type}")
+    print(f"  {args.symbol} {expiry.isoformat()} {strike} {args.option_type}")
     print(f"  Time: {option_snapshot.timestamp} ({feed.get_broker_name()})")
     print("=" * width)
     print(

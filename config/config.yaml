@@ -1,112 +1,182 @@
 # =====================================================
-# SHORT COVER CASCADE — MASTER CONTROL FILE
-# Bot reads config at startup AND between each 5-min candle scan.
-# Exceptions (require restart): order_place_mode, feeds.active_feed
+#  SHORT COVER CASCADE — Master Control File
+# =====================================================
+#  Edit this file to change bot behavior.
+#  Bot reads config at startup AND between every 5-min candle scan.
+#  Exceptions (require bot restart):
+#    - feeds.active_feed  (broker switch)
+#    - mode.order_place_mode  (safety)
 # =====================================================
 
+
 # ---------- BROKER FEED SELECTION ----------
+# Which broker the bot uses for live data and (later) orders.
+# Only ONE feed is active at a time. The other doesn't touch the API.
 feeds:
-  active_feed: kite               # kite OR upstox
+  active_feed: kite          # Options: kite OR upstox
   healthcheck_timeout_seconds: 10
+
   upstox:
-    enabled: ON
-    token_validity_days: 365      # 1 = daily refresh, 365 = analytics-tab long token
+    enabled: ON              # ON = available to switch to. OFF = totally disabled.
+    token_validity_days: 365 # 365 = use Upstox Analytics tab long-token (no daily refresh)
+                             # 1   = daily OAuth refresh required
   kite:
     enabled: ON
-    token_validity_days: 1        # Kite forces daily (SEBI)
+    token_validity_days: 1   # SEBI rule: Kite tokens expire daily for individuals.
+                             # Run scripts/refresh_token_kite.py every morning.
 
-# ---------- MODE CONTROLS (most-changed) ----------
+
+# ---------- MODE CONTROLS (most-changed settings) ----------
+# These are the master switches. Change these frequently as you progress
+# through phases.
 mode:
-  alert_mode: ON                  # ON = send Telegram alerts
-  order_place_mode: OFF           # OFF = no orders placed (default until Phase 8)
-  paper_trade_mode: ON            # ON = simulate orders, log only
+  alert_mode: ON             # ON = send Telegram alerts on valid signals
+  order_place_mode: OFF      # ON = place real orders (Phase 8 only, requires restart)
+  paper_trade_mode: ON       # ON = simulate orders in logs only, no real money
+
 
 # ---------- INSTRUMENT SELECTION ----------
+# Which underlyings the bot watches. Disable one to focus on the other.
 instruments:
   nifty_enabled: ON
   banknifty_enabled: ON
-  nifty_lot_size: 65              # Auto-verified at 9:15 AM
-  banknifty_lot_size: 30          # Auto-verified at 9:15 AM
 
-# ---------- STOP LOSS ----------
-stop_loss:
-  method: 1                       # 1 = point buffer, 2 = percentage
-  use_vix_multiplier: ON
-  hard_exit_red_candle_below_vwap: ON
+  # Lot sizes — bot auto-verifies these from Kite/Upstox at 9:15 AM.
+  # If broker reports a different value, bot logs a warning and uses broker value.
+  nifty_lot_size: 65
+  banknifty_lot_size: 30
 
-# ---------- RISK / REWARD ----------
-risk_reward:
-  target_risk_per_trade: 3000
-  risk_range_min: 2500
-  risk_range_max: 3500
-  normal_day_tp1_r: 1.5
-  normal_day_tp2_r: 2.5
-  expiry_day_tp1_r: 2.0
-  expiry_day_tp2_r: 3.0
-  move_sl_to_breakeven_after_tp1: ON
-  trail_sl_after_tp1: OFF
-
-# ---------- POSITION SIZING ----------
-position_sizing:
-  lot_cap_enabled: ON
-  nifty_max_lots: 5
-  banknifty_max_lots: 3
-
-# ---------- DAILY CIRCUIT BREAKERS ----------
-circuit_breakers:
-  daily_sl_count_breaker: ON
-  max_sl_per_day: 2
-  daily_loss_breaker: ON
-  max_loss_per_day_rupees: 6000
-
-# ---------- ORDER PLACEMENT ----------
-orders:
-  order_type: limit               # limit OR market
-  cancel_if_price_touches_tp1: ON
-  fallback_to_market_if_limit_disabled: ON
-
-# ---------- TIME RULES ----------
-time_rules:
-  normal_start_time: "09:45"
-  gap_day_start_time: "10:15"
-  gap_day_filter_enabled: ON
-  gap_threshold_percent: 1.0
-  last_entry_time: "14:30"
-  soft_squareoff_time: "14:55"
-  hard_squareoff_time: "15:00"    # Cannot be disabled in code
-
-# ---------- RE-ENTRY RULES ----------
-re_entry:
-  cooldown_minutes_after_sl: 15
-  same_strike_kill_after_2_sl: ON
 
 # ---------- STRIKE SELECTION ----------
+# Which strikes around ATM the bot scans on every 5-min candle close.
+# ATM = nearest strike to current spot
+# ITM = one strike in-the-money (deeper-value, higher delta, earlier signals)
+# OTM = one strike out-of-the-money (cheaper, faster moves, original strategy default)
 strike:
-  max_deviation_from_atm: 1
-  late_entry_threshold_percent: 30
+  max_deviation_from_atm: 1            # Hard cap — never go beyond ± 1 strike
+  late_entry_threshold_percent: 30     # If option is >30% above VWAP already, skip (chasing)
+
+  # Which strikes to SCAN and ALERT on (Phase 5+)
+  # Default ON for all 3 = maximum signal coverage
+  alert_strikes:
+    itm: ON                            # Alert on 1 ITM strike
+    atm: ON                            # Alert on ATM strike
+    otm: ON                            # Alert on 1 OTM strike
+
+  # Which strikes to AUTO-ORDER on (Phase 8+ only)
+  # Safer to start with ATM only. Add others after you trust the bot.
+  order_strikes:
+    itm: OFF                           # Start OFF — enable after gaining confidence
+    atm: ON                            # ATM is the safest default to auto-order
+    otm: OFF                           # Start OFF — enable after gaining confidence
+
+
+# ---------- STOP LOSS CONTROL ----------
+# How the bot computes the SL price after a valid signal.
+stop_loss:
+  method: 1                            # 1 = point buffer (default, from strategy doc)
+                                       # 2 = percentage-based (alternative)
+  use_vix_multiplier: ON               # ON = multiply SL buffer by VIX regime factor
+                                       # OFF = use base buffer only (riskier in high vol)
+  hard_exit_red_candle_below_vwap: ON  # ON = exit immediately if full red candle below VWAP
+                                       #     (overrides SL — emergency rule)
+
+
+# ---------- RISK / REWARD ----------
+# How much to risk per trade and where to exit profitably.
+risk_reward:
+  target_risk_per_trade: 3000          # Target ₹ risk per trade (sweet spot)
+  risk_range_min: 2500                 # Acceptable lower bound (don't trade if below)
+  risk_range_max: 3500                 # Acceptable upper bound (cap)
+
+  # TP multipliers (R = entry price − SL price; TP = entry + R × multiplier)
+  normal_day_tp1_r: 1.5                # Non-expiry: first exit at 1.5R
+  normal_day_tp2_r: 2.5                # Non-expiry: final exit at 2.5R
+  expiry_day_tp1_r: 2.0                # Expiry day: first exit at 2.0R (bigger targets)
+  expiry_day_tp2_r: 3.0                # Expiry day: final exit at 3.0R
+
+  move_sl_to_breakeven_after_tp1: ON   # After TP1, move remaining SL to entry price
+  trail_sl_after_tp1: OFF              # Optional: trail SL to previous candle low
+
+
+# ---------- POSITION SIZING ----------
+# How many lots to take per trade.
+position_sizing:
+  lot_cap_enabled: ON                  # ON = enforce hard caps below (recommended)
+  nifty_max_lots: 5                    # Hard ceiling for NIFTY
+  banknifty_max_lots: 3                # Hard ceiling for BankNifty
+  # If OFF: lots determined only by ₹3000 risk formula (risky for cheap premiums)
+
+
+# ---------- DAILY CIRCUIT BREAKERS ----------
+# Kill switches that stop trading for the day. First trigger wins.
+circuit_breakers:
+  daily_sl_count_breaker: ON           # ON = stop after N stop-losses
+  max_sl_per_day: 2                    # Stop the day after 2 SL hits
+
+  daily_loss_breaker: ON               # ON = stop after ₹X cumulative loss
+  max_loss_per_day_rupees: 6000        # Stop the day if total loss >= ₹6000
+
+
+# ---------- ORDER PLACEMENT ----------
+# How the bot places orders (Phase 8 only — ignored in alert-only mode).
+orders:
+  order_type: limit                    # Options: limit OR market
+  cancel_if_price_touches_tp1: ON      # ON = cancel unfilled limit order if price hits TP1
+  fallback_to_market_if_limit_disabled: ON
+
+
+# ---------- TIME RULES ----------
+# All times in IST (Asia/Kolkata).
+time_rules:
+  normal_start_time: "09:45"           # No signals before 9:45 (opening noise)
+  gap_day_start_time: "10:15"          # On gap-up/down days, wait until 10:15
+
+  gap_day_filter_enabled: ON           # ON = use gap day rules
+  gap_threshold_percent: 1.0           # Gap day = spot opens >1% from prev close
+
+  last_entry_time: "14:30"             # No new entries after 2:30 PM
+  soft_squareoff_time: "14:55"         # Start closing positions at 2:55 PM
+  hard_squareoff_time: "15:00"         # Hard close (cannot be disabled in code)
+
+
+# ---------- RE-ENTRY RULES ----------
+# Conditions for re-entering after a stop-loss hit.
+re_entry:
+  cooldown_minutes_after_sl: 15        # Wait at least N minutes after any SL
+  same_strike_kill_after_2_sl: ON      # ON = strike is dead-for-the-day after 2 SLs on it
+
 
 # ---------- CONDITION THRESHOLDS ----------
+# Numeric thresholds used inside C0–C4 logic.
 conditions:
-  c3_rsi_min: 50
-  c3_rsi_max: 80
+  c3_rsi_min: 50                       # RSI must be ABOVE this (default 50)
+  c3_rsi_max: 80                       # RSI must be BELOW this (overbought guard)
 
-# ---------- ALERTS ----------
+
+# ---------- TELEGRAM ALERTS (Phase 5) ----------
+# Configure which alerts the bot sends to your Telegram chat.
 telegram:
-  send_signal_alerts: ON
-  send_rejection_alerts: OFF
-  send_eod_summary: ON
-  send_circuit_breaker_alerts: ON
-  send_startup_alert: ON
+  send_signal_alerts: ON               # The main alert when 5/5 conditions pass
+  send_rejection_alerts: OFF           # Verbose: also send when conditions fail (debugging)
+  send_eod_summary: ON                 # End-of-day summary at 3:30 PM
+  send_circuit_breaker_alerts: ON      # When daily SL count / loss cap hit
+  send_startup_alert: ON               # When bot starts each morning
+
 
 # ---------- LOGGING ----------
+# How much detail goes into logs/.
 logging:
-  log_level: INFO
-  log_every_signal_check: ON
-  log_indicator_values: ON
+  log_level: INFO                      # DEBUG / INFO / WARNING / ERROR
+  log_every_signal_check: ON           # Log every condition evaluation (Phase 6 backtest data)
+  log_indicator_values: ON             # Include VWAP/RSI/MAs in each log entry
+
 
 # ---------- BOT BEHAVIOR ----------
+# Internal bot tuning. Usually don't change.
 bot:
-  scan_buffer_seconds: 5
-  api_retry_count: 3
-  api_retry_delay_seconds: 2
-  state_persistence_enabled: ON
+  scan_buffer_seconds: 5               # Wait 5 sec after candle close before scanning
+                                       # (lets Kite's candle data fully sync)
+  api_retry_count: 3                   # Retry broker API calls N times on failure
+  api_retry_delay_seconds: 2           # Wait N seconds between retries
+  state_persistence_enabled: ON        # ON = save daily state to logs/state.json

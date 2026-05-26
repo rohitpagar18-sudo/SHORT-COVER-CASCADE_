@@ -182,7 +182,14 @@ class UpstoxFeed(BaseFeed):
             "lot_size": int(get("lot_size") or 0),
         }
 
-    def get_5min_candles(self, instrument_key: str, n_candles: int) -> pd.DataFrame:
+    def get_5min_candles(self, instrument_key: str, n_candles: int = 0) -> pd.DataFrame:
+        """Return 5-min candles for today's full intraday session.
+
+        ``n_candles`` is kept for BaseFeed interface compatibility but
+        is a HINT only — this method ALWAYS returns the full session
+        Upstox's intraday endpoint exposes. Required for session-
+        anchored VWAP to compute from 09:15, not from a sliding window.
+        """
         retries = self._config.bot.api_retry_count
         delay = self._config.bot.api_retry_delay_seconds
         last_err: Exception | None = None
@@ -249,8 +256,6 @@ class UpstoxFeed(BaseFeed):
             columns=["timestamp", "open", "high", "low", "close", "volume", "oi"],
         )
         df = df.sort_values("timestamp").reset_index(drop=True)
-        if n_candles > 0:
-            df = df.tail(n_candles).reset_index(drop=True)
         return df
 
     def get_option_chain(self, symbol: str, expiry: str) -> pd.DataFrame:

@@ -120,3 +120,43 @@ def test_snapshot_sufficient_data():
     assert snap.oi_ma > 0
     assert snap.volume_ma > 0
     assert snap.is_green is True
+
+
+def test_vwap_uses_full_session_not_window():
+    """If user requests last 10 candles but session has 75, VWAP
+    should still be computed on all 75.
+
+    Build 75 candles: first 25 at price ~200, last 50 at price ~100,
+    equal volume each. True session VWAP = (25*200 + 50*100) / 75
+    = 133.33. If a future bug ever sliced the df to the tail before
+    VWAP, the value would collapse to ~100 and this test would fail.
+    """
+    n_high = 25
+    n_low = 50
+    n_total = n_high + n_low
+    timestamps = pd.date_range(
+        "2026-05-25 09:15", periods=n_total, freq="5min", tz="Asia/Kolkata"
+    )
+    opens = [200.0] * n_high + [100.0] * n_low
+    highs = [200.0] * n_high + [100.0] * n_low
+    lows = [200.0] * n_high + [100.0] * n_low
+    closes = [200.0] * n_high + [100.0] * n_low
+    volumes = [1000.0] * n_total
+    ois = [500_000.0] * n_total
+
+    df = pd.DataFrame({
+        "timestamp": timestamps,
+        "open": opens,
+        "high": highs,
+        "low": lows,
+        "close": closes,
+        "volume": volumes,
+        "oi": ois,
+    })
+    snap = get_latest_snapshot(df)
+    # Full-session VWAP ≈ 133.33; tail-only VWAP would be 100.
+    assert snap.vwap > 120, (
+        f"VWAP={snap.vwap:.2f} — looks like only the tail was used; "
+        "VWAP must be computed on the full 09:15 session."
+    )
+    assert snap.vwap == pytest.approx(133.33, abs=0.5)

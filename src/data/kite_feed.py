@@ -128,10 +128,32 @@ class KiteFeed(BaseFeed):
             return v
         return datetime.fromisoformat(str(v)).date()
 
-    def get_5min_candles(self, instrument_key: str, n_candles: int) -> pd.DataFrame:
+    def get_5min_candles(self, instrument_key: str, n_candles: int = 0) -> pd.DataFrame:
+        """Return 5-min candles from session start (09:15 IST) to now.
+
+        The ``n_candles`` parameter is kept for BaseFeed interface
+        compatibility but is now a HINT only — this method ALWAYS
+        returns the full trading session. Required for session-anchored
+        VWAP to be correct (VWAP from 09:15 reset, not from a sliding
+        window).
+
+        If ``now`` is on a weekend or before 09:15 IST today, returns
+        the most recent past weekday's full 09:15–15:30 session.
+        """
         token = self._get_instrument_token(instrument_key)
         now = datetime.now(IST)
-        from_date = now - timedelta(minutes=n_candles * 5 + 15)
+        session_date = self._resolve_session_date(now)
+        from_date = datetime(
+            session_date.year, session_date.month, session_date.day,
+            9, 15, tzinfo=IST,
+        )
+        if session_date == now.date():
+            to_date = now
+        else:
+            to_date = datetime(
+                session_date.year, session_date.month, session_date.day,
+                15, 30, tzinfo=IST,
+            )
 
         retries = self._config.bot.api_retry_count
         delay = self._config.bot.api_retry_delay_seconds
@@ -141,7 +163,7 @@ class KiteFeed(BaseFeed):
                 data = self._kite.historical_data(
                     token,
                     from_date,
-                    now,
+                    to_date,
                     interval="5minute",
                     oi=True,
                 )
@@ -177,9 +199,16 @@ class KiteFeed(BaseFeed):
             df["timestamp"] = df["timestamp"].dt.tz_convert(IST)
         df = df[["timestamp", "open", "high", "low", "close", "volume", "oi"]]
         df = df.sort_values("timestamp").reset_index(drop=True)
-        if n_candles > 0:
-            df = df.tail(n_candles).reset_index(drop=True)
         return df
+
+    @staticmethod
+    def _resolve_session_date(now: datetime) -> date:
+        d = now.date()
+        if now.hour < 9 or (now.hour == 9 and now.minute < 15):
+            d = d - timedelta(days=1)
+        while d.weekday() >= 5:
+            d = d - timedelta(days=1)
+        return d
 
     def get_option_chain(self, symbol: str, expiry: str) -> pd.DataFrame:
         instruments = self._load_instruments()

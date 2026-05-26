@@ -17,9 +17,14 @@ from datetime import date
 from pathlib import Path
 from urllib.parse import parse_qs, urlencode, urlparse
 
-from dotenv import load_dotenv, set_key
+from dotenv import set_key
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from src.config_loader import load_secrets
+
 SECRETS_PATH = PROJECT_ROOT / "config" / "secrets.env"
 
 UPSTOX_AUTH_URL = "https://api.upstox.com/v2/login/authorization/dialog"
@@ -143,10 +148,11 @@ def main() -> int:
     args = parser.parse_args()
 
     try:
-        if not SECRETS_PATH.exists():
-            print(f"ERROR: secrets file not found at {SECRETS_PATH}", file=sys.stderr)
+        try:
+            load_secrets(SECRETS_PATH)
+        except FileNotFoundError as e:
+            print(f"ERROR: {e}", file=sys.stderr)
             return 1
-        load_dotenv(SECRETS_PATH)
 
         if args.manual:
             return _manual_flow()

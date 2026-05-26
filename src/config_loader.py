@@ -364,3 +364,21 @@ def load_config(path: str | Path) -> AppConfig:
         return AppConfig.model_validate(raw)
     except Exception as e:
         raise ConfigError(f"Config validation failed for {p}: {e}") from e
+
+
+def load_secrets(secrets_path: str | Path = "config/secrets.env") -> None:
+    """Load secrets.env into the process environment. Idempotent.
+
+    Single source of truth for secrets loading. Every script (and main.py)
+    should call this before ``load_config`` so any code path that later
+    calls ``os.getenv`` for broker tokens / API keys sees them.
+
+    Raises:
+        FileNotFoundError: secrets file is missing.
+    """
+    from dotenv import load_dotenv
+
+    p = Path(secrets_path)
+    if not p.exists():
+        raise FileNotFoundError(f"Secrets file not found: {secrets_path}")
+    load_dotenv(p, override=True)

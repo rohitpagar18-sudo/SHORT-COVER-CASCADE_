@@ -13,9 +13,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from dotenv import load_dotenv
-
-from src.config_loader import ConfigError, load_config
+from src.config_loader import ConfigError, load_config, load_secrets
 from src.data.feed_factory import connect_feed
 
 CONFIG_PATH = PROJECT_ROOT / "config" / "config.yaml"
@@ -35,15 +33,15 @@ def _check(name: str, fn) -> tuple[bool, object]:
 def main() -> int:
     print("=== Feed Health Check ===")
     try:
+        load_secrets(SECRETS_PATH)
+    except FileNotFoundError as e:
+        print(f"ERROR: {e}", file=sys.stderr)
+        return 1
+    try:
         config = load_config(CONFIG_PATH)
     except ConfigError as e:
         print(f"ERROR: {e}", file=sys.stderr)
         return 1
-
-    if not SECRETS_PATH.exists():
-        print(f"ERROR: secrets file not found at {SECRETS_PATH}", file=sys.stderr)
-        return 1
-    load_dotenv(SECRETS_PATH)
 
     print(f"Active feed: {config.feeds.active_feed}")
 

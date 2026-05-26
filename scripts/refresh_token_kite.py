@@ -13,19 +13,25 @@ import traceback
 from datetime import date
 from pathlib import Path
 
-from dotenv import load_dotenv, set_key
+from dotenv import set_key
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from src.config_loader import load_secrets
+
 SECRETS_PATH = PROJECT_ROOT / "config" / "secrets.env"
 
 
 def main() -> int:
     try:
-        if not SECRETS_PATH.exists():
-            print(f"ERROR: secrets file not found at {SECRETS_PATH}", file=sys.stderr)
+        try:
+            load_secrets(SECRETS_PATH)
+        except FileNotFoundError as e:
+            print(f"ERROR: {e}", file=sys.stderr)
             return 1
 
-        load_dotenv(SECRETS_PATH)
         api_key = os.getenv("KITE_API_KEY", "").strip()
         api_secret = os.getenv("KITE_API_SECRET", "").strip()
 

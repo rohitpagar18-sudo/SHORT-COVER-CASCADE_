@@ -15,9 +15,12 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from src.config_loader import load_config
+from src.config_loader import load_config, load_secrets
 from src.data.feed_factory import connect_feed
 from src.indicators.calculator import get_latest_snapshot
+
+CONFIG_PATH = PROJECT_ROOT / "config" / "config.yaml"
+SECRETS_PATH = PROJECT_ROOT / "config" / "secrets.env"
 
 
 def main() -> int:
@@ -32,7 +35,13 @@ def main() -> int:
                         help="Number of recent candles to fetch (default 50)")
     args = parser.parse_args()
 
-    config = load_config("config/config.yaml")
+    try:
+        load_secrets(SECRETS_PATH)
+    except FileNotFoundError as e:
+        print(f"ERROR: {e}", file=sys.stderr)
+        return 1
+
+    config = load_config(CONFIG_PATH)
     feed = connect_feed(config)
 
     chain = feed.get_option_chain(args.symbol, args.expiry)

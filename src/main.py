@@ -13,7 +13,6 @@ import os
 import sys
 from pathlib import Path
 
-from dotenv import load_dotenv
 from loguru import logger
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -22,7 +21,7 @@ SECRETS_PATH = PROJECT_ROOT / "config" / "secrets.env"
 LOGS_DIR = PROJECT_ROOT / "logs"
 LOG_FILE = LOGS_DIR / "bot.log"
 
-from src.config_loader import AppConfig, ConfigError, load_config
+from src.config_loader import AppConfig, ConfigError, load_config, load_secrets
 from src.data.feed_factory import get_feed
 
 
@@ -75,6 +74,12 @@ def _resolve_token_date(active_feed: str) -> str | None:
 
 def main() -> int:
     try:
+        load_secrets(SECRETS_PATH)
+    except FileNotFoundError as e:
+        print(f"ERROR: {e}", file=sys.stderr)
+        return 1
+
+    try:
         config = load_config(CONFIG_PATH)
     except ConfigError as e:
         print(f"ERROR: {e}", file=sys.stderr)
@@ -82,11 +87,6 @@ def main() -> int:
 
     _configure_logging(config.logging.log_level)
     logger.info("Config loaded from {}", CONFIG_PATH)
-
-    if not SECRETS_PATH.exists():
-        print(f"ERROR: secrets file not found at {SECRETS_PATH}", file=sys.stderr)
-        return 1
-    load_dotenv(SECRETS_PATH)
 
     active = config.feeds.active_feed
     token_date = _resolve_token_date(active)

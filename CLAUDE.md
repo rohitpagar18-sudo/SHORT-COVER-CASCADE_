@@ -162,6 +162,66 @@ Upstox/TradingView screenshots. Use as test fixtures in Phase 2.
 - RSI: ±2 points
 - MAs: ±1%
 
+## Strategy Decisions Locked In (Phases 0-4)
+
+These decisions were made during phase-by-phase development. Do NOT
+revisit without explicit user approval.
+
+### Strike Selection
+- Bot scans 3 strikes per side per scan: ITM + ATM + OTM (one strike each)
+- For CE: ITM = ATM - interval, OTM = ATM + interval
+- For PE: ITM = ATM + interval, OTM = ATM - interval
+- NIFTY strike interval: 50 points
+- BankNifty strike interval: 100 points
+- config.strike.alert_strikes controls which to ALERT on (default all 3 ON)
+- config.strike.order_strikes controls which to AUTO-ORDER on (default ATM only)
+- Alert and order are decoupled — alert on more, order on fewer
+
+### Expiry Selection
+- Expiries are NEVER hardcoded by day-of-week
+- Always pulled from broker instrument dump (Kite or Upstox)
+- For NIFTY: nearest Tuesday (weekly) is used
+- For BankNifty: nearest last-Tuesday-of-month (monthly only) is used
+- If SEBI changes expiry rules, broker reflects it next trading day
+- src/data/expiry_resolver.py is the single source of truth
+
+### VWAP Computation
+- Session-anchored: resets 09:15 IST daily
+- Uses hlc3 = (High + Low + Close) / 3 — NOT close-only
+- get_5min_candles() ALWAYS fetches from 09:15 IST to now (full session)
+- Never windowed — VWAP requires full session for correctness
+- Verified against Kite chart on 26 May 2026: bot ₹194.94 vs Kite ₹194.94
+
+### Risk Math
+- check_risk.py is for OPTION PREMIUMS only
+- Entries above ₹2,000 are rejected (no real option costs this much)
+- This prevents passing index spot value (₹24,000) by accident
+- Method 1 (point buffer) is default per strategy doc
+- Method 2 (percentage) is available via config.stop_loss.method = 2
+
+### Token Refresh Discipline
+- Kite: refresh DAILY before 9:15 AM via scripts/refresh_token_kite.py
+- Upstox: refresh ANNUALLY (365-day token via Analytics tab)
+- Token-date stored in secrets.env (KITE_TOKEN_DATE / UPSTOX_TOKEN_DATE)
+- Bot REFUSES to start at setup() if active feed token-date != today IST
+
+### Two-Machine Workflow
+- Machine 1: dev, write code, push to git, never has real secrets
+- Machine 2: clone, fill real secrets in secrets.env, run live tests
+- secrets.env is gitignored — copy via secrets.env.example template
+
+### Scan Loop Cadence
+- Bot fires exactly ONE scan per closed 5-min candle
+- Trigger window: 5-30 seconds after each :00 / :05 / :10 / ... boundary
+- Dedup via (date, hour, candle_minute) tuple — survives long scans
+- If a scan takes 45s, next scan still fires correctly on next candle
+
+### Gap-Day Rule
+- Detected at setup(): if open_price diverges >1% from prev_close, gap day
+- On gap day: no entries before 10:15 AM (vs normal 9:45 AM)
+- Toggle: config.time_rules.gap_day_enabled (default ON)
+- Reason: VWAP gets dominated by opening candles on gap days
+
 ## Project Structure
 C:\trading\short-cover-cascade\
 ├── docs\                — Strategy doc, indicator values, phase docs (read-only)
@@ -185,8 +245,8 @@ C:\trading\short-cover-cascade\
 └── CLAUDE.md            — This file
 
 ## Current Phase
-Phase 3: Conditions C0–C4 + dynamic expiry helper (code complete on this
-machine; awaiting live calibration on second laptop).
+Phase 5: Telegram alerts + main orchestrator (ALERT-ONLY). Code complete
+on this machine. First live alert-only run is on the second laptop.
 (Update this line as we progress)
 
 ## Phase Status
@@ -200,6 +260,10 @@ machine; awaiting live calibration on second laptop).
   17 expiry-resolver tests). Live calibration via
   scripts/check_conditions.py and scripts/list_expiries.py still to be
   done on the second laptop during market hours.
+- Phase 4: Risk + State modules — code + unit tests done on this machine.
+- Phase 5: Telegram alerts + main orchestrator (ALERT-ONLY) — code + unit
+  tests done on this machine. First live run (alert-only) is on the
+  second laptop.
 
 ## How Phases Work
 - Each phase has a doc in docs/phases/

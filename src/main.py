@@ -1,118 +1,664 @@
-"""Bot entry point.
+"""Phase 5 orchestrator — live alert-only scan loop.
 
-Phase 1 behavior: load config + secrets, configure logging, instantiate the
-active feed via feed_factory.get_feed(), verify token validity (without
-calling broker APIs), print a startup banner, exit.
+One pass per closed 5-min candle: fetch spot/option data, run C0–C4,
+log every scan to ``signals.jsonl``, and on a 5/5 pass fire a Telegram
+alert (after logging the alert to ``alerts.jsonl`` for durability).
 
-Connect-to-broker happens in Phase 5 when the orchestrator starts.
+No order placement code lives here — that is Phase 8.
+
+Critical rules (see docs/phases/PHASE_5.md):
+  - Alert-only: never places orders.
+  - JSONL writes ALWAYS happen before the Telegram send.
+  - Scan loop fires exactly once per closed 5-min candle (candle_key
+    dedup pattern), even if a scan takes 45s.
+  - Bot refuses to start if active broker's token date is not today (IST).
+  - Hard 3:00 PM square-off cannot be disabled (only soft + last_entry
+    times are configurable).
+  - All exceptions in the main loop are caught and Telegrammed.
 """
 
 from __future__ import annotations
 
 import os
 import sys
+import time as time_mod
+import traceback
+from datetime import date as date_cls, datetime, time as dt_time
 from pathlib import Path
+from typing import Any
+from zoneinfo import ZoneInfo
 
+import pandas as pd
 from loguru import logger
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 CONFIG_PATH = PROJECT_ROOT / "config" / "config.yaml"
 SECRETS_PATH = PROJECT_ROOT / "config" / "secrets.env"
-LOGS_DIR = PROJECT_ROOT / "logs"
-LOG_FILE = LOGS_DIR / "bot.log"
 
-from src.config_loader import AppConfig, ConfigError, load_config, load_secrets
-from src.data.feed_factory import get_feed
+from src.alerts.signal_logger import SignalLogger
+from src.alerts.telegram_bot import TelegramAlerter
+from src.conditions.all_conditions import check_all_conditions
+from src.config_loader import load_config, load_secrets
+from src.data.expiry_resolver import get_next_expiry, is_expiry_day
+from src.data.feed_factory import connect_feed
+from src.data.strike_selector import get_alert_strikes
+from src.indicators.calculator import get_latest_snapshot
+from src.indicators.vwap import compute_session_vwap
+from src.risk.lot_sizing import compute_lots
+from src.risk.profit_targets import compute_tps
+from src.risk.stop_loss import compute_sl_method1, compute_sl_method2
+from src.risk.vix_regime import classify_vix
+from src.state.state_manager import StateManager
 
+IST = ZoneInfo("Asia/Kolkata")
 
-def _configure_logging(level: str) -> None:
-    LOGS_DIR.mkdir(parents=True, exist_ok=True)
-    logger.remove()
-    logger.add(sys.stderr, level=level)
-    logger.add(
-        LOG_FILE,
-        level=level,
-        rotation="10 MB",
-        retention="14 days",
-        enqueue=False,
-        backtrace=True,
-        diagnose=False,
-    )
-
-
-def _print_banner(config: AppConfig, token_date: str | None) -> None:
-    active = config.feeds.active_feed
-    mode = config.mode
-    instruments = []
-    if config.instruments.nifty_enabled:
-        instruments.append("NIFTY")
-    if config.instruments.banknifty_enabled:
-        instruments.append("BANKNIFTY")
-
-    line = "=" * 62
-    banner = [
-        line,
-        "  SHORT COVER CASCADE — Bot Startup",
-        line,
-        f"  Active broker     : {active}",
-        f"  alert_mode        : {'ON' if mode.alert_mode else 'OFF'}",
-        f"  order_place_mode  : {'ON' if mode.order_place_mode else 'OFF'}",
-        f"  paper_trade_mode  : {'ON' if mode.paper_trade_mode else 'OFF'}",
-        f"  Instruments       : {', '.join(instruments) if instruments else '(none enabled)'}",
-        f"  Token date ({active:<6}): {token_date or '(missing)'}",
-        line,
-    ]
-    for ln in banner:
-        print(ln)
+# Hard 3:00 PM square-off is a strategy invariant (Section 12).
+HARD_SQUAREOFF_TIME = dt_time(15, 0)
+# Market closes 15:30 IST — bot exits at that wall-clock.
+MARKET_CLOSE_TIME = dt_time(15, 30)
 
 
-def _resolve_token_date(active_feed: str) -> str | None:
-    var = "KITE_TOKEN_DATE" if active_feed == "kite" else "UPSTOX_TOKEN_DATE"
-    val = os.getenv(var, "").strip()
-    return val or None
+class Orchestrator:
+    """Glue layer that runs Phase 5: scan -> log -> alert.
 
+    Construct, then call ``run_forever()`` from ``main()``. The class is
+    designed to be friendly to tests too: every external dependency is
+    a private attribute set in ``setup()`` so tests can construct an
+    instance, swap them out, and call individual methods directly.
+    """
 
-def main() -> int:
-    try:
+    def __init__(self) -> None:
         load_secrets(SECRETS_PATH)
-    except FileNotFoundError as e:
-        print(f"ERROR: {e}", file=sys.stderr)
-        return 1
+        self.config = load_config(CONFIG_PATH)
+        self.feed = None
+        self.telegram: TelegramAlerter | None = None
+        self.signal_logger: SignalLogger | None = None
+        self.state: StateManager | None = None
+        self.broker_name: str | None = None
+        self.session_vix: float | None = None
+        self.session_vix_info = None
+        self.is_gap_day: bool = False
+        self.nifty_lot: int = 0
+        self.banknifty_lot: int = 0
+        self.nifty_expiry = None
+        self.banknifty_expiry = None
+        # In-memory counters — EOD reads these (never re-walks JSONL).
+        self.session_scan_count = 0
+        self.session_alert_count = 0
+        self.session_nifty_alerts = 0
+        self.session_bn_alerts = 0
 
-    try:
-        config = load_config(CONFIG_PATH)
-    except ConfigError as e:
-        print(f"ERROR: {e}", file=sys.stderr)
-        return 1
+    # =====================================================================
+    # Setup
+    # =====================================================================
 
-    _configure_logging(config.logging.log_level)
-    logger.info("Config loaded from {}", CONFIG_PATH)
+    def setup(self) -> None:
+        """Pre-market setup. Runs once at bot startup."""
+        log_file = PROJECT_ROOT / "logs" / "bot.log"
+        log_file.parent.mkdir(parents=True, exist_ok=True)
+        logger.add(log_file, rotation="10 MB", level=self.config.logging.log_level)
 
-    active = config.feeds.active_feed
-    token_date = _resolve_token_date(active)
-    _print_banner(config, token_date)
+        # 1. Connect feed.
+        self.feed = connect_feed(self.config)
+        self.broker_name = self.feed.get_broker_name()
+        logger.info(f"Feed connected: {self.broker_name}")
 
-    feed = get_feed(config)
-    if not feed.is_token_valid():
-        if active == "kite":
-            print(
-                "ERROR: Kite token is stale. Run: "
-                "python scripts\\refresh_token_kite.py",
-                file=sys.stderr,
+        # 2. Refuse to start on stale token.
+        self._verify_token_freshness()
+
+        # 3. Verify lot sizes match config (warn but trust broker).
+        nifty_lot = self.feed.get_lot_size("NIFTY")
+        bn_lot = self.feed.get_lot_size("BANKNIFTY")
+        if nifty_lot != self.config.instruments.nifty_lot_size:
+            logger.warning(
+                f"NIFTY lot mismatch: config={self.config.instruments.nifty_lot_size}, "
+                f"broker={nifty_lot}. USING BROKER VALUE."
             )
+        if bn_lot != self.config.instruments.banknifty_lot_size:
+            logger.warning(
+                f"BANKNIFTY lot mismatch: config={self.config.instruments.banknifty_lot_size}, "
+                f"broker={bn_lot}. USING BROKER VALUE."
+            )
+        self.nifty_lot = nifty_lot
+        self.banknifty_lot = bn_lot
+
+        # 4. Lock VIX for the session.
+        self.session_vix = self.feed.get_india_vix()
+        self.session_vix_info = classify_vix(self.session_vix)
+        logger.info(
+            f"Session VIX: {self.session_vix:.2f} → "
+            f"{self.session_vix_info.regime.value} "
+            f"({self.session_vix_info.method1_multiplier}× multiplier)"
+        )
+
+        # 5. Detect gap day (must run after 09:15 — open candle exists).
+        self.is_gap_day = self._detect_gap_day()
+        if self.is_gap_day:
+            logger.warning("GAP DAY detected — no entries before 10:15 AM")
+
+        # 6. Initialize alerters and state.
+        self.telegram = TelegramAlerter()
+        self.signal_logger = SignalLogger()
+        self.state = StateManager()
+        self.state.load_state()
+
+        # 7. Resolve expiries for the session.
+        self.nifty_expiry = get_next_expiry(self.feed, "NIFTY")
+        self.banknifty_expiry = get_next_expiry(self.feed, "BANKNIFTY")
+        logger.info(f"Today's NIFTY expiry: {self.nifty_expiry}")
+        logger.info(f"Today's BankNifty expiry: {self.banknifty_expiry}")
+
+        # 8. Send startup Telegram.
+        if self.config.telegram.send_startup_alert:
+            self.telegram.send_startup(
+                {
+                    "broker": self.broker_name,
+                    "alert_mode": self.config.mode.alert_mode,
+                    "order_place_mode": self.config.mode.order_place_mode,
+                    "paper_trade_mode": self.config.mode.paper_trade_mode,
+                    "instruments": self._enabled_instruments_str(),
+                    "vix": self.session_vix,
+                    "vix_regime": self.session_vix_info.regime.value,
+                    "nifty_lot": self.nifty_lot,
+                    "banknifty_lot": self.banknifty_lot,
+                    "is_gap_day": self.is_gap_day,
+                }
+            )
+
+    def _verify_token_freshness(self) -> None:
+        """Refuse to start if active broker's token date is not today (IST)."""
+        today_str = datetime.now(IST).date().isoformat()
+        if self.broker_name == "kite":
+            token_date = os.getenv("KITE_TOKEN_DATE")
+            if token_date != today_str:
+                raise RuntimeError(
+                    f"Kite access token is stale "
+                    f"(KITE_TOKEN_DATE={token_date}, today={today_str}). "
+                    f"Run: python scripts/refresh_token_kite.py"
+                )
+        elif self.broker_name == "upstox":
+            token_date = os.getenv("UPSTOX_TOKEN_DATE")
+            if not token_date:
+                raise RuntimeError(
+                    "UPSTOX_TOKEN_DATE missing in secrets.env. "
+                    "Run: python scripts/refresh_token_upstox.py"
+                )
+            try:
+                token_d = date_cls.fromisoformat(token_date)
+            except ValueError:
+                raise RuntimeError(
+                    f"UPSTOX_TOKEN_DATE format invalid: {token_date}"
+                )
+            age_days = (datetime.now(IST).date() - token_d).days
+            if age_days > 350:
+                logger.warning(
+                    f"Upstox token is {age_days} days old. "
+                    "Refresh soon to avoid expiry."
+                )
+            if age_days > 365:
+                raise RuntimeError(
+                    f"Upstox token is {age_days} days old (>365). "
+                    "Refresh required: scripts/refresh_token_upstox.py"
+                )
+        logger.info(f"Token freshness OK for {self.broker_name}")
+
+    def _detect_gap_day(self) -> bool:
+        """Return True if today's open diverges >threshold% from prev close.
+
+        Toggle: ``config.time_rules.gap_day_enabled``.
+        The detector looks at whichever symbols have multi-day data; if
+        the active feed only returns today's session, the detector
+        gracefully returns False (no false positives).
+        """
+        if not self.config.time_rules.gap_day_enabled:
+            return False
+        threshold = float(self.config.time_rules.gap_threshold_percent)
+        try:
+            today_d = datetime.now(IST).date()
+            for symbol in ("NIFTY", "BANKNIFTY"):
+                candles = self._get_spot_candles(symbol)
+                if candles is None or len(candles) < 2:
+                    continue
+                ts_dates = pd.to_datetime(candles["timestamp"]).dt.date
+                today_mask = ts_dates == today_d
+                prev_mask = ts_dates < today_d
+                today_candles = candles[today_mask]
+                prev_candles = candles[prev_mask]
+                if len(today_candles) == 0 or len(prev_candles) == 0:
+                    continue
+                today_open = float(today_candles["open"].iloc[0])
+                prev_close = float(prev_candles["close"].iloc[-1])
+                gap_pct = abs(today_open - prev_close) / prev_close * 100.0
+                logger.info(
+                    f"{symbol} gap: open={today_open:.2f} "
+                    f"prev_close={prev_close:.2f} ({gap_pct:.2f}%)"
+                )
+                if gap_pct > threshold:
+                    return True
+        except Exception as e:
+            logger.warning(f"Gap-day detection failed: {e}. Assuming non-gap.")
+            return False
+        return False
+
+    def _enabled_instruments_str(self) -> str:
+        out = []
+        if self.config.instruments.nifty_enabled:
+            out.append("NIFTY")
+        if self.config.instruments.banknifty_enabled:
+            out.append("BANKNIFTY")
+        return ", ".join(out) if out else "NONE"
+
+    # =====================================================================
+    # Time helpers
+    # =====================================================================
+
+    def _is_market_hours(self, now: datetime) -> bool:
+        if now.weekday() >= 5:
+            return False
+        return dt_time(9, 15) <= now.time() <= MARKET_CLOSE_TIME
+
+    def _is_scan_time(self, now: datetime) -> bool:
+        """Scan window: normal_start (or gap_day_start) to last_entry_time."""
+        if not self._is_market_hours(now):
+            return False
+        if self.is_gap_day:
+            start = dt_time.fromisoformat(self.config.time_rules.gap_day_start_time)
         else:
-            print(
-                "ERROR: Upstox token missing. Run: "
-                "python scripts\\refresh_token_upstox.py --manual",
-                file=sys.stderr,
-            )
-        return 1
+            start = dt_time.fromisoformat(self.config.time_rules.normal_start_time)
+        last = dt_time.fromisoformat(self.config.time_rules.last_entry_time)
+        return start <= now.time() <= last
 
-    print(f"Token check: PASS (active feed: {active})")
-    print("Phase 1 complete — token valid, feed ready to connect")
-    logger.info("Phase 1 startup complete (active broker: {})", active)
-    return 0
+    def _is_hard_squareoff_time(self, now: datetime) -> bool:
+        """Hard 3:00 PM check — INVARIANT, not config-driven."""
+        return now.time() >= HARD_SQUAREOFF_TIME
+
+    # =====================================================================
+    # Scan loop
+    # =====================================================================
+
+    def scan_once(self) -> None:
+        """One scan pass — runs after each 5-min candle closes."""
+        now = datetime.now(IST)
+
+        # Hot-reload config every scan (allows runtime tuning of thresholds).
+        # Broker / order_place_mode changes still require a full restart.
+        self.config = load_config(CONFIG_PATH)
+
+        if not self._is_scan_time(now):
+            logger.debug(f"Not scan time: {now.time()}")
+            return
+
+        if self.state._state.circuit_breaker_triggered:
+            logger.info(
+                f"Circuit breaker active: {self.state._state.circuit_breaker_reason}"
+            )
+            return
+
+        if (
+            self.config.circuit_breakers.daily_sl_count_breaker
+            and self.state.get_daily_sl_count()
+            >= self.config.circuit_breakers.max_sl_per_day
+        ):
+            self._trigger_circuit_breaker(
+                f"Daily SL count reached {self.state.get_daily_sl_count()}"
+            )
+            return
+
+        if (
+            self.config.circuit_breakers.daily_loss_breaker
+            and self.state.get_daily_loss()
+            >= self.config.circuit_breakers.max_loss_per_day_rupees
+        ):
+            self._trigger_circuit_breaker(
+                f"Daily loss ₹{self.state.get_daily_loss():,.2f} >= cap"
+            )
+            return
+
+        symbols: list[tuple[str, Any, int]] = []
+        if self.config.instruments.nifty_enabled:
+            symbols.append(("NIFTY", self.nifty_expiry, self.nifty_lot))
+        if self.config.instruments.banknifty_enabled:
+            symbols.append(("BANKNIFTY", self.banknifty_expiry, self.banknifty_lot))
+
+        for symbol, expiry, lot_size in symbols:
+            self._scan_symbol(symbol, expiry, lot_size, now)
+
+    def _scan_symbol(
+        self, symbol: str, expiry: Any, lot_size: int, now: datetime
+    ) -> None:
+        """Scan one symbol — both CE and PE direction."""
+        try:
+            spot_candles = self._get_spot_candles(symbol)
+            spot_vwap = float(compute_session_vwap(spot_candles).iloc[-1])
+            spot_close = float(spot_candles["close"].iloc[-1])
+        except Exception as e:
+            logger.error(f"Failed to fetch spot data for {symbol}: {e}")
+            return
+
+        for option_type in ("CE", "PE"):
+            # C0 fast-fail — saves an option chain fetch when spot/VWAP disagree.
+            if option_type == "CE" and spot_close <= spot_vwap:
+                self._log_rejection(
+                    symbol, None, option_type, "C0",
+                    f"spot {spot_close:.2f} not above VWAP {spot_vwap:.2f}", now,
+                )
+                continue
+            if option_type == "PE" and spot_close >= spot_vwap:
+                self._log_rejection(
+                    symbol, None, option_type, "C0",
+                    f"spot {spot_close:.2f} not below VWAP {spot_vwap:.2f}", now,
+                )
+                continue
+
+            try:
+                strikes = get_alert_strikes(
+                    self.feed, symbol, spot_close, option_type,
+                    str(expiry), self.config,
+                )
+            except Exception as e:
+                logger.error(
+                    f"Strike selection failed for {symbol} {option_type}: {e}"
+                )
+                continue
+
+            for strike_choice in strikes:
+                self._scan_strike(
+                    symbol, strike_choice, option_type, expiry,
+                    lot_size, spot_close, spot_vwap, now,
+                )
+
+    def _scan_strike(
+        self,
+        symbol: str,
+        strike_choice,
+        option_type: str,
+        expiry: Any,
+        lot_size: int,
+        spot_close: float,
+        spot_vwap: float,
+        now: datetime,
+    ) -> None:
+        """Run all 5 conditions on one strike. If 5/5, fire alert."""
+        allowed, reason = self.state.can_re_enter(
+            self.config, symbol, strike_choice.strike, option_type
+        )
+        if not allowed:
+            self._log_rejection(
+                symbol, strike_choice.strike, option_type,
+                "RE_ENTRY_BLOCKED", reason, now,
+            )
+            return
+
+        try:
+            df = self.feed.get_5min_candles(strike_choice.instrument_key, 100)
+            snapshot = get_latest_snapshot(df)
+        except Exception as e:
+            logger.error(
+                f"Indicator computation failed: "
+                f"{symbol} {strike_choice.strike}{option_type}: {e}"
+            )
+            return
+
+        result = check_all_conditions(
+            option_snapshot=snapshot,
+            spot_close=spot_close,
+            spot_vwap=spot_vwap,
+            option_type=option_type,
+            config=self.config,
+        )
+
+        self.session_scan_count += 1
+
+        signal_record = {
+            "timestamp_ist": now.isoformat(),
+            "event_type": "scan",
+            "symbol": symbol,
+            "strike": strike_choice.strike,
+            "relation": strike_choice.relation,
+            "option_type": option_type,
+            "expiry": str(expiry),
+            "trading_symbol": strike_choice.trading_symbol,
+            "spot_price": spot_close,
+            "spot_vwap": spot_vwap,
+            "option_close": snapshot.close,
+            "option_vwap": snapshot.vwap,
+            "rsi": snapshot.rsi,
+            "rsi_ma": snapshot.rsi_ma,
+            "oi": snapshot.oi,
+            "oi_ma": snapshot.oi_ma,
+            "volume": snapshot.volume,
+            "volume_ma": snapshot.volume_ma,
+            "is_green": snapshot.is_green,
+            "vix": self.session_vix,
+            "vix_regime": self.session_vix_info.regime.value,
+            "conditions_passed": result.passed_conditions(),
+            "conditions_failed": result.failed_conditions(),
+            "all_passed": result.all_passed,
+            "summary": result.short_summary(),
+            "reasons": {r.name: r.reason for r in result.results},
+        }
+        self.signal_logger.log_signal(signal_record)
+
+        if not result.all_passed:
+            return
+
+        self._fire_alert(
+            symbol, strike_choice, option_type, expiry,
+            lot_size, snapshot, signal_record, now,
+        )
+
+    def _fire_alert(
+        self,
+        symbol: str,
+        strike_choice,
+        option_type: str,
+        expiry: Any,
+        lot_size: int,
+        snapshot,
+        signal_record: dict,
+        now: datetime,
+    ) -> None:
+        """Compute SL/TP/lots, log to alerts.jsonl, then send Telegram."""
+        try:
+            entry = snapshot.close
+            is_expiry = is_expiry_day(self.feed, symbol, now.date())
+
+            if self.config.stop_loss.method == 1:
+                sl_result = compute_sl_method1(
+                    vwap_at_entry=snapshot.vwap,
+                    option_price=entry,
+                    symbol=symbol,
+                    is_expiry_day=is_expiry,
+                    vix_info=self.session_vix_info,
+                    use_vix_multiplier=self.config.stop_loss.use_vix_multiplier,
+                )
+            else:
+                sl_result = compute_sl_method2(
+                    vwap_at_entry=snapshot.vwap,
+                    is_expiry_day=is_expiry,
+                    vix_info=self.session_vix_info,
+                )
+
+            tp_result = compute_tps(entry, sl_result.sl_price, is_expiry, self.config)
+            lot_result = compute_lots(
+                entry, sl_result.sl_price, symbol, lot_size, self.config
+            )
+
+            alert_data = {
+                **signal_record,
+                "event_type": "alert",
+                "entry": entry,
+                "sl": sl_result.sl_price,
+                "sl_method": sl_result.method,
+                "tp1": tp_result.tp1,
+                "tp2": tp_result.tp2,
+                "tp1_r": tp_result.risk_to_tp1_ratio,
+                "tp2_r": tp_result.risk_to_tp2_ratio,
+                "risk_per_unit": lot_result.risk_per_unit,
+                "lots": lot_result.lots,
+                "total_risk": lot_result.total_risk_rupees,
+                "lot_size": lot_size,
+                "day_type": "Expiry" if is_expiry else "Normal",
+                "vix_multiplier": self.session_vix_info.method1_multiplier,
+                "spot": signal_record["spot_price"],
+                "spot_position": (
+                    "Above VWAP ✓" if option_type == "CE" else "Below VWAP ✓"
+                ),
+                "date": now.strftime("%Y-%m-%d"),
+                "time": now.strftime("%H:%M"),
+                "strike": strike_choice.strike,
+                "relation": strike_choice.relation,
+            }
+
+            # Durability first: JSONL line lands on disk before Telegram fires.
+            self.signal_logger.log_alert(alert_data)
+
+            self.session_alert_count += 1
+            if symbol == "NIFTY":
+                self.session_nifty_alerts += 1
+            elif symbol == "BANKNIFTY":
+                self.session_bn_alerts += 1
+
+            if self.config.telegram.send_signal_alerts:
+                self.telegram.send_signal(alert_data)
+                logger.info(
+                    f"ALERT FIRED: {symbol} {strike_choice.strike}{option_type}"
+                )
+
+        except Exception as e:
+            logger.error(f"Alert generation failed: {e}")
+            logger.exception(e)
+
+    def _log_rejection(
+        self,
+        symbol: str,
+        strike: int | None,
+        option_type: str,
+        blocker: str,
+        reason: str,
+        now: datetime,
+    ) -> None:
+        """Log silent rejections (toggle: config.logging.log_every_signal_check)."""
+        if not self.config.logging.log_every_signal_check:
+            return
+        self.signal_logger.log_rejection(
+            {
+                "timestamp_ist": now.isoformat(),
+                "symbol": symbol,
+                "strike": strike,
+                "option_type": option_type,
+                "rejection_blocker": blocker,
+                "rejection_reason": reason,
+                "all_passed": False,
+            }
+        )
+
+    def _trigger_circuit_breaker(self, reason: str) -> None:
+        logger.warning(f"CIRCUIT BREAKER: {reason}")
+        self.state.trigger_circuit_breaker(reason)
+        if self.config.telegram.send_circuit_breaker_alerts:
+            self.telegram.send_circuit_breaker(reason)
+
+    def _get_spot_candles(self, symbol: str) -> pd.DataFrame:
+        """Fetch spot index 5-min candles for the session."""
+        if self.broker_name == "kite":
+            tokens = {"NIFTY": "256265", "BANKNIFTY": "260105"}
+            return self.feed.get_5min_candles(tokens[symbol], 100)
+        keys = {"NIFTY": "NSE_INDEX|Nifty 50", "BANKNIFTY": "NSE_INDEX|Nifty Bank"}
+        return self.feed.get_5min_candles(keys[symbol], 100)
+
+    # =====================================================================
+    # End-of-day summary
+    # =====================================================================
+
+    def send_eod(self) -> None:
+        if not self.config.telegram.send_eod_summary:
+            return
+        self.telegram.send_eod_summary(self._compute_eod_summary())
+
+    def _compute_eod_summary(self) -> dict:
+        """Build EOD summary from in-memory counters (never re-reads JSONL)."""
+        today_str = datetime.now(IST).date().isoformat()
+        return {
+            "date": today_str,
+            "total_scans": self.session_scan_count,
+            "alerts_fired": self.session_alert_count,
+            "nifty_alerts": self.session_nifty_alerts,
+            "banknifty_alerts": self.session_bn_alerts,
+            "circuit_breaker": (
+                "YES" if self.state._state.circuit_breaker_triggered else "NO"
+            ),
+            "vix_close": self.session_vix,
+        }
+
+    # =====================================================================
+    # Main loop
+    # =====================================================================
+
+    def run_forever(self) -> None:
+        """Main loop until 15:30 IST or Ctrl+C."""
+        self.setup()
+        logger.info("Bot entered main loop")
+
+        eod_sent = False
+        last_scan_candle: tuple | None = None
+
+        try:
+            while True:
+                now = datetime.now(IST)
+
+                if self._is_hard_squareoff_time(now) and not eod_sent:
+                    self.send_eod()
+                    eod_sent = True
+                    logger.info("EOD summary sent. Bot will exit at market close.")
+
+                if now.time() >= MARKET_CLOSE_TIME:
+                    logger.info("Market closed. Bot exiting.")
+                    break
+
+                candle_minute = (now.minute // 5) * 5
+                candle_key = (now.date(), now.hour, candle_minute)
+                seconds_into_candle = (now.minute % 5) * 60 + now.second
+                in_trigger_window = 5 <= seconds_into_candle <= 30
+
+                if (
+                    in_trigger_window
+                    and candle_key != last_scan_candle
+                    and self._is_scan_time(now)
+                ):
+                    try:
+                        self.scan_once()
+                    except Exception as e:
+                        logger.exception(f"Scan failed: {e}")
+                        try:
+                            self.telegram.send_exception(traceback.format_exc())
+                        except Exception:
+                            pass
+                    # Mark the candle as scanned whether scan_once raised or
+                    # not — prevents a retry storm inside the trigger window.
+                    last_scan_candle = candle_key
+
+                time_mod.sleep(2)
+
+        except KeyboardInterrupt:
+            logger.info("Bot stopped by user (Ctrl+C)")
+        except Exception as e:
+            logger.exception("FATAL error in main loop")
+            try:
+                if self.telegram is not None:
+                    self.telegram.send_exception(traceback.format_exc())
+            except Exception:
+                pass
+            sys.exit(1)
+
+
+def main() -> None:
+    print("=" * 60)
+    print("  SHORT COVER CASCADE — Phase 5 Live Bot")
+    print("=" * 60)
+    orch = Orchestrator()
+    orch.run_forever()
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    main()

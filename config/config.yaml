@@ -132,7 +132,9 @@ time_rules:
   normal_start_time: "09:45"           # No signals before 9:45 (opening noise)
   gap_day_start_time: "10:15"          # On gap-up/down days, wait until 10:15
 
-  gap_day_filter_enabled: ON           # ON = use gap day rules
+  gap_day_enabled: ON                  # ON = enforce 10:15 start on gap-day open >1%
+  gap_day_filter_enabled: ON           # ON = use gap day rules (legacy alias kept for
+                                       # backwards-compatibility; identical to gap_day_enabled)
   gap_threshold_percent: 1.0           # Gap day = spot opens >1% from prev close
 
   last_entry_time: "14:30"             # No new entries after 2:30 PM

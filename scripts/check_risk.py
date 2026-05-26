@@ -63,11 +63,26 @@ def _parse_args() -> argparse.Namespace:
                    help="India VIX value (e.g. 14.2)")
     p.add_argument("--expiry-day", dest="expiry_day", type=_parse_bool,
                    default=False, help="true/false — is today expiry day?")
+    p.add_argument("--force-entry", dest="force_entry", action="store_true",
+                   default=False,
+                   help="Skip the ₹2,000 sanity check (option premiums almost "
+                        "never exceed this).")
     return p.parse_args()
 
 
 def main() -> int:
     args = _parse_args()
+
+    if args.entry > 2000 and not args.force_entry:
+        print(
+            "ERROR: --entry value looks like an index spot price, "
+            "not an option premium."
+        )
+        print(f"Got --entry {args.entry}, expected something like 50-1000.")
+        print("Real NIFTY/BankNifty option premiums rarely exceed Rs.1000.")
+        print("If you really meant this value, pass --force-entry.")
+        sys.exit(1)
+
     try:
         load_secrets(SECRETS_PATH)
     except FileNotFoundError as e:

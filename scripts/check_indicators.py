@@ -58,6 +58,19 @@ def main() -> int:
     else:
         instrument_key = row.iloc[0]["instrument_token"]
 
+    if "tradingsymbol" in row.columns:
+        trading_symbol = str(row.iloc[0]["tradingsymbol"])
+    elif "trading_symbol" in row.columns:
+        trading_symbol = str(row.iloc[0]["trading_symbol"])
+    else:
+        trading_symbol = ""
+
+    print("=" * 60)
+    print(f"  Strike: {args.symbol} {args.strike}{args.option_type}")
+    if trading_symbol:
+        print(f"  Symbol: {trading_symbol}")
+    print(f"  Expiry: {args.expiry}")
+    print("=" * 60)
     print(f"Fetching {args.candles} candles for {args.symbol} {args.strike}{args.option_type} expiry {args.expiry}...")
     df = feed.get_5min_candles(str(instrument_key), args.candles)
     print(f"Fetched {len(df)} candles, latest timestamp: {df['timestamp'].iloc[-1]}")
@@ -68,8 +81,11 @@ def main() -> int:
     print()
 
     snap = get_latest_snapshot(df)
+    header = f"{args.symbol} {args.strike}{args.option_type}"
+    if trading_symbol:
+        header = f"{header}  [{trading_symbol}]"
     print("=" * 60)
-    print(f"  Latest indicators for {args.symbol} {args.strike}{args.option_type}")
+    print(f"  Latest indicators for {header}")
     print("=" * 60)
     print(f"  Timestamp    : {snap.timestamp}")
     print(f"  OHLC         : {snap.open:.2f} / {snap.high:.2f} / {snap.low:.2f} / {snap.close:.2f}")

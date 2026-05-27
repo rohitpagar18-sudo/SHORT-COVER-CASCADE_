@@ -131,15 +131,21 @@ orders:
 time_rules:
   normal_start_time: "09:45"           # No signals before 9:45 (opening noise)
   gap_day_start_time: "10:15"          # On gap-up/down days, wait until 10:15
-
-  gap_day_enabled: ON                  # ON = enforce 10:15 start on gap-day open >1%
-  gap_day_filter_enabled: ON           # ON = use gap day rules (legacy alias kept for
-                                       # backwards-compatibility; identical to gap_day_enabled)
-  gap_threshold_percent: 1.0           # Gap day = spot opens >1% from prev close
-
   last_entry_time: "14:30"             # No new entries after 2:30 PM
   soft_squareoff_time: "14:55"         # Start closing positions at 2:55 PM
   hard_squareoff_time: "15:00"         # Hard close (cannot be disabled in code)
+
+  # Gap-day rule — VWAP distortion on opens >threshold% from prev close
+  gap_day_enabled: OFF                 # MASTER TOGGLE — default OFF.
+                                       # When OFF: gap math still LOGGED for
+                                       # visibility, but 9:45 start used.
+                                       # When ON: gap >threshold triggers
+                                       # 10:15 start on that day.
+  gap_day_threshold_pct: 1.0           # % move that qualifies as gap day
+                                       # 1.0 = strategy doc default
+                                       # 0.75 = moderate, 0.5 = conservative
+  gap_day_direction: "both"            # "both" | "up" | "down"
+                                       # Symmetric default — matches strategy doc
 
 
 # ---------- RE-ENTRY RULES ----------

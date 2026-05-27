@@ -19,6 +19,7 @@ Critical rules (see docs/phases/PHASE_5.md):
 
 from __future__ import annotations
 
+import json
 import os
 import sys
 import time as time_mod
@@ -78,6 +79,8 @@ class Orchestrator:
         self.session_vix: float | None = None
         self.session_vix_info = None
         self.is_gap_day: bool = False
+        self.gap_info: dict = {}
+        self.gap_log_path: Path = PROJECT_ROOT / "logs" / "gap_log.jsonl"
         self.nifty_lot: int = 0
         self.banknifty_lot: int = 0
         self.nifty_expiry = None
@@ -132,9 +135,17 @@ class Orchestrator:
         )
 
         # 5. Detect gap day (must run after 09:15 — open candle exists).
-        self.is_gap_day = self._detect_gap_day()
+        self.is_gap_day, self.gap_info = self._detect_gap_day()
         if self.is_gap_day:
-            logger.warning("GAP DAY detected — no entries before 10:15 AM")
+            logger.warning(
+                f"GAP DAY ACTIVE — no entries before "
+                f"{self.config.time_rules.gap_day_start_time}"
+            )
+        elif self.gap_info.get("any_triggered"):
+            logger.info(
+                "Gap threshold breached but gap_day_enabled=false — "
+                "normal 9:45 start will be used."
+            )
 
         # 6. Initialize alerters and state.
         self.telegram = TelegramAlerter()
@@ -162,6 +173,7 @@ class Orchestrator:
                     "nifty_lot": self.nifty_lot,
                     "banknifty_lot": self.banknifty_lot,
                     "is_gap_day": self.is_gap_day,
+                    "gap_info": self.gap_info,
                 }
             )
 
@@ -202,43 +214,122 @@ class Orchestrator:
                 )
         logger.info(f"Token freshness OK for {self.broker_name}")
 
-    def _detect_gap_day(self) -> bool:
-        """Return True if today's open diverges >threshold% from prev close.
+    def _detect_gap_day(self) -> tuple[bool, dict]:
+        """Compute per-symbol gap % vs previous close.
 
-        Toggle: ``config.time_rules.gap_day_enabled``.
-        The detector looks at whichever symbols have multi-day data; if
-        the active feed only returns today's session, the detector
-        gracefully returns False (no false positives).
+        Returns:
+            (is_gap_day, gap_info)
+
+            - is_gap_day: True only if threshold breached AND
+              gap_day_enabled is True. When gap_day_enabled is False,
+              always returns False regardless of gap size (but math is
+              still computed and logged).
+            - gap_info: dict with enabled, threshold_pct, direction,
+              per_symbol math, any_triggered flag, and final decision.
         """
-        if not self.config.time_rules.gap_day_enabled:
-            return False
-        threshold = float(self.config.time_rules.gap_threshold_percent)
-        try:
-            today_d = datetime.now(IST).date()
-            for symbol in ("NIFTY", "BANKNIFTY"):
+        enabled = self.config.time_rules.gap_day_enabled
+        threshold = float(self.config.time_rules.gap_day_threshold_pct)
+        direction = self.config.time_rules.gap_day_direction.lower()
+
+        gap_info: dict = {
+            "enabled": enabled,
+            "threshold_pct": threshold,
+            "direction": direction,
+            "per_symbol": {},
+            "any_triggered": False,
+            "decision": "NORMAL",
+            "timestamp_ist": datetime.now(IST).isoformat(),
+        }
+
+        today_d = datetime.now(IST).date()
+        any_triggered = False
+
+        for symbol in ("NIFTY", "BANKNIFTY"):
+            sym_info: dict = {
+                "open": None,
+                "prev_close": None,
+                "gap_pct": None,
+                "triggers": False,
+                "error": None,
+            }
+            try:
                 candles = self._get_spot_candles(symbol)
                 if candles is None or len(candles) < 2:
+                    sym_info["error"] = "insufficient candle data"
+                    gap_info["per_symbol"][symbol] = sym_info
                     continue
+
                 ts_dates = pd.to_datetime(candles["timestamp"]).dt.date
-                today_mask = ts_dates == today_d
-                prev_mask = ts_dates < today_d
-                today_candles = candles[today_mask]
-                prev_candles = candles[prev_mask]
+                today_candles = candles[ts_dates == today_d]
+                prev_candles = candles[ts_dates < today_d]
                 if len(today_candles) == 0 or len(prev_candles) == 0:
+                    sym_info["error"] = "missing today or prev day candles"
+                    gap_info["per_symbol"][symbol] = sym_info
                     continue
+
                 today_open = float(today_candles["open"].iloc[0])
                 prev_close = float(prev_candles["close"].iloc[-1])
-                gap_pct = abs(today_open - prev_close) / prev_close * 100.0
-                logger.info(
-                    f"{symbol} gap: open={today_open:.2f} "
-                    f"prev_close={prev_close:.2f} ({gap_pct:.2f}%)"
-                )
-                if gap_pct > threshold:
-                    return True
+                gap_pct = (today_open - prev_close) / prev_close * 100.0
+
+                if direction == "both":
+                    triggers = abs(gap_pct) >= threshold
+                elif direction == "up":
+                    triggers = gap_pct >= threshold
+                elif direction == "down":
+                    triggers = gap_pct <= -threshold
+                else:
+                    logger.warning(
+                        f"Unknown gap_day_direction: {direction}. "
+                        "Defaulting to 'both'."
+                    )
+                    triggers = abs(gap_pct) >= threshold
+
+                sym_info.update({
+                    "open": today_open,
+                    "prev_close": prev_close,
+                    "gap_pct": round(gap_pct, 4),
+                    "triggers": triggers,
+                })
+                if triggers:
+                    any_triggered = True
+            except Exception as e:
+                sym_info["error"] = str(e)
+                logger.warning(f"Gap detection error for {symbol}: {e}")
+
+            gap_info["per_symbol"][symbol] = sym_info
+
+        gap_info["any_triggered"] = any_triggered
+
+        if any_triggered and enabled:
+            gap_info["decision"] = "GAP_DAY"
+            is_gap_day = True
+        elif any_triggered and not enabled:
+            gap_info["decision"] = "GAP_DETECTED_BUT_DISABLED"
+            is_gap_day = False
+        else:
+            gap_info["decision"] = "NORMAL"
+            is_gap_day = False
+
+        # Always log gap math, regardless of toggle state.
+        self._log_gap(gap_info)
+
+        return is_gap_day, gap_info
+
+    def _log_gap(self, gap_info: dict) -> None:
+        """Append gap math to ``logs/gap_log.jsonl`` (one line per startup)."""
+        path = self.gap_log_path
+        path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            with path.open("a", encoding="utf-8") as f:
+                f.write(json.dumps(gap_info) + "\n")
+            per_sym = gap_info.get("per_symbol", {})
+            logger.info(
+                f"Gap decision: {gap_info['decision']} | "
+                f"NIFTY {per_sym.get('NIFTY', {}).get('gap_pct')}% | "
+                f"BANKNIFTY {per_sym.get('BANKNIFTY', {}).get('gap_pct')}%"
+            )
         except Exception as e:
-            logger.warning(f"Gap-day detection failed: {e}. Assuming non-gap.")
-            return False
-        return False
+            logger.error(f"Failed to write gap_log.jsonl: {e}")
 
     def _enabled_instruments_str(self) -> str:
         out = []

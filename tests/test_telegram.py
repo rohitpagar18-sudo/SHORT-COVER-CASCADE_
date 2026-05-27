@@ -74,57 +74,125 @@ def test_telegram_send_returns_false_on_failure_no_raise(
     assert result is False
 
 
+def _startup_payload(**overrides) -> dict:
+    base = {
+        "broker": "kite",
+        "alert_mode": True,
+        "order_place_mode": False,
+        "paper_trade_mode": True,
+        "instruments": "NIFTY, BANKNIFTY",
+        "vix": 14.2,
+        "vix_regime": "Normal",
+        "nifty_lot": 65,
+        "banknifty_lot": 30,
+        "is_gap_day": False,
+        "gap_info": _gap_info(decision="NORMAL"),
+    }
+    base.update(overrides)
+    return base
+
+
+def _gap_info(
+    *,
+    decision: str = "NORMAL",
+    enabled: bool = False,
+    direction: str = "both",
+    threshold: float = 1.0,
+    nifty_pct: float | None = 0.25,
+    bn_pct: float | None = 0.10,
+) -> dict:
+    return {
+        "enabled": enabled,
+        "threshold_pct": threshold,
+        "direction": direction,
+        "decision": decision,
+        "any_triggered": decision != "NORMAL",
+        "per_symbol": {
+            "NIFTY": {
+                "open": 24050.0,
+                "prev_close": 24000.0,
+                "gap_pct": nifty_pct,
+                "triggers": decision != "NORMAL",
+                "error": None,
+            },
+            "BANKNIFTY": {
+                "open": 51000.0,
+                "prev_close": 50950.0,
+                "gap_pct": bn_pct,
+                "triggers": False,
+                "error": None,
+            },
+        },
+        "timestamp_ist": "2026-05-27T09:16:00+05:30",
+    }
+
+
 def test_format_startup_includes_broker_name(monkeypatch, telegram_env) -> None:
     alerter, _ = _make_alerter(monkeypatch)
-    msg = alerter._format_startup(
-        {
-            "broker": "kite",
-            "alert_mode": True,
-            "order_place_mode": False,
-            "paper_trade_mode": True,
-            "instruments": "NIFTY, BANKNIFTY",
-            "vix": 14.2,
-            "vix_regime": "Normal",
-            "nifty_lot": 65,
-            "banknifty_lot": 30,
-            "is_gap_day": False,
-        }
-    )
+    msg = alerter._format_startup(_startup_payload())
     assert "kite" in msg
     assert "BOT STARTED" in msg
     assert "NIFTY=65" in msg
 
 
-def test_format_startup_no_gap_marker_when_not_gap(
+def test_format_startup_always_includes_gap_line(
+    monkeypatch, telegram_env
+) -> None:
+    """Gap line is in startup message regardless of toggle state."""
+    alerter, _ = _make_alerter(monkeypatch)
+    # Toggle OFF, no gap.
+    msg_off = alerter._format_startup(
+        _startup_payload(gap_info=_gap_info(decision="NORMAL", enabled=False))
+    )
+    assert "Gap status" in msg_off
+    # Toggle ON, gap day.
+    msg_on = alerter._format_startup(
+        _startup_payload(
+            gap_info=_gap_info(
+                decision="GAP_DAY", enabled=True, nifty_pct=1.5
+            )
+        )
+    )
+    assert "Gap status" in msg_on
+
+
+def test_format_gap_line_shows_normal_when_under_threshold(
     monkeypatch, telegram_env
 ) -> None:
     alerter, _ = _make_alerter(monkeypatch)
-    msg = alerter._format_startup(
-        {
-            "broker": "kite", "alert_mode": True, "order_place_mode": False,
-            "paper_trade_mode": False, "instruments": "NIFTY",
-            "vix": 12.0, "vix_regime": "Normal",
-            "nifty_lot": 65, "banknifty_lot": 30,
-            "is_gap_day": False,
-        }
+    line = alerter._format_gap_line(
+        _gap_info(decision="NORMAL", enabled=True, nifty_pct=0.25)
     )
-    assert "GAP DAY" not in msg
+    assert "Normal day" in line
+    assert "9:45 start" in line
+    assert "toggle=ON" in line
 
 
-def test_format_startup_includes_gap_day_marker_when_set(
+def test_format_gap_line_shows_gap_day_when_triggered_and_enabled(
     monkeypatch, telegram_env
 ) -> None:
     alerter, _ = _make_alerter(monkeypatch)
-    msg = alerter._format_startup(
-        {
-            "broker": "kite", "alert_mode": True, "order_place_mode": False,
-            "paper_trade_mode": False, "instruments": "NIFTY",
-            "vix": 12.0, "vix_regime": "Normal",
-            "nifty_lot": 65, "banknifty_lot": 30,
-            "is_gap_day": True,
-        }
+    line = alerter._format_gap_line(
+        _gap_info(decision="GAP_DAY", enabled=True, nifty_pct=1.5)
     )
-    assert "GAP DAY (10:15 start)" in msg
+    assert "GAP DAY" in line
+    assert "10:15 start" in line
+
+
+def test_format_gap_line_shows_disabled_warning_when_breached_but_off(
+    monkeypatch, telegram_env
+) -> None:
+    alerter, _ = _make_alerter(monkeypatch)
+    line = alerter._format_gap_line(
+        _gap_info(
+            decision="GAP_DETECTED_BUT_DISABLED",
+            enabled=False,
+            nifty_pct=1.5,
+        )
+    )
+    assert "rule OFF" in line
+    assert "9:45 start" in line
+    assert "toggle=OFF" in line
 
 
 def test_format_signal_includes_all_required_fields(

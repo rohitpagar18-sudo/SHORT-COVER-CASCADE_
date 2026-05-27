@@ -212,12 +212,12 @@ def _validate_hhmm(v: Any) -> str:
 class TimeRulesConfig(_Base):
     normal_start_time: str
     gap_day_start_time: str
-    gap_day_enabled: bool
-    gap_day_filter_enabled: bool
-    gap_threshold_percent: float = Field(gt=0)
     last_entry_time: str
     soft_squareoff_time: str
     hard_squareoff_time: str
+    gap_day_enabled: bool
+    gap_day_threshold_pct: float = Field(gt=0)
+    gap_day_direction: Literal["both", "up", "down"]
 
     @field_validator(
         "normal_start_time",
@@ -231,10 +231,17 @@ class TimeRulesConfig(_Base):
     def _hhmm(cls, v: Any) -> str:
         return _validate_hhmm(v)
 
-    @field_validator("gap_day_enabled", "gap_day_filter_enabled", mode="before")
+    @field_validator("gap_day_enabled", mode="before")
     @classmethod
     def _onoff(cls, v: Any) -> Any:
         return _onoff_to_bool(v)
+
+    @field_validator("gap_day_direction", mode="before")
+    @classmethod
+    def _normalize_direction(cls, v: Any) -> Any:
+        if isinstance(v, str):
+            return v.strip().lower()
+        return v
 
 
 # ---------- RE-ENTRY ----------

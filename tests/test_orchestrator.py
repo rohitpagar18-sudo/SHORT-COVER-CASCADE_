@@ -40,7 +40,8 @@ def _make_time_rules(
     soft_squareoff: str = "14:55",
     hard_squareoff: str = "15:00",
     gap_day_enabled: bool = True,
-    gap_threshold_percent: float = 1.0,
+    gap_day_threshold_pct: float = 1.0,
+    gap_day_direction: str = "both",
 ) -> _NS:
     return _NS(
         normal_start_time=normal_start,
@@ -49,8 +50,8 @@ def _make_time_rules(
         soft_squareoff_time=soft_squareoff,
         hard_squareoff_time=hard_squareoff,
         gap_day_enabled=gap_day_enabled,
-        gap_day_filter_enabled=gap_day_enabled,
-        gap_threshold_percent=gap_threshold_percent,
+        gap_day_threshold_pct=gap_day_threshold_pct,
+        gap_day_direction=gap_day_direction,
     )
 
 
@@ -101,10 +102,12 @@ def _make_config(
 
 
 @pytest.fixture
-def orch() -> Orchestrator:
+def orch(tmp_path) -> Orchestrator:
     """Orchestrator instance with __init__ bypassed (no real config load)."""
     o = object.__new__(Orchestrator)
     o.config = _make_config()
+    o.gap_log_path = tmp_path / "gap_log.jsonl"
+    o.gap_info = {}
     o.feed = MagicMock()
     o.telegram = MagicMock()
     o.signal_logger = MagicMock()
@@ -342,49 +345,178 @@ def _make_candle_df(rows: list[tuple[datetime, float, float]]) -> pd.DataFrame:
     )
 
 
-def test_gap_day_detection_disabled_returns_false(orch) -> None:
-    orch.config = _make_config(time_rules=_make_time_rules(gap_day_enabled=False))
-    assert orch._detect_gap_day() is False
-
-
-def test_gap_day_detection_under_1pct_returns_false(orch) -> None:
+def _gap_df(*, prev_close: float, today_open: float) -> pd.DataFrame:
+    """Two-candle DataFrame: yesterday's close + today's open."""
     today = datetime.now(IST).date()
     prev = today.replace(day=max(1, today.day - 1))
-    df = _make_candle_df(
+    if prev == today:  # 1st of the month — go to previous month
+        # Step back to a date that is definitely yesterday-or-earlier.
+        prev_dt = datetime(today.year, today.month, today.day, tzinfo=IST)
+        prev_dt = prev_dt.replace(day=1)
+        # Use day before month-start by going back one second.
+        from datetime import timedelta
+        prev_dt = prev_dt - timedelta(days=1)
+        prev = prev_dt.date()
+    return _make_candle_df(
         [
-            (datetime(prev.year, prev.month, prev.day, 15, 25, tzinfo=IST), 24000, 24010),
-            (datetime(today.year, today.month, today.day, 9, 15, tzinfo=IST), 24050, 24055),
+            (
+                datetime(prev.year, prev.month, prev.day, 15, 25, tzinfo=IST),
+                prev_close,
+                prev_close,
+            ),
+            (
+                datetime(today.year, today.month, today.day, 9, 15, tzinfo=IST),
+                today_open,
+                today_open + 5,
+            ),
         ]
     )
-    orch.feed.get_5min_candles = MagicMock(return_value=df)
-    assert orch._detect_gap_day() is False
 
 
-def test_gap_day_detection_over_1pct_returns_true(orch) -> None:
-    today = datetime.now(IST).date()
-    prev = today.replace(day=max(1, today.day - 1))
-    df = _make_candle_df(
-        [
-            (datetime(prev.year, prev.month, prev.day, 15, 25, tzinfo=IST), 24000, 24000),
-            # 2% gap up
-            (datetime(today.year, today.month, today.day, 9, 15, tzinfo=IST), 24480, 24500),
-        ]
+def test_gap_detection_disabled_toggle_returns_false(orch) -> None:
+    """When gap_day_enabled=False, is_gap_day is always False even on big gaps."""
+    orch.config = _make_config(
+        time_rules=_make_time_rules(gap_day_enabled=False)
     )
+    # 2% gap — would trigger if enabled.
+    df = _gap_df(prev_close=24000.0, today_open=24480.0)
     orch.feed.get_5min_candles = MagicMock(return_value=df)
-    assert orch._detect_gap_day() is True
+    is_gap_day, info = orch._detect_gap_day()
+    assert is_gap_day is False
+    assert info["enabled"] is False
+    assert info["decision"] == "GAP_DETECTED_BUT_DISABLED"
 
 
-def test_gap_day_detection_today_only_data_returns_false(orch) -> None:
-    """Active feed returning today-only candles (Kite default) → no gap."""
-    today = datetime.now(IST).date()
-    df = _make_candle_df(
-        [
-            (datetime(today.year, today.month, today.day, 9, 15, tzinfo=IST), 24000, 24010),
-            (datetime(today.year, today.month, today.day, 9, 20, tzinfo=IST), 24010, 24020),
-        ]
+def test_gap_detection_enabled_under_threshold_returns_false(orch) -> None:
+    """Toggle ON, gap < threshold → not a gap day."""
+    orch.config = _make_config(
+        time_rules=_make_time_rules(gap_day_enabled=True)
     )
+    # 0.2% gap.
+    df = _gap_df(prev_close=24000.0, today_open=24050.0)
     orch.feed.get_5min_candles = MagicMock(return_value=df)
-    assert orch._detect_gap_day() is False
+    is_gap_day, info = orch._detect_gap_day()
+    assert is_gap_day is False
+    assert info["decision"] == "NORMAL"
+
+
+def test_gap_detection_enabled_over_threshold_returns_true(orch) -> None:
+    """Toggle ON, gap >= threshold → gap day."""
+    orch.config = _make_config(
+        time_rules=_make_time_rules(gap_day_enabled=True)
+    )
+    # 2% gap up.
+    df = _gap_df(prev_close=24000.0, today_open=24480.0)
+    orch.feed.get_5min_candles = MagicMock(return_value=df)
+    is_gap_day, info = orch._detect_gap_day()
+    assert is_gap_day is True
+    assert info["decision"] == "GAP_DAY"
+    assert info["any_triggered"] is True
+
+
+def test_gap_detection_symmetric_negative_triggers(orch) -> None:
+    """Toggle ON, direction=both, -1.2% gap → gap day."""
+    orch.config = _make_config(
+        time_rules=_make_time_rules(
+            gap_day_enabled=True, gap_day_direction="both"
+        )
+    )
+    # -1.2% gap down.
+    df = _gap_df(prev_close=24000.0, today_open=24000.0 * (1 - 0.012))
+    orch.feed.get_5min_candles = MagicMock(return_value=df)
+    is_gap_day, info = orch._detect_gap_day()
+    assert is_gap_day is True
+    assert info["decision"] == "GAP_DAY"
+
+
+def test_gap_detection_direction_up_only_ignores_negative(orch) -> None:
+    """direction=up, -1.2% gap → NOT a gap day."""
+    orch.config = _make_config(
+        time_rules=_make_time_rules(
+            gap_day_enabled=True, gap_day_direction="up"
+        )
+    )
+    df = _gap_df(prev_close=24000.0, today_open=24000.0 * (1 - 0.012))
+    orch.feed.get_5min_candles = MagicMock(return_value=df)
+    is_gap_day, info = orch._detect_gap_day()
+    assert is_gap_day is False
+    assert info["decision"] == "NORMAL"
+
+
+def test_gap_detection_direction_down_only_ignores_positive(orch) -> None:
+    """direction=down, +1.2% gap → NOT a gap day."""
+    orch.config = _make_config(
+        time_rules=_make_time_rules(
+            gap_day_enabled=True, gap_day_direction="down"
+        )
+    )
+    df = _gap_df(prev_close=24000.0, today_open=24000.0 * (1 + 0.012))
+    orch.feed.get_5min_candles = MagicMock(return_value=df)
+    is_gap_day, info = orch._detect_gap_day()
+    assert is_gap_day is False
+    assert info["decision"] == "NORMAL"
+
+
+def test_gap_log_jsonl_written_when_disabled(orch) -> None:
+    """Math is logged even when toggle is OFF."""
+    orch.config = _make_config(
+        time_rules=_make_time_rules(gap_day_enabled=False)
+    )
+    df = _gap_df(prev_close=24000.0, today_open=24480.0)
+    orch.feed.get_5min_candles = MagicMock(return_value=df)
+    orch._detect_gap_day()
+    assert orch.gap_log_path.exists()
+    lines = orch.gap_log_path.read_text(encoding="utf-8").strip().splitlines()
+    assert len(lines) == 1
+    import json as _json
+    rec = _json.loads(lines[0])
+    assert rec["enabled"] is False
+    assert rec["decision"] == "GAP_DETECTED_BUT_DISABLED"
+
+
+def test_gap_log_jsonl_appends_not_truncates(orch) -> None:
+    """Two consecutive runs produce 2 lines in gap_log.jsonl."""
+    orch.config = _make_config(
+        time_rules=_make_time_rules(gap_day_enabled=True)
+    )
+    df = _gap_df(prev_close=24000.0, today_open=24050.0)
+    orch.feed.get_5min_candles = MagicMock(return_value=df)
+    orch._detect_gap_day()
+    orch._detect_gap_day()
+    lines = orch.gap_log_path.read_text(encoding="utf-8").strip().splitlines()
+    assert len(lines) == 2
+
+
+def test_gap_info_decision_field_correct(orch) -> None:
+    """Decision field is 'GAP_DAY' | 'NORMAL' | 'GAP_DETECTED_BUT_DISABLED'."""
+    # NORMAL
+    orch.config = _make_config(
+        time_rules=_make_time_rules(gap_day_enabled=True)
+    )
+    orch.feed.get_5min_candles = MagicMock(
+        return_value=_gap_df(prev_close=24000.0, today_open=24050.0)
+    )
+    _, info = orch._detect_gap_day()
+    assert info["decision"] == "NORMAL"
+
+    # GAP_DAY
+    orch.gap_log_path.unlink(missing_ok=True)
+    orch.feed.get_5min_candles = MagicMock(
+        return_value=_gap_df(prev_close=24000.0, today_open=24480.0)
+    )
+    _, info = orch._detect_gap_day()
+    assert info["decision"] == "GAP_DAY"
+
+    # GAP_DETECTED_BUT_DISABLED
+    orch.gap_log_path.unlink(missing_ok=True)
+    orch.config = _make_config(
+        time_rules=_make_time_rules(gap_day_enabled=False)
+    )
+    orch.feed.get_5min_candles = MagicMock(
+        return_value=_gap_df(prev_close=24000.0, today_open=24480.0)
+    )
+    _, info = orch._detect_gap_day()
+    assert info["decision"] == "GAP_DETECTED_BUT_DISABLED"
 
 
 # ----------------------------------------------------------------------

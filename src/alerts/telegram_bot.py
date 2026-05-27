@@ -92,7 +92,7 @@ class TelegramAlerter:
     # ----- private formatters -----
 
     def _format_startup(self, c: dict) -> str:
-        gap_str = " | GAP DAY (10:15 start)" if c.get("is_gap_day") else ""
+        gap_line = self._format_gap_line(c.get("gap_info", {}))
         return (
             "🚀 SHORT COVER CASCADE BOT STARTED\n"
             "─────────────────────────────\n"
@@ -100,10 +100,42 @@ class TelegramAlerter:
             f"Active broker: {c['broker']}\n"
             f"Mode: alert={c['alert_mode']} | order={c['order_place_mode']} | "
             f"paper={c['paper_trade_mode']}\n"
-            f"Instruments: {c['instruments']}{gap_str}\n"
+            f"Instruments: {c['instruments']}\n"
             f"India VIX: {c['vix']:.2f} ({c['vix_regime']})\n"
             f"Lot sizes: NIFTY={c['nifty_lot']}, BankNifty={c['banknifty_lot']}\n"
+            f"\n{gap_line}\n"
             "─────────────────────────────"
+        )
+
+    def _format_gap_line(self, gap_info: dict) -> str:
+        """Format the gap status block — always shown at startup."""
+        if not gap_info:
+            return "Gap status: unknown"
+
+        per_sym = gap_info.get("per_symbol", {})
+        nifty_pct = per_sym.get("NIFTY", {}).get("gap_pct")
+        bn_pct = per_sym.get("BANKNIFTY", {}).get("gap_pct")
+        threshold = gap_info.get("threshold_pct", 1.0)
+        direction = gap_info.get("direction", "both")
+        enabled = gap_info.get("enabled", False)
+        decision = gap_info.get("decision", "NORMAL")
+
+        nifty_str = f"{nifty_pct:+.2f}%" if nifty_pct is not None else "N/A"
+        bn_str = f"{bn_pct:+.2f}%" if bn_pct is not None else "N/A"
+
+        if decision == "GAP_DAY":
+            verdict = "⚠️ GAP DAY — 10:15 start"
+        elif decision == "GAP_DETECTED_BUT_DISABLED":
+            verdict = f"⚠ Gap >{threshold}% but rule OFF — 9:45 start"
+        else:
+            verdict = "✓ Normal day — 9:45 start"
+
+        toggle_str = "ON" if enabled else "OFF"
+        return (
+            f"📈 Gap status (threshold {threshold}%, dir={direction}, "
+            f"toggle={toggle_str}):\n"
+            f"  NIFTY: {nifty_str} | BankNifty: {bn_str}\n"
+            f"  {verdict}"
         )
 
     def _format_signal(self, s: dict) -> str:

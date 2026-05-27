@@ -40,6 +40,7 @@ from src.alerts.signal_logger import SignalLogger
 from src.alerts.telegram_bot import TelegramAlerter
 from src.conditions.all_conditions import check_all_conditions
 from src.config_loader import load_config, load_secrets
+from src.dashboard.remarks import generate_remark_and_tags, telegram_short_remark
 from src.data.expiry_resolver import get_next_expiry, is_expiry_day
 from src.data.feed_factory import connect_feed
 from src.data.strike_selector import get_alert_strikes
@@ -90,6 +91,8 @@ class Orchestrator:
         self.session_alert_count = 0
         self.session_nifty_alerts = 0
         self.session_bn_alerts = 0
+        # Phase 5.2: 15:35 auto-trigger guard (set once per session).
+        self.dashboard_synced = False
 
     # =====================================================================
     # Setup
@@ -320,15 +323,32 @@ class Orchestrator:
 
         gap_info["any_triggered"] = any_triggered
 
-        if any_triggered and enabled:
-            gap_info["decision"] = "GAP_DAY"
-            is_gap_day = True
-        elif any_triggered and not enabled:
-            gap_info["decision"] = "GAP_DETECTED_BUT_DISABLED"
-            is_gap_day = False
+        # Phase 5.2: directional labels. The per-symbol ``triggers`` flag
+        # already honours ``direction`` ("both" / "up" / "down"), so we
+        # use *that* to gate which side counts — a -1.2% gap with
+        # direction="up" leaves triggers=False and produces NORMAL.
+        any_up = any(
+            info.get("triggers")
+            and (info.get("gap_pct") or 0.0) >= threshold
+            for info in gap_info["per_symbol"].values()
+        )
+        any_down = any(
+            info.get("triggers")
+            and (info.get("gap_pct") or 0.0) <= -threshold
+            for info in gap_info["per_symbol"].values()
+        )
+
+        if any_up and enabled:
+            gap_info["decision"] = "GAP_UP"
+        elif any_down and enabled:
+            gap_info["decision"] = "GAP_DOWN"
+        elif any_up:
+            gap_info["decision"] = "GAP_UP_DISABLED"
+        elif any_down:
+            gap_info["decision"] = "GAP_DOWN_DISABLED"
         else:
             gap_info["decision"] = "NORMAL"
-            is_gap_day = False
+        is_gap_day = gap_info["decision"] in ("GAP_UP", "GAP_DOWN")
 
         # Always log gap math, regardless of toggle state.
         self._log_gap(gap_info)
@@ -567,8 +587,16 @@ class Orchestrator:
             "all_passed": result.all_passed,
             "summary": result.short_summary(),
             "reasons": {r.name: r.reason for r in result.results},
+            # Phase 5.2: option distance above its own VWAP at this candle.
+            "opt_above_vwap_pct": float(result.opt_above_vwap_pct),
         }
         self.signal_logger.log_signal(signal_record)
+
+        # Phase 5.2: if the only failing condition is C1 because the option
+        # sits in the extended zone (between c1_max_distance_pct and
+        # c1_extended_zone_max_pct above VWAP), log a "would_alert_extended"
+        # event so we can study these signals later. We do NOT fire alerts.
+        self._maybe_log_extended_zone(signal_record, result)
 
         if not result.all_passed:
             return
@@ -577,6 +605,34 @@ class Orchestrator:
             symbol, strike_choice, option_type, expiry,
             lot_size, snapshot, signal_record, now,
         )
+
+    def _maybe_log_extended_zone(self, signal_record: dict, result) -> None:
+        """Phase 5.2: capture 4/5 scans where C1's late-entry filter is the
+        only blocker AND the option is within the extended zone window.
+        """
+        cfg = self.config
+        try:
+            log_enabled = cfg.logging.log_extended_zone
+            zone_enabled = cfg.conditions.c1_extended_zone_enabled
+            max_pct = cfg.conditions.c1_max_distance_pct
+            ext_max = cfg.conditions.c1_extended_zone_max_pct
+        except AttributeError:
+            return
+
+        if not (log_enabled and zone_enabled):
+            return
+        if result.all_passed:
+            return
+        if result.failed_conditions() != ["C1"]:
+            return
+
+        pct = float(signal_record.get("opt_above_vwap_pct") or 0.0)
+        if not (max_pct < pct <= ext_max):
+            return
+
+        extended = dict(signal_record)
+        extended["event_type"] = "would_alert_extended"
+        self.signal_logger.log_signal(extended)
 
     def _fire_alert(
         self,
@@ -640,6 +696,41 @@ class Orchestrator:
                 "strike": strike_choice.strike,
                 "relation": strike_choice.relation,
             }
+
+            # Phase 5.2: generate the human-readable remark and structured
+            # ML tags. The Telegram short form is derived from the remark.
+            try:
+                context = {
+                    "time_hhmm": now.strftime("%H:%M"),
+                    "vix_regime": self.session_vix_info.regime.value,
+                    "is_expiry_day": is_expiry,
+                    "daily_sl_count": self.state.get_daily_sl_count(),
+                    "daily_alert_count": self.session_alert_count,
+                }
+                snapshot_dict = {
+                    "option_close": snapshot.close,
+                    "option_vwap": snapshot.vwap,
+                    "rsi": snapshot.rsi,
+                    "rsi_ma": snapshot.rsi_ma,
+                    "oi": snapshot.oi,
+                    "oi_ma": snapshot.oi_ma,
+                    "volume": snapshot.volume,
+                    "volume_ma": snapshot.volume_ma,
+                    "opt_above_vwap_pct": signal_record.get(
+                        "opt_above_vwap_pct", 0.0
+                    ),
+                }
+                bot_remark, bot_tags = generate_remark_and_tags(
+                    snapshot_dict, context
+                )
+                alert_data["bot_remark"] = bot_remark
+                alert_data["bot_tags"] = bot_tags
+                alert_data["telegram_short_remark"] = telegram_short_remark(bot_remark)
+            except Exception as e:
+                logger.warning(f"Bot remark generation failed: {e}")
+                alert_data.setdefault("bot_remark", "")
+                alert_data.setdefault("bot_tags", "")
+                alert_data.setdefault("telegram_short_remark", "")
 
             # Durability first: JSONL line lands on disk before Telegram fires.
             self.signal_logger.log_alert(alert_data)
@@ -740,6 +831,42 @@ class Orchestrator:
             return
         self.telegram.send_eod_summary(self._compute_eod_summary())
 
+    def _maybe_run_dashboard_sync(self, now: datetime) -> None:
+        """Phase 5.2 — run the dashboard pipeline at 15:35 IST.
+
+        Best-effort: catches and logs any error, sends a Telegram, and
+        sets the flag anyway so we don't retry every tick.
+        """
+        try:
+            enabled = self.config.dashboard.auto_trigger_at_1535
+        except AttributeError:
+            return
+        if not enabled or self.dashboard_synced:
+            return
+        if now.weekday() >= 5 or now.time() < dt_time(15, 35):
+            return
+
+        logger.info("Auto-triggering dashboard update at 15:35")
+        try:
+            from src.dashboard import (
+                sync_excel_notes_to_parquet,
+                sync_jsonl_to_parquet,
+                update_dashboard,
+            )
+            sync_jsonl_to_parquet()
+            update_dashboard()
+            sync_excel_notes_to_parquet()
+            logger.info("Dashboard auto-update complete")
+        except Exception as e:
+            logger.exception(f"Dashboard auto-update failed: {e}")
+            try:
+                if self.telegram is not None:
+                    self.telegram.send_exception(f"Dashboard update failed:\n{e}")
+            except Exception:
+                pass
+        finally:
+            self.dashboard_synced = True
+
     def _compute_eod_summary(self) -> dict:
         """Build EOD summary from in-memory counters (never re-reads JSONL)."""
         today_str = datetime.now(IST).date().isoformat()
@@ -775,6 +902,10 @@ class Orchestrator:
                     self.send_eod()
                     eod_sent = True
                     logger.info("EOD summary sent. Bot will exit at market close.")
+
+                # Phase 5.2: auto-trigger dashboard at 15:35 IST on a
+                # weekday. Best-effort — failures never block the loop.
+                self._maybe_run_dashboard_sync(now)
 
                 if now.time() >= MARKET_CLOSE_TIME:
                     logger.info("Market closed. Bot exiting.")

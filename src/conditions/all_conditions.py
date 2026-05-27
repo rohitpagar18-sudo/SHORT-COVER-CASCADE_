@@ -6,6 +6,10 @@ sub-result with its reason string. The orchestrator deliberately runs
 all five conditions (no short-circuit) so logs can show the full
 combination that failed.
 
+Phase 5.2: ``AllConditionsResult`` also carries the C1 distance
+``opt_above_vwap_pct`` so the orchestrator can log it on every scan
+record and decide whether to write an extended-zone event.
+
 The result object is structured for direct serialisation into the
 signals log in Phase 5.
 """
@@ -37,6 +41,7 @@ class AllConditionsResult:
 
     all_passed: bool
     results: list[ConditionResult] = field(default_factory=list)
+    opt_above_vwap_pct: float = 0.0  # Phase 5.2: C1 distance for logging.
 
     def failed_conditions(self) -> list[str]:
         """Names of conditions that failed, in C0–C4 order."""
@@ -60,6 +65,18 @@ class AllConditionsResult:
         return None
 
 
+def _c1_max_distance(config) -> float:
+    """Phase 5.2: prefer config.conditions.c1_max_distance_pct (new),
+    fall back to config.strike.late_entry_threshold_percent (legacy).
+    """
+    conditions = getattr(config, "conditions", None)
+    if conditions is not None:
+        val = getattr(conditions, "c1_max_distance_pct", None)
+        if val is not None:
+            return float(val)
+    return float(config.strike.late_entry_threshold_percent)
+
+
 def check_all_conditions(
     option_snapshot: IndicatorSnapshot,
     spot_close: float,
@@ -76,24 +93,23 @@ def check_all_conditions(
         spot_vwap: spot session VWAP.
         option_type: ``"CE"`` or ``"PE"``.
         config: ``AppConfig`` from ``src.config_loader``. Provides the
-            ``strike.late_entry_threshold_percent`` and
+            ``conditions.c1_max_distance_pct`` (Phase 5.2) and
             ``conditions.c3_rsi_min`` / ``conditions.c3_rsi_max``
             thresholds — never hardcoded.
 
     Returns:
-        ``AllConditionsResult`` listing each C0–C4 outcome. We do NOT
-        short-circuit on the first failure: logs from Phase 5 need to
-        show the exact combination that failed.
+        ``AllConditionsResult`` listing each C0–C4 outcome plus the
+        C1 distance pct. We do NOT short-circuit on the first failure:
+        logs from Phase 5 need to show the exact combination that failed.
     """
     results: list[ConditionResult] = []
 
     ok, reason = check_c0(spot_close, spot_vwap, option_type)
     results.append(ConditionResult("C0", ok, reason))
 
-    ok, reason = check_c1(
-        option_snapshot, config.strike.late_entry_threshold_percent
-    )
-    results.append(ConditionResult("C1", ok, reason))
+    c1_max = _c1_max_distance(config)
+    c1_ok, c1_reason, opt_above_vwap_pct = check_c1(option_snapshot, c1_max)
+    results.append(ConditionResult("C1", c1_ok, c1_reason))
 
     ok, reason = check_c2(option_snapshot)
     results.append(ConditionResult("C2", ok, reason))
@@ -109,4 +125,8 @@ def check_all_conditions(
     results.append(ConditionResult("C4", ok, reason))
 
     all_passed = all(r.passed for r in results)
-    return AllConditionsResult(all_passed=all_passed, results=results)
+    return AllConditionsResult(
+        all_passed=all_passed,
+        results=results,
+        opt_above_vwap_pct=opt_above_vwap_pct,
+    )

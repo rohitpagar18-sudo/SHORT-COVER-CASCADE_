@@ -98,42 +98,46 @@ def test_c0_invalid_option_type() -> None:
 
 def test_c1_green_above_vwap_passes() -> None:
     s = make_snapshot(close=110, vwap=100, open=100, is_green=True)
-    ok, reason = check_c1(s, late_entry_threshold_pct=30)
+    ok, reason, pct = check_c1(s, late_entry_threshold_pct=30)
     assert ok is True
     assert "PASS" in reason
+    assert pct == pytest.approx(10.0)
 
 
 def test_c1_red_candle_fails() -> None:
     s = make_snapshot(close=95, vwap=100, open=100, is_green=False)
-    ok, reason = check_c1(s, late_entry_threshold_pct=30)
+    ok, reason, pct = check_c1(s, late_entry_threshold_pct=30)
     assert ok is False
     assert "RED" in reason
+    # pct still computed even on failure (Phase 5.2 needs it for logging).
+    assert pct == pytest.approx(-5.0)
 
 
 def test_c1_below_vwap_fails() -> None:
     s = make_snapshot(close=99, vwap=100, open=98, is_green=True)
-    ok, reason = check_c1(s, late_entry_threshold_pct=30)
+    ok, reason, _pct = check_c1(s, late_entry_threshold_pct=30)
     assert ok is False
     assert "not above VWAP" in reason
 
 
 def test_c1_equal_vwap_fails() -> None:
     s = make_snapshot(close=100, vwap=100, open=98, is_green=True)
-    ok, reason = check_c1(s, late_entry_threshold_pct=30)
+    ok, _reason, _pct = check_c1(s, late_entry_threshold_pct=30)
     assert ok is False
 
 
 def test_c1_late_entry_fails() -> None:
     # 35% above VWAP (greater than 30% threshold) — should fail
     s = make_snapshot(close=135, vwap=100, open=100, is_green=True)
-    ok, reason = check_c1(s, late_entry_threshold_pct=30)
+    ok, reason, pct = check_c1(s, late_entry_threshold_pct=30)
     assert ok is False
     assert "LATE ENTRY" in reason
+    assert pct == pytest.approx(35.0)
 
 
 def test_c1_just_under_late_entry_passes() -> None:
     s = make_snapshot(close=129, vwap=100, open=100, is_green=True)
-    ok, _ = check_c1(s, late_entry_threshold_pct=30)
+    ok, _reason, _pct = check_c1(s, late_entry_threshold_pct=30)
     assert ok is True
 
 

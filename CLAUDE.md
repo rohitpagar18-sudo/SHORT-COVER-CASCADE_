@@ -222,6 +222,42 @@ revisit without explicit user approval.
 - Toggle: config.time_rules.gap_day_enabled (default ON)
 - Reason: VWAP gets dominated by opening candles on gap days
 
+## Phase 5.2 Decisions (Strategy Dashboard + ML Data)
+
+### File Organization
+- Excel: quarterly rotation → logs/dashboards/dashboard_YYYY_QN.xlsx
+- Parquet: monthly → data/scc_data_YYYY-MM.parquet
+- Both regenerable from JSONL — they are gitignored
+- data/schema.md IS committed (documentation)
+
+### Gap Decision Labels (directional)
+- NORMAL: no gap above threshold
+- GAP_UP: positive gap, threshold breached, rule enabled
+- GAP_DOWN: negative gap, threshold breached, rule enabled
+- GAP_UP_DISABLED: positive gap, threshold breached, rule OFF
+- GAP_DOWN_DISABLED: negative gap, threshold breached, rule OFF
+
+### C1 Filter (option-above-VWAP late-entry filter)
+- Now configurable: config.conditions.c1_max_distance_pct (default 30)
+- Strikes with opt 30-50% above VWAP logged as
+  event_type="would_alert_extended" but DO NOT fire alerts
+- This captures data for future C1 threshold tuning
+
+### Bot Remarks (two-pass)
+- bot_remark: entry-time observation, 3-5 short clauses, ~25 words
+- bot_tags: structured comma-separated tags for ML queries
+- outcome_remark: written after Order Status is filled (rule-based)
+- user_notes: free-form, manual
+
+### Outcome Categories
+- TP2_HIT (strong green) | TP1_HIT (light green)
+- SL_HIT (red) | WOULD_SKIP (grey) | PARTIAL (yellow)
+
+### Update Triggers
+- Auto: orchestrator calls dashboard sync at 15:35 IST after EOD
+- Manual: update_dashboard.bat anytime
+- Sync is idempotent and best-effort (never blocks bot runtime)
+
 ## Project Structure
 C:\trading\short-cover-cascade\
 ├── docs\                — Strategy doc, indicator values, phase docs (read-only)

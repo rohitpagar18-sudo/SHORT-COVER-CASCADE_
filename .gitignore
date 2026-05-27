@@ -9,3 +9,10 @@ venv/
 *.egg-info/
 .vscode/
 .claude/
+
+# Phase 5.2 — Dashboard outputs (regenerable from JSONL)
+logs/dashboards/
+data/scc_data_*.parquet
+
+# But keep schema documentation
+!data/schema.md

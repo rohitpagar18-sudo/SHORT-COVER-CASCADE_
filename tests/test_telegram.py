@@ -145,11 +145,11 @@ def test_format_startup_always_includes_gap_line(
         _startup_payload(gap_info=_gap_info(decision="NORMAL", enabled=False))
     )
     assert "Gap status" in msg_off
-    # Toggle ON, gap day.
+    # Toggle ON, gap up day.
     msg_on = alerter._format_startup(
         _startup_payload(
             gap_info=_gap_info(
-                decision="GAP_DAY", enabled=True, nifty_pct=1.5
+                decision="GAP_UP", enabled=True, nifty_pct=1.5
             )
         )
     )
@@ -168,14 +168,25 @@ def test_format_gap_line_shows_normal_when_under_threshold(
     assert "toggle=ON" in line
 
 
-def test_format_gap_line_shows_gap_day_when_triggered_and_enabled(
+def test_format_gap_line_shows_gap_up_when_triggered_and_enabled(
     monkeypatch, telegram_env
 ) -> None:
     alerter, _ = _make_alerter(monkeypatch)
     line = alerter._format_gap_line(
-        _gap_info(decision="GAP_DAY", enabled=True, nifty_pct=1.5)
+        _gap_info(decision="GAP_UP", enabled=True, nifty_pct=1.5)
     )
-    assert "GAP DAY" in line
+    assert "GAP UP" in line
+    assert "10:15 start" in line
+
+
+def test_format_gap_line_shows_gap_down_when_triggered_and_enabled(
+    monkeypatch, telegram_env
+) -> None:
+    alerter, _ = _make_alerter(monkeypatch)
+    line = alerter._format_gap_line(
+        _gap_info(decision="GAP_DOWN", enabled=True, nifty_pct=-1.5)
+    )
+    assert "GAP DOWN" in line
     assert "10:15 start" in line
 
 
@@ -185,7 +196,7 @@ def test_format_gap_line_shows_disabled_warning_when_breached_but_off(
     alerter, _ = _make_alerter(monkeypatch)
     line = alerter._format_gap_line(
         _gap_info(
-            decision="GAP_DETECTED_BUT_DISABLED",
+            decision="GAP_UP_DISABLED",
             enabled=False,
             nifty_pct=1.5,
         )

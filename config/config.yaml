@@ -161,6 +161,15 @@ conditions:
   c3_rsi_min: 50                       # RSI must be ABOVE this (default 50)
   c3_rsi_max: 80                       # RSI must be BELOW this (overbought guard)
 
+  # C1 late-entry filter (Phase 5.2)
+  c1_max_distance_pct: 30              # Reject alerts where option >30% above own VWAP.
+                                       # Default 30% per strategy doc.
+                                       # Strikes 30-50% above VWAP logged as
+                                       # event_type="would_alert_extended" but do NOT
+                                       # fire alerts — captures data for future tuning.
+  c1_extended_zone_enabled: ON         # Log "would_alert_extended" scans
+  c1_extended_zone_max_pct: 50         # Upper bound for extended zone logging
+
 
 # ---------- TELEGRAM ALERTS (Phase 5) ----------
 # Configure which alerts the bot sends to your Telegram chat.
@@ -178,6 +187,25 @@ logging:
   log_level: INFO                      # DEBUG / INFO / WARNING / ERROR
   log_every_signal_check: ON           # Log every condition evaluation (Phase 6 backtest data)
   log_indicator_values: ON             # Include VWAP/RSI/MAs in each log entry
+  log_extended_zone: ON                # Phase 5.2: write "would_alert_extended" events
+                                       # for option distance 30-50% above VWAP
+
+
+# ---------- DASHBOARD (Phase 5.2) ----------
+# Quarterly Excel + monthly Parquet ML store.
+dashboard:
+  auto_trigger_at_1535: ON             # Auto-sync at 15:35 IST after EOD summary
+  excel_rotation: "quarterly"          # Excel files rotate per quarter
+  parquet_rotation: "monthly"          # Parquet files split monthly
+  send_eod_dashboard_link: OFF         # Future: Telegram link to .xlsx
+
+  # Outcome categories user can mark in the Excel Order Place sheet
+  outcome_categories:
+    - TP2_HIT
+    - TP1_HIT
+    - SL_HIT
+    - PARTIAL
+    - WOULD_SKIP
 
 
 # ---------- BOT BEHAVIOR ----------

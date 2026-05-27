@@ -123,9 +123,20 @@ class TelegramAlerter:
         nifty_str = f"{nifty_pct:+.2f}%" if nifty_pct is not None else "N/A"
         bn_str = f"{bn_pct:+.2f}%" if bn_pct is not None else "N/A"
 
-        if decision == "GAP_DAY":
+        # Phase 5.2: directional gap labels. Older labels (GAP_DAY,
+        # GAP_DETECTED_BUT_DISABLED) are still accepted to keep replay /
+        # backward-compat working.
+        if decision == "GAP_UP":
+            verdict = "⚠️ GAP UP — 10:15 start"
+        elif decision == "GAP_DOWN":
+            verdict = "⚠️ GAP DOWN — 10:15 start"
+        elif decision == "GAP_UP_DISABLED":
+            verdict = "⚠ GAP UP detected (rule OFF) — 9:45 start"
+        elif decision == "GAP_DOWN_DISABLED":
+            verdict = "⚠ GAP DOWN detected (rule OFF) — 9:45 start"
+        elif decision == "GAP_DAY":  # legacy
             verdict = "⚠️ GAP DAY — 10:15 start"
-        elif decision == "GAP_DETECTED_BUT_DISABLED":
+        elif decision == "GAP_DETECTED_BUT_DISABLED":  # legacy
             verdict = f"⚠ Gap >{threshold}% but rule OFF — 9:45 start"
         else:
             verdict = "✓ Normal day — 9:45 start"
@@ -139,6 +150,10 @@ class TelegramAlerter:
         )
 
     def _format_signal(self, s: dict) -> str:
+        # Phase 5.2: Insight line, populated only if the orchestrator
+        # generated a short remark. Old callers (tests) still work.
+        insight = (s.get("telegram_short_remark") or "").strip()
+        insight_line = f"\nInsight: {insight}\n" if insight else "\n"
         return (
             "🚨 SHORT COVER CASCADE SIGNAL\n"
             "─────────────────────────────\n"
@@ -159,7 +174,7 @@ class TelegramAlerter:
             f"Risk per unit: ₹{s['risk_per_unit']:.2f}\n"
             f"Lots: {s['lots']} → Total Risk: ₹{s['total_risk']:,.2f}\n"
             f"({s['lots']} × {s['lot_size']} × ₹{s['risk_per_unit']:.2f})\n"
-            "\n"
+            f"{insight_line}"
             "C0 ✓ C1 ✓ C2 ✓ C3 ✓ C4 ✓\n"
             "─────────────────────────────\n"
             "ALERT ONLY — no order placed"

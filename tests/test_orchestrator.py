@@ -378,13 +378,13 @@ def test_gap_detection_disabled_toggle_returns_false(orch) -> None:
     orch.config = _make_config(
         time_rules=_make_time_rules(gap_day_enabled=False)
     )
-    # 2% gap — would trigger if enabled.
+    # 2% gap up — would trigger if enabled.
     df = _gap_df(prev_close=24000.0, today_open=24480.0)
     orch.feed.get_5min_candles = MagicMock(return_value=df)
     is_gap_day, info = orch._detect_gap_day()
     assert is_gap_day is False
     assert info["enabled"] is False
-    assert info["decision"] == "GAP_DETECTED_BUT_DISABLED"
+    assert info["decision"] == "GAP_UP_DISABLED"
 
 
 def test_gap_detection_enabled_under_threshold_returns_false(orch) -> None:
@@ -410,7 +410,7 @@ def test_gap_detection_enabled_over_threshold_returns_true(orch) -> None:
     orch.feed.get_5min_candles = MagicMock(return_value=df)
     is_gap_day, info = orch._detect_gap_day()
     assert is_gap_day is True
-    assert info["decision"] == "GAP_DAY"
+    assert info["decision"] == "GAP_UP"
     assert info["any_triggered"] is True
 
 
@@ -426,7 +426,7 @@ def test_gap_detection_symmetric_negative_triggers(orch) -> None:
     orch.feed.get_5min_candles = MagicMock(return_value=df)
     is_gap_day, info = orch._detect_gap_day()
     assert is_gap_day is True
-    assert info["decision"] == "GAP_DAY"
+    assert info["decision"] == "GAP_DOWN"
 
 
 def test_gap_detection_direction_up_only_ignores_negative(orch) -> None:
@@ -471,7 +471,7 @@ def test_gap_log_jsonl_written_when_disabled(orch) -> None:
     import json as _json
     rec = _json.loads(lines[0])
     assert rec["enabled"] is False
-    assert rec["decision"] == "GAP_DETECTED_BUT_DISABLED"
+    assert rec["decision"] == "GAP_UP_DISABLED"
 
 
 def test_gap_log_jsonl_appends_not_truncates(orch) -> None:
@@ -488,7 +488,7 @@ def test_gap_log_jsonl_appends_not_truncates(orch) -> None:
 
 
 def test_gap_info_decision_field_correct(orch) -> None:
-    """Decision field is 'GAP_DAY' | 'NORMAL' | 'GAP_DETECTED_BUT_DISABLED'."""
+    """Phase 5.2: directional labels — GAP_UP / GAP_DOWN / *_DISABLED / NORMAL."""
     # NORMAL
     orch.config = _make_config(
         time_rules=_make_time_rules(gap_day_enabled=True)
@@ -499,15 +499,15 @@ def test_gap_info_decision_field_correct(orch) -> None:
     _, info = orch._detect_gap_day()
     assert info["decision"] == "NORMAL"
 
-    # GAP_DAY
+    # GAP_UP
     orch.gap_log_path.unlink(missing_ok=True)
     orch.feed.get_5min_candles = MagicMock(
         return_value=_gap_df(prev_close=24000.0, today_open=24480.0)
     )
     _, info = orch._detect_gap_day()
-    assert info["decision"] == "GAP_DAY"
+    assert info["decision"] == "GAP_UP"
 
-    # GAP_DETECTED_BUT_DISABLED
+    # GAP_UP_DISABLED — rule OFF but a positive breach still occurred.
     orch.gap_log_path.unlink(missing_ok=True)
     orch.config = _make_config(
         time_rules=_make_time_rules(gap_day_enabled=False)
@@ -516,7 +516,7 @@ def test_gap_info_decision_field_correct(orch) -> None:
         return_value=_gap_df(prev_close=24000.0, today_open=24480.0)
     )
     _, info = orch._detect_gap_day()
-    assert info["decision"] == "GAP_DETECTED_BUT_DISABLED"
+    assert info["decision"] == "GAP_UP_DISABLED"
 
 
 # ----------------------------------------------------------------------

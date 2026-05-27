@@ -308,10 +308,24 @@ class ConditionsConfig(_Base):
     c3_rsi_min: float = Field(ge=0, le=100)
     c3_rsi_max: float = Field(ge=0, le=100)
 
+    # Phase 5.2: C1 late-entry filter (configurable + extended zone logging).
+    c1_max_distance_pct: float = Field(default=30.0, gt=0)
+    c1_extended_zone_enabled: bool = Field(default=True)
+    c1_extended_zone_max_pct: float = Field(default=50.0, gt=0)
+
+    @field_validator("c1_extended_zone_enabled", mode="before")
+    @classmethod
+    def _onoff(cls, v: Any) -> Any:
+        return _onoff_to_bool(v)
+
     @model_validator(mode="after")
     def _min_lt_max(self) -> "ConditionsConfig":
         if self.c3_rsi_min >= self.c3_rsi_max:
             raise ValueError("c3_rsi_min must be < c3_rsi_max")
+        if self.c1_extended_zone_max_pct <= self.c1_max_distance_pct:
+            raise ValueError(
+                "c1_extended_zone_max_pct must be > c1_max_distance_pct"
+            )
         return self
 
 
@@ -345,8 +359,36 @@ class LoggingConfig(_Base):
     log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"]
     log_every_signal_check: bool
     log_indicator_values: bool
+    log_extended_zone: bool = Field(default=True)
 
-    @field_validator("log_every_signal_check", "log_indicator_values", mode="before")
+    @field_validator(
+        "log_every_signal_check",
+        "log_indicator_values",
+        "log_extended_zone",
+        mode="before",
+    )
+    @classmethod
+    def _onoff(cls, v: Any) -> Any:
+        return _onoff_to_bool(v)
+
+
+# ---------- DASHBOARD (Phase 5.2) ----------
+
+
+class DashboardConfig(_Base):
+    auto_trigger_at_1535: bool = Field(default=True)
+    excel_rotation: Literal["quarterly"] = Field(default="quarterly")
+    parquet_rotation: Literal["monthly"] = Field(default="monthly")
+    send_eod_dashboard_link: bool = Field(default=False)
+    outcome_categories: list[str] = Field(
+        default_factory=lambda: ["TP2_HIT", "TP1_HIT", "SL_HIT", "PARTIAL", "WOULD_SKIP"]
+    )
+
+    @field_validator(
+        "auto_trigger_at_1535",
+        "send_eod_dashboard_link",
+        mode="before",
+    )
     @classmethod
     def _onoff(cls, v: Any) -> Any:
         return _onoff_to_bool(v)
@@ -386,6 +428,7 @@ class AppConfig(_Base):
     telegram: TelegramConfig
     logging: LoggingConfig
     bot: BotConfig
+    dashboard: DashboardConfig = Field(default_factory=DashboardConfig)
 
     @model_validator(mode="after")
     def _order_strikes_require_when_order_place_on(self) -> "AppConfig":

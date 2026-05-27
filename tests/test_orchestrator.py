@@ -633,3 +633,112 @@ def test_trigger_circuit_breaker_skips_telegram_when_disabled(orch) -> None:
     orch._trigger_circuit_breaker("test reason")
     orch.state.trigger_circuit_breaker.assert_called_once()
     orch.telegram.send_circuit_breaker.assert_not_called()
+
+
+# ----------------------------------------------------------------------
+# Phase 5.1.5: data_issue vs rejection / gap detection robustness
+# ----------------------------------------------------------------------
+
+
+def test_scan_strike_logs_data_issue_not_rejection_on_insufficient_lookback(
+    orch, monkeypatch,
+) -> None:
+    """When indicator calc raises 'Insufficient lookback', the orchestrator
+    must record a data_issue (not a rejection). Keeps rejection analytics
+    clean for mid-session bot starts where RSI MA hasn't warmed up.
+    """
+    import src.main as main_mod
+
+    strike_choice = _NS(
+        strike=24050,
+        relation="ATM",
+        instrument_key="DUMMY",
+        trading_symbol="NIFTY24050CE",
+    )
+    orch.state.can_re_enter = MagicMock(return_value=(True, ""))
+    orch.feed.get_5min_candles = MagicMock(return_value=pd.DataFrame())
+
+    def _raise_insufficient(_df):
+        raise ValueError(
+            "Insufficient lookback for indicators ['rsi_ma']; need 33 candles."
+        )
+
+    monkeypatch.setattr(main_mod, "get_latest_snapshot", _raise_insufficient)
+    orch._scan_strike(
+        "NIFTY", strike_choice, "CE", "2026-05-28", 65,
+        spot_close=24050.0, spot_vwap=24000.0, now=_dt(11, 30),
+    )
+
+    # Rejection logger must NOT have been called.
+    orch.signal_logger.log_rejection.assert_not_called()
+    # log_signal must have been called once with event_type='data_issue'.
+    orch.signal_logger.log_signal.assert_called_once()
+    record = orch.signal_logger.log_signal.call_args[0][0]
+    assert record["event_type"] == "data_issue"
+    assert record["issue_type"] == "INSUFFICIENT_LOOKBACK"
+    assert record["symbol"] == "NIFTY"
+    assert record["strike"] == 24050
+    assert "Insufficient" in record["issue_message"]
+
+
+def test_data_issue_skipped_when_logging_toggle_off(orch) -> None:
+    """log_every_signal_check OFF must suppress data_issue records too."""
+    orch.config.logging.log_every_signal_check = False
+    orch._log_data_issue(
+        "NIFTY", 24050, "CE", "INSUFFICIENT_LOOKBACK", "msg", _dt(11, 30)
+    )
+    orch.signal_logger.log_signal.assert_not_called()
+
+
+def test_gap_detection_succeeds_with_multi_day_candles(orch) -> None:
+    """At 11:30 mid-session start, a multi-day candle frame must still
+    produce a clean gap math result (not silently 'None%').
+    """
+    orch.config = _make_config(time_rules=_make_time_rules(gap_day_enabled=True))
+    today = datetime.now(IST).date()
+    from datetime import timedelta
+    prev = today - timedelta(days=1)
+    while prev.weekday() >= 5:
+        prev = prev - timedelta(days=1)
+
+    # 75 prev-day candles + 30 today candles (mid-session start at 11:30).
+    rows = []
+    for i in range(75):
+        ts = datetime(prev.year, prev.month, prev.day, 9, 15, tzinfo=IST) + \
+            timedelta(minutes=5 * i)
+        rows.append((ts, 24000.0, 24000.0))
+    for i in range(30):
+        ts = datetime(today.year, today.month, today.day, 9, 15, tzinfo=IST) + \
+            timedelta(minutes=5 * i)
+        rows.append((ts, 24120.0, 24120.0))
+    df = _make_candle_df(rows)
+    orch.feed.get_5min_candles = MagicMock(return_value=df)
+
+    is_gap_day, info = orch._detect_gap_day()
+    nifty = info["per_symbol"]["NIFTY"]
+    assert nifty["error"] is None
+    assert nifty["gap_pct"] is not None
+    # 24120 / 24000 = +0.5% → under 1% threshold.
+    assert nifty["gap_pct"] == pytest.approx(0.5, abs=0.01)
+    assert is_gap_day is False  # 0.5% < 1% threshold
+
+
+def test_gap_detection_logs_clear_error_on_no_prev_day_data(orch) -> None:
+    """If the candle frame has no prev-day rows, error message must
+    include explicit counts (not the old vague 'missing today or prev day').
+    """
+    today = datetime.now(IST).date()
+    from datetime import timedelta
+    rows = []
+    for i in range(10):
+        ts = datetime(today.year, today.month, today.day, 9, 15, tzinfo=IST) + \
+            timedelta(minutes=5 * i)
+        rows.append((ts, 24000.0, 24000.0))
+    df = _make_candle_df(rows)
+    orch.feed.get_5min_candles = MagicMock(return_value=df)
+
+    _, info = orch._detect_gap_day()
+    nifty_err = info["per_symbol"]["NIFTY"]["error"]
+    assert nifty_err is not None
+    assert "today_n=" in nifty_err
+    assert "prev_n=" in nifty_err

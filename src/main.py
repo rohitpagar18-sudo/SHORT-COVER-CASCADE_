@@ -253,9 +253,19 @@ class Orchestrator:
                 "error": None,
             }
             try:
-                candles = self._get_spot_candles(symbol)
+                # 600 candles ≈ 7 trading days — enough so that a mid-session
+                # bot start still sees prev day's close even if today's
+                # session contains all the recent candles.
+                candles = self._get_spot_candles(symbol, lookback_candles=600)
                 if candles is None or len(candles) < 2:
-                    sym_info["error"] = "insufficient candle data"
+                    sym_info["error"] = (
+                        f"insufficient candle data: total_n={0 if candles is None else len(candles)}"
+                    )
+                    logger.warning(
+                        f"Gap detection: {symbol} has fewer than 2 candles "
+                        f"(got {0 if candles is None else len(candles)}). "
+                        "Cannot compute gap."
+                    )
                     gap_info["per_symbol"][symbol] = sym_info
                     continue
 
@@ -263,7 +273,17 @@ class Orchestrator:
                 today_candles = candles[ts_dates == today_d]
                 prev_candles = candles[ts_dates < today_d]
                 if len(today_candles) == 0 or len(prev_candles) == 0:
-                    sym_info["error"] = "missing today or prev day candles"
+                    ts_min = candles["timestamp"].min()
+                    ts_max = candles["timestamp"].max()
+                    sym_info["error"] = (
+                        f"insufficient_data: today_n={len(today_candles)}, "
+                        f"prev_n={len(prev_candles)}"
+                    )
+                    logger.warning(
+                        f"Gap detection: {symbol} has {len(today_candles)} today candles, "
+                        f"{len(prev_candles)} prev-day candles. "
+                        f"Date range: {ts_min} to {ts_max}"
+                    )
                     gap_info["per_symbol"][symbol] = sym_info
                     continue
 
@@ -483,6 +503,26 @@ class Orchestrator:
         try:
             df = self.feed.get_5min_candles(strike_choice.instrument_key, 100)
             snapshot = get_latest_snapshot(df)
+        except (ValueError, RuntimeError) as e:
+            err_msg = str(e)
+            if "insufficient" in err_msg.lower():
+                # Technical data issue — NOT a strategy rejection. Keeps
+                # rejection analytics clean on mid-session bot starts where
+                # RSI MA hasn't had time to warm up.
+                logger.warning(
+                    f"Data insufficient for "
+                    f"{symbol} {strike_choice.strike}{option_type}: {err_msg}"
+                )
+                self._log_data_issue(
+                    symbol, strike_choice.strike, option_type,
+                    "INSUFFICIENT_LOOKBACK", err_msg, now,
+                )
+                return
+            logger.error(
+                f"Indicator computation failed: "
+                f"{symbol} {strike_choice.strike}{option_type}: {e}"
+            )
+            return
         except Exception as e:
             logger.error(
                 f"Indicator computation failed: "
@@ -644,19 +684,52 @@ class Orchestrator:
             }
         )
 
+    def _log_data_issue(
+        self,
+        symbol: str,
+        strike: int | None,
+        option_type: str,
+        issue_type: str,
+        msg: str,
+        now: datetime,
+    ) -> None:
+        """Record a technical data-availability issue in signals.jsonl.
+
+        These are NOT strategy rejections — they get their own
+        ``event_type='data_issue'`` so the Phase 5.2 dashboard can show
+        them in a separate bucket without polluting rejection counts.
+        """
+        if not self.config.logging.log_every_signal_check:
+            return
+        self.signal_logger.log_signal(
+            {
+                "timestamp_ist": now.isoformat(),
+                "event_type": "data_issue",
+                "symbol": symbol,
+                "strike": strike,
+                "option_type": option_type,
+                "issue_type": issue_type,
+                "issue_message": msg,
+            }
+        )
+
     def _trigger_circuit_breaker(self, reason: str) -> None:
         logger.warning(f"CIRCUIT BREAKER: {reason}")
         self.state.trigger_circuit_breaker(reason)
         if self.config.telegram.send_circuit_breaker_alerts:
             self.telegram.send_circuit_breaker(reason)
 
-    def _get_spot_candles(self, symbol: str) -> pd.DataFrame:
-        """Fetch spot index 5-min candles for the session."""
+    def _get_spot_candles(
+        self, symbol: str, lookback_candles: int = 100
+    ) -> pd.DataFrame:
+        """Fetch spot index 5-min candles. Defaults to ~1.5 days lookback;
+        callers like gap detection pass a larger value for multi-day history.
+        """
         if self.broker_name == "kite":
             tokens = {"NIFTY": "256265", "BANKNIFTY": "260105"}
-            return self.feed.get_5min_candles(tokens[symbol], 100)
+            return self.feed.get_5min_candles(tokens[symbol], lookback_candles)
         keys = {"NIFTY": "NSE_INDEX|Nifty 50", "BANKNIFTY": "NSE_INDEX|Nifty Bank"}
-        return self.feed.get_5min_candles(keys[symbol], 100)
+        return self.feed.get_5min_candles(keys[symbol], lookback_candles)
 
     # =====================================================================
     # End-of-day summary

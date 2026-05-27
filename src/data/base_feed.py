@@ -49,8 +49,15 @@ class BaseFeed(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def get_5min_candles(self, instrument_key: str, n_candles: int) -> pd.DataFrame:
-        """Return the most recent N 5-minute candles for an instrument.
+    def get_5min_candles(
+        self, instrument_key: str, lookback_candles: int = 100
+    ) -> pd.DataFrame:
+        """Return 5-min candles, fetching enough history to cover ``lookback_candles``.
+
+        Implementations may return MORE rows than requested but must not
+        return fewer (subject to broker history availability). Callers
+        rely on this for indicators like RSI MA that need 33+ candles
+        and for gap detection that needs prev-day's last candle.
 
         Returns:
             DataFrame with columns exactly:

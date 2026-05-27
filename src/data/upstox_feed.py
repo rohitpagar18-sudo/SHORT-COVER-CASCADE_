@@ -6,9 +6,10 @@ importing this module never loads the SDK when the active feed is Kite.
 
 from __future__ import annotations
 
+import math
 import os
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -182,14 +183,44 @@ class UpstoxFeed(BaseFeed):
             "lot_size": int(get("lot_size") or 0),
         }
 
-    def get_5min_candles(self, instrument_key: str, n_candles: int = 0) -> pd.DataFrame:
-        """Return 5-min candles for today's full intraday session.
+    def get_5min_candles(
+        self, instrument_key: str, lookback_candles: int = 100
+    ) -> pd.DataFrame:
+        """Return 5-min candles spanning enough history for ``lookback_candles``.
 
-        ``n_candles`` is kept for BaseFeed interface compatibility but
-        is a HINT only — this method ALWAYS returns the full session
-        Upstox's intraday endpoint exposes. Required for session-
-        anchored VWAP to compute from 09:15, not from a sliding window.
+        Upstox exposes today's session via the intraday endpoint and
+        prior trading days via the historical endpoint. This method
+        stitches the two together so that multi-day lookback is
+        available even on a mid-session bot start (needed for RSI MA,
+        gap detection, etc.). VWAP is session-anchored and filters to
+        today's portion in ``compute_session_vwap``, so extra historical
+        candles are safe.
+
+        Args:
+            instrument_key: Upstox instrument key (e.g. ``NSE_INDEX|Nifty 50``).
+            lookback_candles: HINT for how many 5-min candles to make
+                available. Defaults to 100 (≈ 1.5 trading days).
         """
+        days_back = max(2, math.ceil(max(lookback_candles, 1) / 75) + 1)
+        today = datetime.now(IST).date()
+        intraday_df = self._fetch_intraday_candles(instrument_key)
+        historical_df = self._fetch_historical_candles(
+            instrument_key,
+            from_date=today - timedelta(days=days_back),
+            to_date=today - timedelta(days=1),
+        )
+
+        frames = [d for d in (historical_df, intraday_df) if not d.empty]
+        if not frames:
+            return pd.DataFrame(
+                columns=["timestamp", "open", "high", "low", "close", "volume", "oi"]
+            )
+        df = pd.concat(frames, ignore_index=True)
+        df = df.drop_duplicates(subset="timestamp", keep="last")
+        df = df.sort_values("timestamp").reset_index(drop=True)
+        return df
+
+    def _fetch_intraday_candles(self, instrument_key: str) -> pd.DataFrame:
         retries = self._config.bot.api_retry_count
         delay = self._config.bot.api_retry_delay_seconds
         last_err: Exception | None = None
@@ -214,9 +245,85 @@ class UpstoxFeed(BaseFeed):
                     time.sleep(delay)
         else:
             raise RuntimeError(
-                f"Upstox candle fetch failed after {retries + 1} attempts: {last_err}"
+                f"Upstox intraday candle fetch failed after {retries + 1} attempts: {last_err}"
             )
+        return self._candles_response_to_df(resp)
 
+    def _fetch_historical_candles(
+        self,
+        instrument_key: str,
+        from_date,
+        to_date,
+    ) -> pd.DataFrame:
+        if from_date > to_date:
+            return pd.DataFrame(
+                columns=["timestamp", "open", "high", "low", "close", "volume", "oi"]
+            )
+        retries = self._config.bot.api_retry_count
+        delay = self._config.bot.api_retry_delay_seconds
+        last_err: Exception | None = None
+        resp = None
+        # Upstox SDK exposes two historical endpoints; ``get_historical_candle_data1``
+        # takes a from_date, the plain ``get_historical_candle_data`` does not.
+        # Prefer the dated variant when available.
+        method = getattr(
+            self._history_api,
+            "get_historical_candle_data1",
+            getattr(self._history_api, "get_historical_candle_data", None),
+        )
+        if method is None:
+            logger.warning(
+                "Upstox HistoryApi exposes no historical_candle_data method; "
+                "returning empty history."
+            )
+            return pd.DataFrame(
+                columns=["timestamp", "open", "high", "low", "close", "volume", "oi"]
+            )
+        for attempt in range(retries + 1):
+            try:
+                resp = method(
+                    instrument_key=instrument_key,
+                    interval="5minute",
+                    to_date=to_date.isoformat(),
+                    from_date=from_date.isoformat(),
+                    api_version="2.0",
+                )
+                break
+            except TypeError:
+                # Fallback for the no-from_date variant.
+                try:
+                    resp = method(
+                        instrument_key=instrument_key,
+                        interval="5minute",
+                        to_date=to_date.isoformat(),
+                        api_version="2.0",
+                    )
+                    break
+                except Exception as e:
+                    last_err = e
+            except Exception as e:
+                last_err = e
+                logger.warning(
+                    "Upstox historical candle fetch failed (attempt {}/{}): {}",
+                    attempt + 1,
+                    retries + 1,
+                    e,
+                )
+                if attempt < retries:
+                    time.sleep(delay)
+        else:
+            logger.warning(
+                "Upstox historical candle fetch failed after {} attempts: {}",
+                retries + 1,
+                last_err,
+            )
+            return pd.DataFrame(
+                columns=["timestamp", "open", "high", "low", "close", "volume", "oi"]
+            )
+        return self._candles_response_to_df(resp)
+
+    @staticmethod
+    def _candles_response_to_df(resp: Any) -> pd.DataFrame:
         data = getattr(resp, "data", None)
         candles = None
         if data is not None:

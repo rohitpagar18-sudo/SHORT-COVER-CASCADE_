@@ -160,3 +160,88 @@ def test_vwap_uses_full_session_not_window():
         "VWAP must be computed on the full 09:15 session."
     )
     assert snap.vwap == pytest.approx(133.33, abs=0.5)
+
+
+def test_vwap_filters_to_today_when_multi_day_df_passed():
+    """Multi-day df: VWAP must only reflect today's session.
+
+    Build 2 days of candles:
+      Day 1 (yesterday): 75 candles at price 200, vol 1000 each
+      Day 2 (today):     30 candles at price 100, vol 1000 each
+    Today-only VWAP = 100 (single price). If the function leaked
+    yesterday's data into today's calc, VWAP would be ~171 instead.
+    """
+    from src.indicators.vwap import compute_session_vwap
+
+    n_yest = 75
+    n_today = 30
+    yest_ts = pd.date_range(
+        "2026-05-25 09:15", periods=n_yest, freq="5min", tz="Asia/Kolkata"
+    )
+    today_ts = pd.date_range(
+        "2026-05-26 09:15", periods=n_today, freq="5min", tz="Asia/Kolkata"
+    )
+    timestamps = list(yest_ts) + list(today_ts)
+    prices_y = [200.0] * n_yest
+    prices_t = [100.0] * n_today
+    df = pd.DataFrame({
+        "timestamp": timestamps,
+        "open": prices_y + prices_t,
+        "high": prices_y + prices_t,
+        "low": prices_y + prices_t,
+        "close": prices_y + prices_t,
+        "volume": [1000.0] * (n_yest + n_today),
+    })
+    vwap = compute_session_vwap(df)
+    # Latest VWAP must be today-only.
+    assert vwap.iloc[-1] == pytest.approx(100.0, abs=0.01), (
+        f"VWAP={vwap.iloc[-1]:.2f} — yesterday's 200-priced candles leaked "
+        "into today's VWAP. Multi-day filtering broken."
+    )
+    # Yesterday's rows must be NaN (we only compute today's session).
+    assert vwap.iloc[: n_yest].isna().all(), (
+        "Prior-day rows should be NaN — only today's session is computed."
+    )
+
+
+def test_vwap_value_unchanged_whether_input_is_today_only_or_multi_day():
+    """Critical regression test: VWAP value at the latest candle must be
+    identical whether the caller passes only today's candles or a
+    multi-day frame ending with the same today's candles.
+    """
+    from src.indicators.vwap import compute_session_vwap
+
+    today_ts = pd.date_range(
+        "2026-05-26 09:15", periods=30, freq="5min", tz="Asia/Kolkata"
+    )
+    today_prices = [100.0 + i for i in range(30)]
+    today_df = pd.DataFrame({
+        "timestamp": today_ts,
+        "open": today_prices,
+        "high": [p + 1 for p in today_prices],
+        "low": [p - 1 for p in today_prices],
+        "close": today_prices,
+        "volume": [1000.0 + i * 10 for i in range(30)],
+    })
+
+    yest_ts = pd.date_range(
+        "2026-05-25 09:15", periods=75, freq="5min", tz="Asia/Kolkata"
+    )
+    yest_prices = [50.0] * 75
+    yest_df = pd.DataFrame({
+        "timestamp": yest_ts,
+        "open": yest_prices,
+        "high": yest_prices,
+        "low": yest_prices,
+        "close": yest_prices,
+        "volume": [10000.0] * 75,
+    })
+    multi_df = pd.concat([yest_df, today_df], ignore_index=True)
+
+    today_only_vwap = compute_session_vwap(today_df).iloc[-1]
+    multi_day_vwap = compute_session_vwap(multi_df).iloc[-1]
+    assert today_only_vwap == pytest.approx(multi_day_vwap, abs=1e-6), (
+        f"VWAP drift: today-only={today_only_vwap:.4f}, "
+        f"multi-day={multi_day_vwap:.4f}. Multi-day input must produce "
+        "the same VWAP value as today-only input."
+    )

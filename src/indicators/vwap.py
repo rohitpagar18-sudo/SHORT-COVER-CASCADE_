@@ -49,7 +49,12 @@ def compute_session_vwap(
     session_start_hour: int = 9,
     session_start_minute: int = 15,
 ) -> pd.Series:
-    """VWAP that resets at each session start (default 09:15 IST).
+    """VWAP for today's session only, anchored at 09:15 IST.
+
+    Multi-day input is safe: this function filters to the calendar date
+    of the most recent candle in ``df`` BEFORE computing VWAP, so that
+    a multi-day frame (now returned by ``get_5min_candles`` for RSI MA
+    lookback) does not pollute today's VWAP with prior-day data.
 
     Args:
         df: DataFrame with ``timestamp`` column (timezone-aware IST) plus
@@ -58,12 +63,10 @@ def compute_session_vwap(
         session_start_minute: minute at which a new session begins.
 
     Returns:
-        pd.Series of VWAP values aligned with df.index. VWAP resets on
-        each candle whose timestamp's calendar date differs from the prior
-        candle's session date. "Session date" is the calendar date of
-        timestamps at or after the session start time; timestamps before
-        the session start map to the previous calendar date (rare for
-        intraday equity options, but kept correct for completeness).
+        pd.Series aligned with df.index. Rows from today's session carry
+        the running VWAP value; rows from earlier sessions are NaN.
+        Callers that only need the latest VWAP (``.iloc[-1]``) get
+        today's value since today's last candle is the final row.
     """
     if len(df) == 0:
         return pd.Series([], dtype=float, index=df.index)
@@ -72,10 +75,18 @@ def compute_session_vwap(
     minutes_since_midnight = ts.dt.hour * 60 + ts.dt.minute
     session_open_minutes = session_start_hour * 60 + session_start_minute
     pre_session_mask = minutes_since_midnight < session_open_minutes
-    session_date = ts.dt.date.where(~pre_session_mask, (ts - pd.Timedelta(days=1)).dt.date)
+    session_date = ts.dt.date.where(
+        ~pre_session_mask, (ts - pd.Timedelta(days=1)).dt.date
+    )
+
+    # "Today" = the session date of the most recent candle in the frame.
+    latest_session_date = session_date.iloc[-1]
+    today_mask = session_date.values == latest_session_date
 
     out = pd.Series(np.nan, index=df.index, dtype=float)
-    for _, group_idx in pd.Series(session_date.values, index=df.index).groupby(session_date.values, sort=False).groups.items():
-        sub = df.loc[group_idx]
-        out.loc[group_idx] = compute_vwap_hlc3(sub).values
+    today_idx = df.index[today_mask]
+    if len(today_idx) == 0:
+        return out
+    today_df = df.loc[today_idx]
+    out.loc[today_idx] = compute_vwap_hlc3(today_df).values
     return out

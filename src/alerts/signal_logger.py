@@ -2,12 +2,13 @@
 
 Two parallel logs:
 
-  - ``signals.jsonl``  — every scan AND every rejection (full feed-back).
+  - ``signals.jsonl``  — every scan, every rejection, and every data_issue.
   - ``alerts.jsonl``   — only valid 5/5 signals that fired a Telegram.
 
-Every record carries an ``event_type`` ("scan" / "rejection" / "alert")
-so the EOD counter / backtest harness / verification scripts can
-distinguish real condition checks from short-circuit rejections.
+Every record carries an ``event_type`` ("scan" / "rejection" / "alert" /
+"data_issue") so the EOD counter / backtest harness / verification
+scripts can distinguish real condition checks from short-circuit
+rejections and from technical data-availability problems.
 
 Records are appended as single JSON objects, one per line, UTF-8.
 """
@@ -38,7 +39,12 @@ class SignalLogger:
         self.alerts_path.parent.mkdir(parents=True, exist_ok=True)
 
     def log_signal(self, record: dict) -> None:
-        """Append one scan record (event_type defaults to "scan")."""
+        """Append one record to signals.jsonl.
+
+        Defaults event_type to "scan" if missing. Any caller-supplied
+        event_type ("scan" / "rejection" / "alert" / "data_issue") is
+        preserved as-is.
+        """
         if "event_type" not in record:
             record["event_type"] = "scan"
         record["_logged_at"] = datetime.now(IST).isoformat()

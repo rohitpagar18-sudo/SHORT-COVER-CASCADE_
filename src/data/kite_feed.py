@@ -6,6 +6,7 @@ importing this module never loads the SDK when the active feed is Upstox.
 
 from __future__ import annotations
 
+import math
 import os
 import time
 from datetime import date, datetime, timedelta
@@ -136,23 +137,43 @@ class KiteFeed(BaseFeed):
             return v
         return datetime.fromisoformat(str(v)).date()
 
-    def get_5min_candles(self, instrument_key: str, n_candles: int = 0) -> pd.DataFrame:
-        """Return 5-min candles from session start (09:15 IST) to now.
+    def get_5min_candles(
+        self, instrument_key: str, lookback_candles: int = 100
+    ) -> pd.DataFrame:
+        """Return 5-min candles, fetching enough history to cover ``lookback_candles``.
 
-        The ``n_candles`` parameter is kept for BaseFeed interface
-        compatibility but is now a HINT only — this method ALWAYS
-        returns the full trading session. Required for session-anchored
-        VWAP to be correct (VWAP from 09:15 reset, not from a sliding
-        window).
+        Multi-day history is required so that indicators like RSI MA(20-on-14)
+        — which need 33+ candles of lookback — still compute on a mid-session
+        bot start. VWAP is session-anchored at 09:15 IST per day and the
+        ``compute_session_vwap`` helper filters to today's session, so
+        returning multi-day data is safe for VWAP and necessary for the
+        moving averages.
+
+        Args:
+            instrument_key: Kite instrument token (digit string) or NFO
+                tradingsymbol/exchange:symbol string.
+            lookback_candles: HINT for how many 5-min candles to make
+                available. Defaults to 100 (≈ 1.5 trading days). The
+                method may return more, never fewer (subject to broker
+                history availability).
+
+        Returns:
+            DataFrame with columns [timestamp, open, high, low, close,
+            volume, oi], sorted oldest -> newest, timestamps IST.
 
         If ``now`` is on a weekend or before 09:15 IST today, returns
-        the most recent past weekday's full 09:15–15:30 session.
+        candles ending at the most recent past weekday's 15:30 close.
         """
         token = self._get_instrument_token(instrument_key)
         now = datetime.now(IST)
         session_date = self._resolve_session_date(now)
+
+        # Approx 75 5-min candles per trading day. +1 calendar-day buffer
+        # absorbs a single weekend within the window.
+        days_back = max(2, math.ceil(max(lookback_candles, 1) / 75) + 1)
+        from_date_d = session_date - timedelta(days=days_back)
         from_date = datetime(
-            session_date.year, session_date.month, session_date.day,
+            from_date_d.year, from_date_d.month, from_date_d.day,
             9, 15, tzinfo=IST,
         )
         if session_date == now.date():

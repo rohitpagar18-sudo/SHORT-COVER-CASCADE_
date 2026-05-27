@@ -831,23 +831,16 @@ class Orchestrator:
             return
         self.telegram.send_eod_summary(self._compute_eod_summary())
 
-    def _maybe_run_dashboard_sync(self, now: datetime) -> None:
-        """Phase 5.2 — run the dashboard pipeline at 15:35 IST.
-
-        Best-effort: catches and logs any error, sends a Telegram, and
-        sets the flag anyway so we don't retry every tick.
-        """
+    def _run_dashboard_sync_on_exit(self) -> None:
+        """Phase 5.2.1: Run dashboard sync when bot exits. Best-effort, idempotent."""
         try:
-            enabled = self.config.dashboard.auto_trigger_at_1535
+            auto_trigger = self.config.dashboard.auto_trigger_at_1535
         except AttributeError:
             return
-        if not enabled or self.dashboard_synced:
+        if not auto_trigger or self.dashboard_synced or datetime.now(IST).weekday() >= 5:
             return
-        if now.weekday() >= 5 or now.time() < dt_time(15, 35):
-            return
-
-        logger.info("Auto-triggering dashboard update at 15:35")
         try:
+            logger.info("Bot exiting — running dashboard auto-sync...")
             from src.dashboard import (
                 sync_excel_notes_to_parquet,
                 sync_jsonl_to_parquet,
@@ -856,16 +849,16 @@ class Orchestrator:
             sync_jsonl_to_parquet()
             update_dashboard()
             sync_excel_notes_to_parquet()
-            logger.info("Dashboard auto-update complete")
+            self.dashboard_synced = True
+            logger.info("Dashboard auto-sync complete on bot exit")
         except Exception as e:
-            logger.exception(f"Dashboard auto-update failed: {e}")
+            logger.exception(f"Dashboard auto-sync on exit failed: {e}")
             try:
-                if self.telegram is not None:
-                    self.telegram.send_exception(f"Dashboard update failed:\n{e}")
+                self.telegram.send_exception(
+                    f"Dashboard auto-sync failed on exit:\n{e}"
+                )
             except Exception:
                 pass
-        finally:
-            self.dashboard_synced = True
 
     def _compute_eod_summary(self) -> dict:
         """Build EOD summary from in-memory counters (never re-reads JSONL)."""
@@ -903,12 +896,10 @@ class Orchestrator:
                     eod_sent = True
                     logger.info("EOD summary sent. Bot will exit at market close.")
 
-                # Phase 5.2: auto-trigger dashboard at 15:35 IST on a
-                # weekday. Best-effort — failures never block the loop.
-                self._maybe_run_dashboard_sync(now)
-
                 if now.time() >= MARKET_CLOSE_TIME:
-                    logger.info("Market closed. Bot exiting.")
+                    logger.info(
+                        "Market closed (15:30 IST). Bot exiting, dashboard sync will run."
+                    )
                     break
 
                 candle_minute = (now.minute // 5) * 5
@@ -945,6 +936,10 @@ class Orchestrator:
             except Exception:
                 pass
             sys.exit(1)
+        finally:
+            # Phase 5.2.1: Auto-sync dashboard on bot exit (clean exit,
+            # Ctrl+C, or exception). Runs exactly once per session.
+            self._run_dashboard_sync_on_exit()
 
 
 def main() -> None:

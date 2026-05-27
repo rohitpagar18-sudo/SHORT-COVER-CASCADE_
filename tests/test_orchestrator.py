@@ -134,6 +134,7 @@ def orch(tmp_path) -> Orchestrator:
     o.session_alert_count = 0
     o.session_nifty_alerts = 0
     o.session_bn_alerts = 0
+    o.dashboard_synced = False
     return o
 
 
@@ -742,3 +743,137 @@ def test_gap_detection_logs_clear_error_on_no_prev_day_data(orch) -> None:
     assert nifty_err is not None
     assert "today_n=" in nifty_err
     assert "prev_n=" in nifty_err
+
+
+# ----------------------------------------------------------------------
+# Phase 5.2.1: finally-block dashboard sync tests
+# ----------------------------------------------------------------------
+
+
+def _make_dashboard_config(*, auto_trigger: bool = True) -> _NS:
+    cfg = _make_config()
+    cfg.dashboard = _NS(auto_trigger_at_1535=auto_trigger)
+    return cfg
+
+
+def test_dashboard_sync_runs_in_finally_block_on_clean_exit(
+    orch, monkeypatch
+) -> None:
+    """On a weekday with toggle ON, all three sync functions are called exactly once."""
+    import src.main as main_mod
+    from unittest.mock import patch
+
+    orch.config = _make_dashboard_config(auto_trigger=True)
+    orch.dashboard_synced = False
+
+    fake_now = datetime(2026, 5, 26, 10, 30, tzinfo=IST)  # Tuesday
+    real_dt = main_mod.datetime
+    main_mod.datetime = type(
+        "_DT", (real_dt,), {"now": classmethod(lambda cls, tz=None: fake_now)}
+    )
+    try:
+        with patch("src.dashboard.sync_jsonl_to_parquet") as m_sync, \
+             patch("src.dashboard.update_dashboard") as m_update, \
+             patch("src.dashboard.sync_excel_notes_to_parquet") as m_excel:
+            orch._run_dashboard_sync_on_exit()
+            m_sync.assert_called_once()
+            m_update.assert_called_once()
+            m_excel.assert_called_once()
+        assert orch.dashboard_synced is True
+    finally:
+        main_mod.datetime = real_dt
+
+
+def test_dashboard_sync_runs_on_keyboard_interrupt(orch, monkeypatch) -> None:
+    """KeyboardInterrupt mid-loop → finally still calls _run_dashboard_sync_on_exit."""
+    import src.main as main_mod
+
+    orch.config = _make_dashboard_config(auto_trigger=True)
+    orch.dashboard_synced = False
+    orch.setup = MagicMock()
+    orch._run_dashboard_sync_on_exit = MagicMock()
+
+    fake_now = datetime(2026, 5, 26, 10, 30, tzinfo=IST)  # mid-session, no break
+    real_dt = main_mod.datetime
+    main_mod.datetime = type(
+        "_DT", (real_dt,), {"now": classmethod(lambda cls, tz=None: fake_now)}
+    )
+    monkeypatch.setattr(
+        main_mod.time_mod, "sleep", MagicMock(side_effect=KeyboardInterrupt())
+    )
+    try:
+        orch.run_forever()
+    finally:
+        main_mod.datetime = real_dt
+
+    orch._run_dashboard_sync_on_exit.assert_called_once()
+
+
+def test_dashboard_sync_skipped_on_weekend_exit(orch, monkeypatch) -> None:
+    """Saturday/Sunday → sync must NOT run (no market data)."""
+    import src.main as main_mod
+    from unittest.mock import patch
+
+    orch.config = _make_dashboard_config(auto_trigger=True)
+    orch.dashboard_synced = False
+
+    saturday = datetime(2026, 5, 30, 15, 31, tzinfo=IST)  # Saturday
+    real_dt = main_mod.datetime
+    main_mod.datetime = type(
+        "_DT", (real_dt,), {"now": classmethod(lambda cls, tz=None: saturday)}
+    )
+    try:
+        with patch("src.dashboard.sync_jsonl_to_parquet") as m_sync, \
+             patch("src.dashboard.update_dashboard") as m_update, \
+             patch("src.dashboard.sync_excel_notes_to_parquet") as m_excel:
+            orch._run_dashboard_sync_on_exit()
+            m_sync.assert_not_called()
+            m_update.assert_not_called()
+            m_excel.assert_not_called()
+    finally:
+        main_mod.datetime = real_dt
+
+
+def test_dashboard_sync_skipped_when_toggle_disabled(orch, monkeypatch) -> None:
+    """config.dashboard.auto_trigger_at_1535 = False → no sync on exit."""
+    import src.main as main_mod
+    from unittest.mock import patch
+
+    orch.config = _make_dashboard_config(auto_trigger=False)
+    orch.dashboard_synced = False
+
+    fake_now = datetime(2026, 5, 26, 15, 31, tzinfo=IST)
+    real_dt = main_mod.datetime
+    main_mod.datetime = type(
+        "_DT", (real_dt,), {"now": classmethod(lambda cls, tz=None: fake_now)}
+    )
+    try:
+        with patch("src.dashboard.sync_jsonl_to_parquet") as m_sync:
+            orch._run_dashboard_sync_on_exit()
+            m_sync.assert_not_called()
+    finally:
+        main_mod.datetime = real_dt
+
+
+def test_dashboard_sync_failure_does_not_prevent_exit(orch, monkeypatch) -> None:
+    """If sync raises, _run_dashboard_sync_on_exit must not re-raise."""
+    import src.main as main_mod
+    from unittest.mock import patch
+
+    orch.config = _make_dashboard_config(auto_trigger=True)
+    orch.dashboard_synced = False
+
+    fake_now = datetime(2026, 5, 26, 15, 31, tzinfo=IST)
+    real_dt = main_mod.datetime
+    main_mod.datetime = type(
+        "_DT", (real_dt,), {"now": classmethod(lambda cls, tz=None: fake_now)}
+    )
+    try:
+        with patch(
+            "src.dashboard.sync_jsonl_to_parquet",
+            side_effect=RuntimeError("Parquet write failed"),
+        ):
+            # Must not raise — bot exit must remain clean.
+            orch._run_dashboard_sync_on_exit()
+    finally:
+        main_mod.datetime = real_dt

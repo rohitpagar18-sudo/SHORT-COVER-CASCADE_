@@ -253,8 +253,10 @@ revisit without explicit user approval.
 - TP2_HIT (strong green) | TP1_HIT (light green)
 - SL_HIT (red) | WOULD_SKIP (grey) | PARTIAL (yellow)
 
-### Update Triggers
-- Auto: orchestrator calls dashboard sync at 15:35 IST after EOD
+### Update Triggers (Phase 5.2.1)
+- Auto: orchestrator's finally block runs dashboard sync on bot exit.
+  Fires on clean market-close exit, Ctrl+C, or exception.
+  Skipped on weekends (no market data) and when toggle is OFF.
 - Manual: update_dashboard.bat anytime
 - Sync is idempotent and best-effort (never blocks bot runtime)
 

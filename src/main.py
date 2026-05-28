@@ -24,7 +24,9 @@ import os
 import sys
 import time as time_mod
 import traceback
+from dataclasses import dataclass
 from datetime import date as date_cls, datetime, time as dt_time
+from enum import Enum
 from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -60,6 +62,23 @@ HARD_SQUAREOFF_TIME = dt_time(15, 0)
 MARKET_CLOSE_TIME = dt_time(15, 30)
 
 
+class MarketStatus(Enum):
+    UNKNOWN = "unknown"
+    WEEKEND = "weekend"
+    HOLIDAY = "holiday"
+    PRE_OPEN = "pre_open"
+    OPEN = "open"
+
+
+@dataclass
+class MarketStatusResult:
+    status: MarketStatus
+    reason: str
+    today_candle_count: int
+    latest_candle_date: str | None
+    checked_at: str
+
+
 class Orchestrator:
     """Glue layer that runs Phase 5: scan -> log -> alert.
 
@@ -82,6 +101,8 @@ class Orchestrator:
         self.is_gap_day: bool = False
         self.gap_info: dict = {}
         self.gap_log_path: Path = PROJECT_ROOT / "logs" / "gap_log.jsonl"
+        self.market_status: MarketStatusResult | None = None
+        self.holiday_abort: bool = False
         self.nifty_lot: int = 0
         self.banknifty_lot: int = 0
         self.nifty_expiry = None
@@ -137,18 +158,45 @@ class Orchestrator:
             f"({self.session_vix_info.method1_multiplier}× multiplier)"
         )
 
-        # 5. Detect gap day (must run after 09:15 — open candle exists).
-        self.is_gap_day, self.gap_info = self._detect_gap_day()
-        if self.is_gap_day:
+        # 5a. Detect market status (weekend / holiday / pre-open / open).
+        #     Uses candle data as the single source of truth — no hardcoded
+        #     calendars. On WEEKEND/HOLIDAY we set holiday_abort and skip
+        #     gap detection entirely (no point computing gap on a non-trading
+        #     day; today_n=0 would also pollute gap_log.jsonl).
+        self.market_status = self._check_market_status()
+        status = self.market_status.status
+
+        if status in (MarketStatus.WEEKEND, MarketStatus.HOLIDAY):
             logger.warning(
-                f"GAP DAY ACTIVE — no entries before "
-                f"{self.config.time_rules.gap_day_start_time}"
+                f"{status.value.upper()} — {self.market_status.reason}. "
+                "All scans suppressed. Bot will idle until 15:30 / Ctrl+C."
             )
-        elif self.gap_info.get("any_triggered"):
-            logger.info(
-                "Gap threshold breached but gap_day_enabled=false — "
-                "normal 9:45 start will be used."
-            )
+            self.holiday_abort = True
+        elif status == MarketStatus.PRE_OPEN:
+            logger.info("Pre-open — will recheck market status each polling loop.")
+        else:
+            logger.info(f"Market status: {status.value}")
+
+        # 5b. Detect gap day (must run after 09:15 — open candle exists).
+        #     Skipped on holidays to keep gap_log.jsonl clean.
+        if self.holiday_abort:
+            self.is_gap_day = False
+            self.gap_info = {
+                "decision": "SKIPPED_HOLIDAY",
+                "reason": self.market_status.reason,
+            }
+        else:
+            self.is_gap_day, self.gap_info = self._detect_gap_day()
+            if self.is_gap_day:
+                logger.warning(
+                    f"GAP DAY ACTIVE — no entries before "
+                    f"{self.config.time_rules.gap_day_start_time}"
+                )
+            elif self.gap_info.get("any_triggered"):
+                logger.info(
+                    "Gap threshold breached but gap_day_enabled=false — "
+                    "normal 9:45 start will be used."
+                )
 
         # 6. Initialize alerters and state.
         self.telegram = TelegramAlerter()
@@ -177,6 +225,7 @@ class Orchestrator:
                     "banknifty_lot": self.banknifty_lot,
                     "is_gap_day": self.is_gap_day,
                     "gap_info": self.gap_info,
+                    "market_status": self.market_status.status.value,
                 }
             )
 
@@ -371,6 +420,115 @@ class Orchestrator:
         except Exception as e:
             logger.error(f"Failed to write gap_log.jsonl: {e}")
 
+    def _check_market_status(self) -> MarketStatusResult:
+        """Decide whether NSE is open today, using candle data as truth.
+
+        Decision tree (first match wins):
+          A. Weekend (Sat/Sun) → WEEKEND (no API call)
+          B. Weekday before 09:15 → PRE_OPEN (no API call)
+          C. Candle check (API):
+             - today_count > 0           → OPEN
+             - today_count == 0, ≥ 09:30 → HOLIDAY (definitive)
+             - today_count == 0, < 09:30 → PRE_OPEN (opening window)
+          D. Any exception in candle fetch → UNKNOWN (fail-open)
+
+        UNKNOWN never aborts scans — it just marks the check as inconclusive
+        so run_forever() will retry. Never raises.
+        """
+        now = datetime.now(IST)
+        today_d = now.date()
+        checked_at = now.isoformat()
+
+        if now.weekday() >= 5:
+            result = MarketStatusResult(
+                status=MarketStatus.WEEKEND,
+                reason=f"weekday={now.strftime('%A')}",
+                today_candle_count=0,
+                latest_candle_date=None,
+                checked_at=checked_at,
+            )
+            logger.info(
+                f"Market status: WEEKEND ({result.reason}) — no candle fetch."
+            )
+            return result
+
+        if now.time() < dt_time(9, 15):
+            result = MarketStatusResult(
+                status=MarketStatus.PRE_OPEN,
+                reason=f"time={now.strftime('%H:%M')} before 09:15",
+                today_candle_count=0,
+                latest_candle_date=None,
+                checked_at=checked_at,
+            )
+            logger.info(f"Market status: PRE_OPEN ({result.reason}).")
+            return result
+
+        try:
+            candles = self._get_spot_candles("NIFTY", lookback_candles=10)
+            if candles is None or len(candles) == 0:
+                result = MarketStatusResult(
+                    status=MarketStatus.UNKNOWN,
+                    reason="candle fetch returned no data",
+                    today_candle_count=0,
+                    latest_candle_date=None,
+                    checked_at=checked_at,
+                )
+                logger.warning(f"Market status: UNKNOWN ({result.reason}).")
+                return result
+
+            ts_dates = pd.to_datetime(candles["timestamp"]).dt.date
+            today_count = int((ts_dates == today_d).sum())
+            latest_date = str(ts_dates.max()) if len(candles) else None
+
+            if today_count > 0:
+                result = MarketStatusResult(
+                    status=MarketStatus.OPEN,
+                    reason=f"today_n={today_count}, latest={latest_date}",
+                    today_candle_count=today_count,
+                    latest_candle_date=latest_date,
+                    checked_at=checked_at,
+                )
+                logger.info(f"Market status: OPEN ({result.reason}).")
+                return result
+
+            if now.time() >= dt_time(9, 30):
+                result = MarketStatusResult(
+                    status=MarketStatus.HOLIDAY,
+                    reason=(
+                        f"today_n=0 at {now.strftime('%H:%M')} (>=09:30); "
+                        f"latest candle date={latest_date}"
+                    ),
+                    today_candle_count=0,
+                    latest_candle_date=latest_date,
+                    checked_at=checked_at,
+                )
+                logger.info(f"Market status: HOLIDAY ({result.reason}).")
+                return result
+
+            result = MarketStatusResult(
+                status=MarketStatus.PRE_OPEN,
+                reason=(
+                    f"today_n=0 at {now.strftime('%H:%M')} (<09:30); "
+                    "opening window, will recheck"
+                ),
+                today_candle_count=0,
+                latest_candle_date=latest_date,
+                checked_at=checked_at,
+            )
+            logger.info(f"Market status: PRE_OPEN ({result.reason}).")
+            return result
+
+        except Exception as e:
+            result = MarketStatusResult(
+                status=MarketStatus.UNKNOWN,
+                reason=f"candle fetch error: {e}",
+                today_candle_count=0,
+                latest_candle_date=None,
+                checked_at=checked_at,
+            )
+            logger.warning(f"Market status: UNKNOWN ({result.reason}).")
+            return result
+
     def _enabled_instruments_str(self) -> str:
         out = []
         if self.config.instruments.nifty_enabled:
@@ -409,6 +567,13 @@ class Orchestrator:
 
     def scan_once(self) -> None:
         """One scan pass — runs after each 5-min candle closes."""
+        if self.holiday_abort:
+            status_val = (
+                self.market_status.status.value if self.market_status else "unknown"
+            )
+            logger.debug(f"Scan suppressed — status={status_val}")
+            return
+
         now = datetime.now(IST)
 
         # Hot-reload config every scan (allows runtime tuning of thresholds).
@@ -886,6 +1051,8 @@ class Orchestrator:
 
         eod_sent = False
         last_scan_candle: tuple | None = None
+        last_status_check: datetime | None = None
+        STATUS_RECHECK_SECONDS = 300
 
         try:
             while True:
@@ -901,6 +1068,43 @@ class Orchestrator:
                         "Market closed (15:30 IST). Bot exiting, dashboard sync will run."
                     )
                     break
+
+                # Dynamic status re-check: only while still PRE_OPEN/UNKNOWN.
+                # Once we land on OPEN, we stop polling (mid-day halts will
+                # surface through normal candle-fetch errors). On HOLIDAY we
+                # latch holiday_abort and never re-check.
+                needs_recheck = (
+                    not self.holiday_abort
+                    and self.market_status is not None
+                    and self.market_status.status
+                    in (MarketStatus.PRE_OPEN, MarketStatus.UNKNOWN)
+                    and (
+                        last_status_check is None
+                        or (now - last_status_check).total_seconds()
+                        >= STATUS_RECHECK_SECONDS
+                    )
+                )
+                if needs_recheck:
+                    self.market_status = self._check_market_status()
+                    last_status_check = now
+                    if self.market_status.status == MarketStatus.HOLIDAY:
+                        self.holiday_abort = True
+                        logger.warning(
+                            "Status upgraded to HOLIDAY after recheck. "
+                            "Suppressing scans."
+                        )
+                        try:
+                            self.telegram.send(
+                                f"⛔ NSE HOLIDAY DETECTED at "
+                                f"{now.strftime('%H:%M')} — bot was started "
+                                "early. All scans suppressed."
+                            )
+                        except Exception:
+                            pass
+                    elif self.market_status.status == MarketStatus.OPEN:
+                        logger.info(
+                            "Status upgraded to OPEN — scan loop is now live."
+                        )
 
                 candle_minute = (now.minute // 5) * 5
                 candle_key = (now.date(), now.hour, candle_minute)

@@ -61,6 +61,7 @@ see the per-bucket lists below.
 | `month`         | str    | `YYYY-MM`. Used by the writer to pick the target Parquet file.   |
 | `symbol`        | str    | `NIFTY` / `BANKNIFTY` / null for gap rows that span both.        |
 | `_logged_at`    | str    | Bot's wall-clock when it wrote the JSONL line.                   |
+| `is_holiday_scan` | bool | Present only on rows written before the holiday guard existed. True = row recorded on an NSE holiday (no live candles). Exclude in all backtests/ML queries: `df[df.get("is_holiday_scan", False) != True]` |
 
 Rows where the bot didn't have a symbol context (e.g. gap-day startup)
 have a null `symbol`. The detail is in `per_symbol_*` columns for gap.

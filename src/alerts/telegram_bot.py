@@ -93,6 +93,7 @@ class TelegramAlerter:
 
     def _format_startup(self, c: dict) -> str:
         gap_line = self._format_gap_line(c.get("gap_info", {}))
+        market_line = self._format_market_status_line(c.get("market_status"))
         return (
             "🚀 SHORT COVER CASCADE BOT STARTED\n"
             "─────────────────────────────\n"
@@ -103,9 +104,18 @@ class TelegramAlerter:
             f"Instruments: {c['instruments']}\n"
             f"India VIX: {c['vix']:.2f} ({c['vix_regime']})\n"
             f"Lot sizes: NIFTY={c['nifty_lot']}, BankNifty={c['banknifty_lot']}\n"
+            f"{market_line}"
             f"\n{gap_line}\n"
             "─────────────────────────────"
         )
+
+    def _format_market_status_line(self, status: str | None) -> str:
+        """Render the market status line. Empty if caller didn't set it."""
+        if not status:
+            return ""
+        if status in ("weekend", "holiday"):
+            return f"\n⛔ Market: {status.upper()} — bot dormant today"
+        return f"\nMarket status: {status}"
 
     def _format_gap_line(self, gap_info: dict) -> str:
         """Format the gap status block — always shown at startup."""

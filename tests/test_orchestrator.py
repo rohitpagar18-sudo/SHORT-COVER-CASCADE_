@@ -135,6 +135,8 @@ def orch(tmp_path) -> Orchestrator:
     o.session_nifty_alerts = 0
     o.session_bn_alerts = 0
     o.dashboard_synced = False
+    o.market_status = None
+    o.holiday_abort = False
     return o
 
 
@@ -877,3 +879,217 @@ def test_dashboard_sync_failure_does_not_prevent_exit(orch, monkeypatch) -> None
             orch._run_dashboard_sync_on_exit()
     finally:
         main_mod.datetime = real_dt
+
+
+# ======================================================================
+# Holiday-guard tests (Phase 5.2.2)
+#
+# Cover the four exits of _check_market_status() — weekend, pre-open,
+# candle-check (open / holiday / opening-window pre_open), API error
+# fail-open — plus scan_once() gating and the cleanup script.
+# pytest-mock is not installed; we use the monkeypatch fixture + the
+# same datetime-freezing pattern used elsewhere in this file.
+# ======================================================================
+
+
+def _make_candles(dates: list[str]) -> pd.DataFrame:
+    """Build a minimal candle DataFrame for a list of timestamp strings."""
+    return pd.DataFrame({
+        "timestamp": pd.to_datetime(dates).tz_localize("Asia/Kolkata"),
+        "open":   [100.0] * len(dates),
+        "high":   [101.0] * len(dates),
+        "low":    [99.0]  * len(dates),
+        "close":  [100.5] * len(dates),
+        "volume": [1000]  * len(dates),
+        "oi":     [500000] * len(dates),
+    })
+
+
+def _orch_with_mocked_now(monkeypatch, now_iso: str):
+    """Build an Orchestrator with __init__ bypassed and datetime.now frozen.
+
+    Mirrors the existing pattern: subclass real datetime and swap it in
+    src.main so dt_time / dt constructors still work normally.
+    """
+    import src.main as main_mod
+
+    orch = Orchestrator.__new__(Orchestrator)
+    orch.market_status = None
+    orch.holiday_abort = False
+    orch.feed = MagicMock()
+    orch.broker_name = "kite"
+
+    fixed_now = datetime.fromisoformat(now_iso).replace(tzinfo=IST)
+    real_dt = main_mod.datetime
+    FrozenDT = type(
+        "_FrozenDT",
+        (real_dt,),
+        {"now": classmethod(lambda cls, tz=None: fixed_now)},
+    )
+    monkeypatch.setattr(main_mod, "datetime", FrozenDT)
+    return orch, fixed_now
+
+
+# ----- _check_market_status decision tree -----
+
+
+def test_market_status_saturday_returns_weekend(monkeypatch):
+    orch, _ = _orch_with_mocked_now(monkeypatch, "2026-05-30 11:00")  # Sat
+    result = orch._check_market_status()
+    assert result.status.value == "weekend"
+    orch.feed.get_5min_candles.assert_not_called()
+
+
+def test_market_status_sunday_returns_weekend(monkeypatch):
+    orch, _ = _orch_with_mocked_now(monkeypatch, "2026-05-31 11:00")  # Sun
+    result = orch._check_market_status()
+    assert result.status.value == "weekend"
+    orch.feed.get_5min_candles.assert_not_called()
+
+
+def test_market_status_before_0915_returns_pre_open(monkeypatch):
+    orch, _ = _orch_with_mocked_now(monkeypatch, "2026-05-29 08:45")  # Fri
+    result = orch._check_market_status()
+    assert result.status.value == "pre_open"
+    orch.feed.get_5min_candles.assert_not_called()
+
+
+def test_market_status_no_today_candles_after_0930_returns_holiday(monkeypatch):
+    # 2026-05-28 is the Bakri Id holiday (Thursday).
+    orch, _ = _orch_with_mocked_now(monkeypatch, "2026-05-28 10:00")
+    orch.feed.get_5min_candles.return_value = _make_candles(
+        ["2026-05-27 14:55", "2026-05-27 15:00", "2026-05-27 15:25"]
+    )
+    result = orch._check_market_status()
+    assert result.status.value == "holiday"
+    assert result.today_candle_count == 0
+
+
+def test_market_status_today_candles_present_returns_open(monkeypatch):
+    orch, _ = _orch_with_mocked_now(monkeypatch, "2026-05-29 10:30")
+    orch.feed.get_5min_candles.return_value = _make_candles(
+        ["2026-05-29 09:15", "2026-05-29 09:20", "2026-05-29 09:25"]
+    )
+    result = orch._check_market_status()
+    assert result.status.value == "open"
+    assert result.today_candle_count == 3
+
+
+def test_market_status_no_candles_before_0930_returns_pre_open(monkeypatch):
+    orch, _ = _orch_with_mocked_now(monkeypatch, "2026-05-29 09:20")
+    orch.feed.get_5min_candles.return_value = _make_candles(
+        ["2026-05-28 14:55", "2026-05-28 15:25"]  # prior day only
+    )
+    result = orch._check_market_status()
+    assert result.status.value == "pre_open"
+
+
+def test_market_status_api_error_returns_unknown_not_holiday(monkeypatch):
+    orch, _ = _orch_with_mocked_now(monkeypatch, "2026-05-29 10:30")
+    orch.feed.get_5min_candles.side_effect = RuntimeError("Kite timeout")
+    result = orch._check_market_status()
+    assert result.status.value == "unknown"
+    # UNKNOWN is fail-open: must not be mistaken for HOLIDAY evidence.
+    assert "timeout" in result.reason.lower() or "error" in result.reason.lower()
+    assert orch.holiday_abort is False
+
+
+# ----- scan_once() gating on holiday_abort -----
+
+
+def test_scan_once_returns_immediately_when_holiday_abort_true():
+    orch = Orchestrator.__new__(Orchestrator)
+    orch.holiday_abort = True
+    orch.market_status = MagicMock()
+    orch.market_status.status.value = "holiday"
+    orch.feed = MagicMock()
+    orch.signal_logger = MagicMock()
+    orch.state = MagicMock()
+
+    orch.scan_once()
+
+    # No state queries, no feed calls, no JSONL writes.
+    orch.feed.get_5min_candles.assert_not_called()
+    orch.signal_logger.log_signal.assert_not_called()
+    orch.signal_logger.log_alert.assert_not_called()
+
+
+# ----- mark_holiday_scans cleanup script -----
+
+
+def test_mark_holiday_scans_marks_correct_dates(tmp_path):
+    import json
+    from scripts.mark_holiday_scans import main as mark_main
+
+    logs = tmp_path / "logs"
+    logs.mkdir()
+
+    # gap_log shows 2026-05-28 was a holiday (today_n=0 in error)
+    gap = logs / "gap_log.jsonl"
+    gap.write_text(json.dumps({
+        "timestamp_ist": "2026-05-28T09:16:00+05:30",
+        "per_symbol": {
+            "NIFTY": {"error": "insufficient_data: today_n=0, prev_n=5"},
+            "BANKNIFTY": {"error": "insufficient_data: today_n=0, prev_n=5"},
+        },
+    }) + "\n")
+
+    # signals.jsonl has rows from holiday and from a normal day
+    sig = logs / "signals.jsonl"
+    sig.write_text(
+        json.dumps({"timestamp_ist": "2026-05-28T10:00:00+05:30", "symbol": "NIFTY"}) + "\n" +
+        json.dumps({"timestamp_ist": "2026-05-27T10:00:00+05:30", "symbol": "NIFTY"}) + "\n"
+    )
+
+    mark_main(tmp_path)
+
+    lines = [json.loads(l) for l in sig.read_text().splitlines() if l.strip()]
+    holiday_row = next(r for r in lines if r["timestamp_ist"].startswith("2026-05-28"))
+    normal_row = next(r for r in lines if r["timestamp_ist"].startswith("2026-05-27"))
+    assert holiday_row.get("is_holiday_scan") is True
+    assert "is_holiday_scan" not in normal_row  # untouched
+
+
+def test_mark_holiday_scans_idempotent(tmp_path):
+    """Running the script twice produces the same result, not double-marked."""
+    import json
+    from scripts.mark_holiday_scans import main as mark_main
+
+    logs = tmp_path / "logs"
+    logs.mkdir()
+    gap = logs / "gap_log.jsonl"
+    gap.write_text(json.dumps({
+        "timestamp_ist": "2026-05-28T09:16:00+05:30",
+        "per_symbol": {"NIFTY": {"error": "insufficient_data: today_n=0"}},
+    }) + "\n")
+    sig = logs / "signals.jsonl"
+    sig.write_text(json.dumps({"timestamp_ist": "2026-05-28T10:00:00+05:30"}) + "\n")
+
+    mark_main(tmp_path)
+    first_state = sig.read_text()
+    mark_main(tmp_path)
+    second_state = sig.read_text()
+
+    assert first_state == second_state  # second run did not double-mark
+
+
+def test_mark_holiday_scans_handles_no_holiday_dates(tmp_path):
+    """If gap_log has no today_n=0 evidence, nothing is marked."""
+    import json
+    from scripts.mark_holiday_scans import main as mark_main
+
+    logs = tmp_path / "logs"
+    logs.mkdir()
+    gap = logs / "gap_log.jsonl"
+    # Normal-day gap log entry — no today_n=0
+    gap.write_text(json.dumps({
+        "timestamp_ist": "2026-05-27T09:16:00+05:30",
+        "per_symbol": {"NIFTY": {"gap_pct": 0.3, "triggers": False}},
+    }) + "\n")
+    sig = logs / "signals.jsonl"
+    sig.write_text(json.dumps({"timestamp_ist": "2026-05-27T10:00:00+05:30"}) + "\n")
+
+    mark_main(tmp_path)
+
+    row = json.loads(sig.read_text().strip())
+    assert "is_holiday_scan" not in row

@@ -9,27 +9,6 @@ and a `would_alert_extended` event type for capturing 4/5 borderline
 scans. Dashboard auto-syncs in the orchestrator's `finally` block so it
 runs on clean exit, Ctrl+C, or unhandled exception.
 
-This document absorbs the original PHASE_5_2_FINAL prompt, the
-PRE_PHASE_5_2_CHECK pre-flight gate, and the PHASE_5_2_1 finally-block
-hotfix. The dashboard-sync code is shown in its **final form only** —
-the deprecated 15:35 in-loop poll from the first 5.2 draft is not
-reproduced.
-
-This document is internally split:
-
-- **Strategy / behaviour deltas** (config, C1, directional gap)
-- **ML data / database layer** (Parquet writer + schema doc)
-- **Excel dashboard layer** (8-sheet workbook)
-- **Orchestrator wiring** (the small set of hooks that connect 5A to 5B)
-
-The two layers can in principle be rebuilt independently — the writer
-emits Parquet, the Excel builder reads Parquet. If you only need the
-ML store, build §3.1-3.3 and skip the Excel sheet code in §3.4. If you
-only need the human dashboard, you still need the writer because
-`excel_builder.py` reads from the monthly Parquet files.
-
-**Time estimate:** 4 hours code + verification pass.
-
 ## Deliverables
 
 - Quarterly rotating Excel dashboards at `logs/dashboards/dashboard_YYYY_QN.xlsx`
@@ -47,8 +26,7 @@ only need the human dashboard, you still need the writer because
   VIX, Alerts by Time of Day, Cumulative P&L)
 - Telegram alert gains an "Insight:" line
 - `finally`-block dashboard sync — runs on clean exit, Ctrl+C, or
-  exception (Phase 5.2.1 fix). Skipped on weekends and when the
-  toggle is OFF.
+  exception. Skipped on weekends and when the toggle is OFF.
 - Best-effort Excel→Parquet back-sync of user-filled outcome columns
 - Manual entry point: `update_dashboard.bat` / `scripts/update_dashboard.py`
 
@@ -71,12 +49,10 @@ logs/                                  ← Bot runtime (Phase 5A)
   bot.log
   dashboards/                          ← NEW (Phase 5B)
     dashboard_2026_Q2.xlsx
-    dashboard_2026_Q3.xlsx
 
 data/                                  ← NEW (Phase 5B)
   schema.md                            ← Column documentation (committed)
   scc_data_2026-05.parquet             ← One unified file per month
-  scc_data_2026-06.parquet
 
 src/dashboard/                         ← NEW (Phase 5B)
   __init__.py
@@ -117,47 +93,9 @@ Key design principles:
 
 ---
 
-## STEP 1 — Pre-flight verification
+## STEP 1 — Strategy / behaviour deltas
 
-Before adding any Phase 5B code, confirm Phase 5A has been running long
-enough to produce meaningful JSONL. Skip this if you're rebuilding from
-scratch — it's a sanity check, not a build step.
-
-Quick checks:
-
-```cmd
-:: 1. Are the three JSONL files present and growing?
-dir logs\signals.jsonl logs\alerts.jsonl logs\gap_log.jsonl
-
-:: 2. Does signals.jsonl contain at least scan + rejection + data_issue?
-findstr /c:"\"event_type\": \"scan\""       logs\signals.jsonl | find /c /v ""
-findstr /c:"\"event_type\": \"rejection\""  logs\signals.jsonl | find /c /v ""
-findstr /c:"\"event_type\": \"data_issue\"" logs\signals.jsonl | find /c /v ""
-
-:: 3. Does gap_log.jsonl have a row with a Phase 5A "decision" value?
-type logs\gap_log.jsonl | findstr "decision"
-
-:: 4. Are timestamps IST-tagged?
-type logs\signals.jsonl | findstr "+05:30" | find /c /v ""
-
-:: 5. Confirm secrets.env still has TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID
-
-:: 6. Confirm pytest still passes (~210 tests)
-pytest tests\ -v
-```
-
-Anomalies to investigate before continuing:
-
-- Empty JSONL → bot never finished a scan. Run it first.
-- No `data_issue` rows → not a problem (only appears on mid-session
-  restarts). Confirm `data_issue` is at least handled in 5A code.
-- Timestamps without `+05:30` → 5A bug; do not proceed.
-
----
-
-## STEP 2 — Strategy / behaviour deltas
-
-### 2.1 — `requirements.txt`
+### 1.1 — `requirements.txt`
 
 Add (preserve existing):
 
@@ -167,16 +105,15 @@ pyarrow>=14.0.0
 pandas>=2.0.0
 ```
 
-### 2.2 — `config/config.yaml`
+### 1.2 — `config/config.yaml`
 
 Add a `conditions` section (extend if present):
 
 ```yaml
 conditions:
   c1_max_distance_pct: 30          # Reject alerts where opt > 30% above own VWAP.
-                                   # Strategy doc default. Strikes 30-50%
-                                   # above VWAP logged for analysis but do
-                                   # NOT fire alerts.
+                                   # Strikes 30-50% above VWAP logged for analysis
+                                   # but do NOT fire alerts.
   c1_extended_zone_enabled: true   # Log would_alert_extended events
   c1_extended_zone_max_pct: 50     # Upper bound for extended zone logging
 ```
@@ -206,29 +143,17 @@ dashboard:
 ```
 
 > Note on the toggle name: `auto_trigger_at_1535` predates Phase 5.2.1.
-> The behaviour is now "run in `finally` on bot exit" — the time stamp
-> in the name is preserved for backwards compatibility. Treat it
-> as the on/off switch, not as a wall-clock setting.
+> The behaviour is "run in `finally` on bot exit". Treat it as the
+> on/off switch, not as a wall-clock setting.
 
-### 2.3 — `src/conditions/c1_option_price_vwap.py` (config-driven)
+### 1.3 — `src/conditions/c1_option_price_vwap.py` (config-driven)
 
-The C1 late-entry filter now reads its threshold from config rather
-than hardcoding 30. Returns `(passed, reason, opt_above_vwap_pct)` —
-the third value is consumed by the orchestrator's
-`would_alert_extended` logic (§4.3).
+The C1 late-entry filter now reads its threshold from config and returns
+`(passed, reason, opt_above_vwap_pct)` — the third value is consumed by
+the orchestrator's `would_alert_extended` logic.
 
 ```python
-"""C1 — Option Price Above VWAP on a Green Candle.
-
-On the option's own 5-minute chart the current candle must be GREEN
-(close > open) and close above the option's session VWAP. Strategy doc
-section 5 also defines the late-entry rule: if the candle has already
-moved ``c1_max_distance_pct`` (config-driven, default 30%) or more above
-VWAP, do not chase — wait for a retrace.
-
-Pure function: in → ``(bool, reason, opt_above_vwap_pct)``, no I/O,
-no logging, no raises.
-"""
+"""C1 — Option Price Above VWAP on a Green Candle."""
 
 from __future__ import annotations
 
@@ -238,19 +163,6 @@ from src.indicators.calculator import IndicatorSnapshot
 def check_c1(
     snapshot: IndicatorSnapshot, late_entry_threshold_pct: float
 ) -> tuple[bool, str, float]:
-    """Evaluate C1 on the supplied option snapshot.
-
-    Args:
-        snapshot: option IndicatorSnapshot for the latest 5m candle.
-        late_entry_threshold_pct: from ``config.conditions.c1_max_distance_pct``.
-
-    Returns:
-        ``(passed, reason, opt_above_vwap_pct)``.
-
-        ``opt_above_vwap_pct`` is always populated (even on failure
-        cases) so Phase 5B can log it and decide whether to fire a
-        ``would_alert_extended`` event.
-    """
     close = snapshot.close
     vwap = snapshot.vwap
     is_green = snapshot.is_green
@@ -280,11 +192,11 @@ def check_c1(
     ), opt_above_vwap_pct
 ```
 
-Also update `src/conditions/all_conditions.py` (or wherever C1 is
-called) so the third return value `opt_above_vwap_pct` is captured on
-the result object that the orchestrator inspects.
+Also update `src/conditions/all_conditions.py` so the third return value
+`opt_above_vwap_pct` is captured on the result object that the
+orchestrator inspects.
 
-### 2.4 — Directional gap labels
+### 1.4 — Directional gap labels
 
 Replace the Phase 5A label set (`NORMAL` / `GAP_DAY` /
 `GAP_DETECTED_BUT_DISABLED`) with the directional set. This is a
@@ -295,10 +207,6 @@ locally-contained change to `_detect_gap_day` and to
 decision block with:**
 
 ```python
-# Phase 5.2: directional labels. The per-symbol ``triggers`` flag
-# already honours ``direction`` ("both" / "up" / "down"), so we use
-# *that* to gate which side counts — a -1.2% gap with direction="up"
-# leaves triggers=False and produces NORMAL.
 any_up = any(
     info.get("triggers") and (info.get("gap_pct") or 0.0) >= threshold
     for info in gap_info["per_symbol"].values()
@@ -324,8 +232,7 @@ self._log_gap(gap_info)
 return is_gap_day, gap_info
 ```
 
-**In `src/alerts/telegram_bot.py`, expand `_format_gap_line` to handle
-the new labels (keep the legacy ones for replay-compatibility):**
+**In `src/alerts/telegram_bot.py`, expand `_format_gap_line`:**
 
 ```python
 if decision == "GAP_UP":
@@ -349,14 +256,11 @@ rows through the dashboard.
 
 ---
 
-## STEP 3 — Dashboard module (`src/dashboard/`)
+## STEP 2 — Dashboard module (`src/dashboard/`)
 
-### 3.1 — `src/dashboard/remarks.py`
+### 2.1 — `src/dashboard/remarks.py`
 
-Pure-function bot-remark + tag generator. The orchestrator's
-`_fire_alert` calls `generate_remark_and_tags()` at alert time;
-`sync_excel_notes_to_parquet` calls `generate_outcome_remark()` after
-the user fills `order_status` in Excel.
+Pure-function bot-remark + tag generator.
 
 ```python
 """Phase 5.2 — Bot remark + tag generation.
@@ -370,8 +274,6 @@ from __future__ import annotations
 
 from typing import List, Tuple
 
-
-# ---------------- Zone helpers ----------------
 
 def _vwap_zone(opt_above_vwap_pct: float) -> Tuple[str, str]:
     p = opt_above_vwap_pct
@@ -417,14 +319,32 @@ def _time_zone(time_hhmm: str) -> Tuple[str, str]:
     return ("afternoon", "afternoon")
 
 
+# VixRegime.value is "Low Vol" / "Normal" / "Elevated" / "High Vol", but
+# callers may also pass the enum NAME ("LOW" / "NORMAL" / ...). Both work.
+_VIX_PHRASES = {
+    "LOW":       ("low_vix",      "LOW VIX (0.75× SL)"),
+    "NORMAL":    ("normal_vix",   ""),
+    "ELEVATED":  ("elevated_vix", "ELEVATED VIX (1.25× SL)"),
+    "HIGH":      ("high_vix",     "HIGH VIX (1.5× SL)"),
+}
+_VIX_VALUE_ALIASES = {
+    "LOW VOL":   "LOW",
+    "NORMAL":    "NORMAL",
+    "ELEVATED":  "ELEVATED",
+    "HIGH VOL":  "HIGH",
+}
+
+
 def _vix_context(vix_regime: str) -> Tuple[str, str]:
-    m = {
-        "LOW":       ("low_vix",      "LOW VIX (0.85× SL)"),
-        "NORMAL":    ("normal_vix",   ""),
-        "ELEVATED":  ("elevated_vix", "ELEVATED VIX (1.25× SL)"),
-        "HIGH":      ("high_vix",     "HIGH VIX (1.5× SL)"),
-    }
-    return m.get(vix_regime, ("normal_vix", ""))
+    if not vix_regime:
+        return ("normal_vix", "")
+    key = str(vix_regime).strip().upper()
+    if key in _VIX_PHRASES:
+        return _VIX_PHRASES[key]
+    aliased = _VIX_VALUE_ALIASES.get(key)
+    if aliased:
+        return _VIX_PHRASES[aliased]
+    return ("normal_vix", "")
 
 
 def _expiry_context(is_expiry_day: bool) -> Tuple[str, str]:
@@ -441,7 +361,20 @@ def _sequence_context(daily_sl_count: int, daily_alert_count: int) -> Tuple[str,
     return (f"alert_{daily_alert_count + 1}", f"{daily_alert_count + 1}th alert of day")
 
 
-# ---------------- Public API ----------------
+def _verdict(snapshot: dict, observations: List[str]) -> str:
+    p = snapshot["opt_above_vwap_pct"]
+    rsi = snapshot["rsi"]
+    oi_ratio = snapshot["oi"] / snapshot["oi_ma"] if snapshot["oi_ma"] > 0 else 1.0
+    vol_ratio = snapshot["volume"] / snapshot["volume_ma"] if snapshot["volume_ma"] > 0 else 1.0
+
+    strong = p < 15 and 60 <= rsi < 75 and oi_ratio < 0.85 and vol_ratio > 1.5
+    if strong:
+        return "5/5 strong"
+    marginal = rsi < 55 or oi_ratio > 0.93 or vol_ratio < 1.2 or p > 22
+    if marginal:
+        return "5/5 borderline"
+    return "5/5 clean"
+
 
 def generate_remark_and_tags(snapshot: dict, context: dict) -> Tuple[str, str]:
     """Generate entry-time bot_remark (human, ~25 words) and bot_tags (CSV)."""
@@ -463,15 +396,15 @@ def generate_remark_and_tags(snapshot: dict, context: dict) -> Tuple[str, str]:
     )
     tags.append(t); observations.append(p)
 
-    verdict = _verdict(snapshot, observations)
-
+    verdict = _verdict(snapshot)
     primary = observations[:4]
     secondary = [o for o in observations[4:] if o][:1]
     remark = f"{verdict} — " + ", ".join(primary + secondary) + "."
     return remark, ",".join(tags)
 
 
-def _verdict(snapshot: dict, observations: List[str]) -> str:
+def _verdict(snapshot: dict) -> str:
+    """Pick a quality prefix: strong / clean / borderline."""
     p = snapshot["opt_above_vwap_pct"]
     rsi = snapshot["rsi"]
     oi_ratio = snapshot["oi"] / snapshot["oi_ma"] if snapshot["oi_ma"] > 0 else 1.0
@@ -480,11 +413,9 @@ def _verdict(snapshot: dict, observations: List[str]) -> str:
     strong = p < 15 and 60 <= rsi < 75 and oi_ratio < 0.85 and vol_ratio > 1.5
     if strong:
         return "5/5 strong"
-
     marginal = rsi < 55 or oi_ratio > 0.93 or vol_ratio < 1.2 or p > 22
     if marginal:
         return "5/5 borderline"
-
     return "5/5 clean"
 
 
@@ -494,67 +425,142 @@ def generate_outcome_remark(
     exit_price: float | None = None,
     pnl: float | None = None,
 ) -> str:
-    """Outcome remark based on alert quality + user-marked outcome."""
-    bot_remark = alert_data.get("bot_remark", "")
+    """Outcome remark based on alert quality + user-marked outcome.
+
+    ``exit_price`` and ``pnl`` may be None (when the user has not filled
+    those cells yet) — the helper falls back to a generic word.
+    """
+    bot_remark = alert_data.get("bot_remark", "") or ""
     is_strong = "strong" in bot_remark
     is_marginal = "borderline" in bot_remark
 
+    exit_str = f"₹{exit_price:.2f}" if exit_price is not None else "exit"
+
     if outcome == "TP2_HIT":
         if is_strong:
-            return f"Held to TP2 (₹{exit_price:.2f}) — strong setup played out. 2.5R captured."
-        return f"Held to TP2 (₹{exit_price:.2f}) — 2.5R captured. Outcome confirmed setup."
+            return f"Held to TP2 ({exit_str}) — strong setup played out. 2.5R captured."
+        return f"Held to TP2 ({exit_str}) — 2.5R captured. Outcome confirmed setup."
     if outcome == "TP1_HIT":
-        return f"TP1 hit at ₹{exit_price:.2f} — 1.5R captured. Reversed before TP2."
+        return f"TP1 hit at {exit_str} — 1.5R captured. Reversed before TP2."
     if outcome == "SL_HIT":
         if is_strong:
-            return f"SL hit at ₹{exit_price:.2f} — unusual reversal on strong setup."
+            return f"SL hit at {exit_str} — unusual reversal on strong setup."
         if is_marginal:
-            return f"SL hit at ₹{exit_price:.2f} — marginal entry showed in outcome."
-        return f"SL hit at ₹{exit_price:.2f} — reversed quickly."
+            return f"SL hit at {exit_str} — marginal entry showed in outcome."
+        return f"SL hit at {exit_str} — reversed quickly."
     if outcome == "WOULD_SKIP":
         return "Skipped post-review — your judgement overrode 5/5."
     if outcome == "PARTIAL":
-        return f"Partial exit — manual decision, P&L ₹{pnl:.0f}."
+        pnl_str = f"₹{pnl:.0f}" if pnl is not None else "n/a"
+        return f"Partial exit — manual decision, P&L {pnl_str}."
     return ""
 
 
 def telegram_short_remark(bot_remark: str) -> str:
-    """Pick verdict + 1 key observation for the Telegram Insight: line."""
+    """Trim ``bot_remark`` to verdict + 1-2 observations for Telegram.
+
+    Designed for the "Insight:" line in the alert message. Output is
+    typically 50–75 characters; never exceeds ~80.
+    """
     if not bot_remark:
         return ""
     parts = bot_remark.split(" — ", 1)
     if len(parts) < 2:
         return bot_remark[:80]
     verdict, rest = parts
-    obs = rest.split(", ")
+    rest_clean = rest.rstrip(".")
+    obs = [o.strip() for o in rest_clean.split(",") if o.strip()]
     if len(obs) >= 2:
         return f"{verdict} — {obs[0]}, {obs[1]}"
     return f"{verdict} — {obs[0]}" if obs else verdict
 ```
 
+### 2.1.1 — `src/conditions/all_conditions.py` delta
+
+The C1 change in §1.3 returns a third value, so the orchestrator's
+combined-conditions result object carries it for the orchestrator's
+`_maybe_log_extended_zone` check. Also adds a small helper that prefers
+the new config key but falls back to the legacy strike-section one.
+
+```python
+@dataclass
+class AllConditionsResult:
+    """Combined outcome of C0–C4 for a single closed candle."""
+
+    all_passed: bool
+    results: list[ConditionResult] = field(default_factory=list)
+    opt_above_vwap_pct: float = 0.0  # Phase 5.2: C1 distance for logging.
+
+    def failed_conditions(self) -> list[str]:
+        return [r.name for r in self.results if not r.passed]
+
+    def passed_conditions(self) -> list[str]:
+        return [r.name for r in self.results if r.passed]
+
+    def short_summary(self) -> str:
+        """``C0 ✓ C1 ✓ C2 ✗ C3 ✓ C4 ✓`` style one-liner."""
+        return " ".join(
+            f"{r.name} {'✓' if r.passed else '✗'}" for r in self.results
+        )
+
+    def by_name(self, name: str) -> ConditionResult | None:
+        for r in self.results:
+            if r.name == name:
+                return r
+        return None
+
+
+def _c1_max_distance(config) -> float:
+    """Phase 5.2: prefer config.conditions.c1_max_distance_pct (new),
+    fall back to config.strike.late_entry_threshold_percent (legacy).
+    """
+    conditions = getattr(config, "conditions", None)
+    if conditions is not None:
+        val = getattr(conditions, "c1_max_distance_pct", None)
+        if val is not None:
+            return float(val)
+    return float(config.strike.late_entry_threshold_percent)
+
+
+def check_all_conditions(
+    option_snapshot: IndicatorSnapshot,
+    spot_close: float, spot_vwap: float,
+    option_type: str, config,
+) -> AllConditionsResult:
+    """Run all five conditions. Never short-circuits — logs need the full
+    combination that failed."""
+    results: list[ConditionResult] = []
+
+    ok, reason = check_c0(spot_close, spot_vwap, option_type)
+    results.append(ConditionResult("C0", ok, reason))
+
+    c1_max = _c1_max_distance(config)
+    c1_ok, c1_reason, opt_above_vwap_pct = check_c1(option_snapshot, c1_max)
+    results.append(ConditionResult("C1", c1_ok, c1_reason))
+
+    ok, reason = check_c2(option_snapshot)
+    results.append(ConditionResult("C2", ok, reason))
+
+    ok, reason = check_c3(
+        option_snapshot,
+        config.conditions.c3_rsi_min, config.conditions.c3_rsi_max,
+    )
+    results.append(ConditionResult("C3", ok, reason))
+
+    ok, reason = check_c4(option_snapshot)
+    results.append(ConditionResult("C4", ok, reason))
+
+    all_passed = all(r.passed for r in results)
+    return AllConditionsResult(
+        all_passed=all_passed,
+        results=results,
+        opt_above_vwap_pct=opt_above_vwap_pct,
+    )
+```
+
 ---
 
-## Section 3 — ML DATA / DATABASE LAYER
-
-### 3.2 — `src/dashboard/data_writer.py`
-
-The ML store. Reads the three JSONL files, projects each line into a
-unified row, dedupes against the existing monthly Parquet, and writes
-new rows only. Also reads back user-filled outcome columns from the
-quarterly Excel and merges them into the matching `event_type=alert`
-rows.
-
-**Behavioural contract:**
-
-- Public function `sync_jsonl_to_parquet()` returns
-  `{"rows_added": int, "months_updated": int, "total_rows_in_parquet": int}`
-- Public function `sync_excel_notes_to_parquet()` returns
-  `{"alerts_updated": int}` plus a `skipped_reason` if no rows matched.
-- Dedup key: `(timestamp_ist, event_type, symbol, strike, option_type)`
-- Gap rows are flattened: `per_symbol.NIFTY.open` → column `nifty_open` etc.
-- `reasons.C0` … `reasons.C4` are promoted from the nested `reasons`
-  dict to top-level columns so pandas filtering doesn't need un-nesting.
-- Excel-not-found is silent (returns empty frame). Never crashes the bot.
+### 2.2 — `src/dashboard/data_writer.py`
 
 ```python
 """Phase 5.2 — JSONL → Parquet (and Excel → Parquet) sync.
@@ -628,7 +634,9 @@ def _read_jsonl(path: Path) -> list[dict]:
             try:
                 rows.append(json.loads(line))
             except json.JSONDecodeError as e:
-                logger.warning(f"Skipping malformed JSON in {path.name} line {lineno}: {e}")
+                logger.warning(
+                    f"Skipping malformed JSON in {path.name} line {lineno}: {e}"
+                )
     return rows
 
 
@@ -687,9 +695,12 @@ def _records_to_frame(
         return pd.DataFrame()
 
     df = pd.DataFrame(rows)
+
+    # Backfill the common columns so downstream filtering is uniform.
     if "event_type" not in df.columns:
         df["event_type"] = "scan"
     df["event_type"] = df["event_type"].fillna("scan")
+
     if "symbol" not in df.columns:
         df["symbol"] = None
     if "strike" not in df.columns:
@@ -712,7 +723,8 @@ def _dedup_key_frame(df: pd.DataFrame) -> pd.DataFrame:
     """Return a frame with only the dedup-key columns, normalised to strings.
 
     Strings are used because Parquet null handling for ints/floats can
-    flip None ↔ NaN, which would otherwise break equality compare.
+    flip None ↔ NaN, which would otherwise break equality compare. The
+    string-only key is stable across reads.
     """
     out = pd.DataFrame()
     for col in DEDUP_KEY_COLS:
@@ -725,7 +737,9 @@ def _dedup_key_frame(df: pd.DataFrame) -> pd.DataFrame:
     return out
 
 
-def _filter_new_rows(incoming: pd.DataFrame, existing: pd.DataFrame) -> pd.DataFrame:
+def _filter_new_rows(
+    incoming: pd.DataFrame, existing: pd.DataFrame
+) -> pd.DataFrame:
     if incoming.empty:
         return incoming
     if existing.empty:
@@ -818,7 +832,7 @@ def sync_jsonl_to_parquet() -> dict:
 
 
 # ---------------------------------------------------------------------------
-# Public — Excel notes → Parquet (best-effort)
+# Public — Excel notes → Parquet
 # ---------------------------------------------------------------------------
 
 
@@ -840,7 +854,7 @@ _OUTCOME_COLUMNS = ("order_status", "exit_price", "pnl_rupees", "user_notes")
 def _read_order_place_notes() -> pd.DataFrame:
     """Read user-filled outcome columns from EVERY quarterly Excel."""
     try:
-        import openpyxl  # noqa: F401 — absence is harmless
+        import openpyxl  # noqa: F401  (loaded lazily; absence is harmless)
     except Exception as e:
         logger.debug(f"openpyxl unavailable: {e}")
         return pd.DataFrame()
@@ -852,7 +866,9 @@ def _read_order_place_notes() -> pd.DataFrame:
     frames: list[pd.DataFrame] = []
     for wb_path in workbooks:
         try:
-            sheet = pd.read_excel(wb_path, sheet_name="Order Place", engine="openpyxl")
+            sheet = pd.read_excel(
+                wb_path, sheet_name="Order Place", engine="openpyxl",
+            )
         except Exception as e:
             logger.debug(f"Skipping {wb_path}: {e}")
             continue
@@ -887,7 +903,14 @@ def _read_order_place_notes() -> pd.DataFrame:
 
 
 def sync_excel_notes_to_parquet() -> dict:
-    """Best-effort back-fill of outcome columns from Excel into Parquet."""
+    """Best-effort back-fill of outcome columns from Excel into Parquet.
+
+    Never raises. Any error is logged at debug level and reported in the
+    return dict's ``skipped_reason``.
+
+    Match key is ``(timestamp_ist, symbol, strike, option_type)`` against
+    rows with ``event_type == "alert"``.
+    """
     try:
         notes = _read_order_place_notes()
     except Exception as e:
@@ -900,6 +923,7 @@ def sync_excel_notes_to_parquet() -> dict:
     if not months:
         return {"alerts_updated": 0, "skipped_reason": "no parquet files yet"}
 
+    # Normalise key columns on the notes side.
     notes["timestamp_ist"] = notes["timestamp_ist"].astype(str)
     if "strike" in notes.columns:
         notes["strike"] = pd.to_numeric(notes["strike"], errors="coerce")
@@ -908,7 +932,7 @@ def sync_excel_notes_to_parquet() -> dict:
     if "option_type" in notes.columns:
         notes["option_type"] = notes["option_type"].astype(str)
 
-    # Auto-generate outcome_remark wherever order_status is set.
+    # Generate outcome_remark for any row where order_status is set.
     if "order_status" in notes.columns:
         from src.dashboard.remarks import generate_outcome_remark
 
@@ -986,16 +1010,14 @@ def sync_excel_notes_to_parquet() -> dict:
 
         merged = df_keys.merge(
             notes_keys[merge_cols + outcome_cols],
-            on=merge_cols,
-            how="left",
-            suffixes=("", "_excel"),
+            on=merge_cols, how="left", suffixes=("", "_excel"),
         )
 
         updated_count = 0
         for col in outcome_cols:
             excel_col = f"{col}_excel"
             if excel_col not in merged.columns:
-                excel_col = col
+                excel_col = col  # merged column not suffixed → use directly
             if excel_col not in merged.columns:
                 continue
             mask = (merged["event_type"] == "alert") & merged[excel_col].notna()
@@ -1007,7 +1029,9 @@ def sync_excel_notes_to_parquet() -> dict:
             updated_count += int(mask.sum())
 
         if updated_count > 0:
-            _write_parquet(parquet_path.stem.replace("scc_data_", ""), df)
+            _write_parquet(
+                parquet_path.stem.replace("scc_data_", ""), df
+            )
             alerts_updated += updated_count
 
     if alerts_updated == 0:
@@ -1016,12 +1040,16 @@ def sync_excel_notes_to_parquet() -> dict:
 
 
 # ---------------------------------------------------------------------------
-# Helpers used by excel_builder
+# Helper used by excel_builder
 # ---------------------------------------------------------------------------
 
 
 def load_parquet_for_quarter(year: int, quarter: int) -> pd.DataFrame:
-    """Concat the 3 months of a calendar quarter into one DataFrame."""
+    """Concatenate the 3 months of a calendar quarter into one DataFrame.
+
+    Empty months are skipped. Missing files are skipped. Returns an empty
+    frame if nothing exists for the quarter.
+    """
     start_month = (quarter - 1) * 3 + 1
     months = [f"{year:04d}-{start_month + i:02d}" for i in range(3)]
     frames = []
@@ -1044,25 +1072,16 @@ def quarter_for_date(d: datetime | None = None) -> tuple[int, int]:
     return d.year, (d.month - 1) // 3 + 1
 ```
 
-### 3.3 — `data/schema.md` (committed)
+---
 
-This document is checked into git — it's the long-lived spec future-you
-reads in 2027 to understand the Parquet columns. Reproduced in full:
+### 2.3 — `data/schema.md` (committed)
 
 ````markdown
 # SCC Unified Parquet Schema — Phase 5.2
 
 This document describes the columns in `data/scc_data_YYYY-MM.parquet`.
-The files are the canonical ML / backtest store. They are regenerable
-at any time from `logs/signals.jsonl`, `logs/alerts.jsonl`, and
-`logs/gap_log.jsonl` via `scripts/update_dashboard.py`.
-
-The quarterly Excel files in `logs/dashboards/` are a *human-facing*
-projection of these Parquet files. They are not the source of truth.
-The only Excel-only columns that flow *back* to Parquet are the
-user-filled outcome columns in the Order Place sheet.
-
----
+Files are regenerable at any time from the three JSONL logs via
+`scripts/update_dashboard.py`.
 
 ## File naming
 
@@ -1070,46 +1089,34 @@ user-filled outcome columns in the Order Place sheet.
 data/scc_data_YYYY-MM.parquet
 ```
 
-One file per calendar month, ordered by `timestamp_ist`. Files are
-pyarrow-compatible; load with `pd.read_parquet`.
-
-Reading a quarter:
+One file per calendar month, ordered by `timestamp_ist`.
 
 ```python
 import pandas as pd, glob
 df = pd.concat([pd.read_parquet(f) for f in glob.glob("data/scc_data_2026-0[4-6].parquet")])
 ```
 
----
-
 ## event_type values
 
-Every row carries an `event_type`. Other columns are populated
-*conditional* on event_type.
-
-| event_type              | When the bot writes it                                        |
+| event_type              | When written                                                  |
 |-------------------------|---------------------------------------------------------------|
-| `scan`                  | One per closed 5-min candle per strike per scan loop. Full indicator snapshot + condition reasons. Default event_type when none is set in JSONL. |
-| `alert`                 | One per 5/5-pass scan. Includes SL/TP/lot math AND `bot_remark` / `bot_tags`. |
-| `rejection`             | One per silent rejection (typically a C0 fast-fail on spot/VWAP disagreement, or a re-entry blocker). |
-| `data_issue`            | Mid-session start where `get_latest_snapshot()` raised `Insufficient lookback`. Distinguished from rejections so analytics stay clean. |
-| `would_alert_extended`  | Phase 5.2: a 4/5 scan where the only failing condition is C1 and the option is between `c1_max_distance_pct` (30) and `c1_extended_zone_max_pct` (50) above VWAP. |
-| `gap`                   | One per bot startup. Sourced from `gap_log.jsonl`. Holds the directional gap decision, per-symbol gap %, and the toggle state. |
-
----
+| `scan`                  | One per closed 5-min candle per strike. Default when none set in JSONL. |
+| `alert`                 | One per 5/5-pass scan. Includes SL/TP/lot math + `bot_remark`/`bot_tags`. |
+| `rejection`             | Silent rejection (C0 fast-fail, re-entry blocker, etc.).     |
+| `data_issue`            | Mid-session start with `Insufficient lookback` ValueError.   |
+| `would_alert_extended`  | 4/5 scan, only C1 failing, option 30–50% above VWAP.        |
+| `gap`                   | One per bot startup from `gap_log.jsonl`.                    |
 
 ## Common columns (every row)
 
 | Column          | Type   | Notes                                                            |
 |-----------------|--------|------------------------------------------------------------------|
-| `timestamp_ist` | str    | ISO 8601 with `+05:30` offset. Always IST. Primary sort key.    |
+| `timestamp_ist` | str    | ISO 8601 with `+05:30` offset. Primary sort key.                 |
 | `event_type`    | str    | One of the values above.                                         |
 | `date`          | str    | `YYYY-MM-DD` derived from timestamp_ist.                         |
-| `month`         | str    | `YYYY-MM`. Used by the writer to pick the target Parquet file.   |
-| `symbol`        | str    | `NIFTY` / `BANKNIFTY` / null for gap rows that span both.        |
+| `month`         | str    | `YYYY-MM`. Used to pick the target Parquet file.                 |
+| `symbol`        | str    | `NIFTY` / `BANKNIFTY` / null for gap rows.                       |
 | `_logged_at`    | str    | Bot's wall-clock when it wrote the JSONL line.                   |
-
----
 
 ## Indicator columns (event_type ∈ {scan, alert, would_alert_extended})
 
@@ -1133,9 +1140,7 @@ Every row carries an `event_type`. Other columns are populated
 | `is_green`         | bool   | Whether the current candle is bullish.               |
 | `vix`              | float  | Session India VIX (locked at bot start).             |
 | `vix_regime`       | str    | `Low Vol` / `Normal` / `Elevated` / `High Vol`.      |
-| `opt_above_vwap_pct` | float | Phase 5.2: `(option_close - option_vwap) / option_vwap * 100`. Signed. |
-
----
+| `opt_above_vwap_pct` | float | `(option_close - option_vwap) / option_vwap * 100`. Signed. |
 
 ## Condition columns (event_type ∈ {scan, alert, would_alert_extended})
 
@@ -1146,11 +1151,6 @@ Every row carries an `event_type`. Other columns are populated
 | `all_passed`          | bool      | True only when 5/5 passed.                         |
 | `summary`             | str       | `C0 ✓ C1 ✓ C2 ✗ C3 ✓ C4 ✓`-style one-liner.        |
 | `reasons.C0` … `C4`   | str       | Per-condition reason text (flattened from nested). |
-
-The flattened `reasons.CN` columns let you query `df["reasons.C1"]`
-directly without un-nesting.
-
----
 
 ## Alert-only columns (event_type == "alert")
 
@@ -1171,18 +1171,11 @@ directly without un-nesting.
 | `vix_multiplier` | float  | The SL multiplier the regime imposed.                  |
 | `spot_position`  | str    | `Above VWAP ✓` (CE) or `Below VWAP ✓` (PE).            |
 | `time`           | str    | `HH:MM` IST.                                           |
-
-### Bot remark columns (alert only)
-
-| Column                   | Type | Notes                                              |
-|--------------------------|------|----------------------------------------------------|
-| `bot_remark`             | str  | Human-readable: "5/5 strong — opt 8% above VWAP, RSI 67 healthy zone, OI 18% below MA, vol 2.1× MA, first alert of day." |
-| `bot_tags`               | str  | Comma-separated ML tags, no spaces. |
-| `telegram_short_remark`  | str  | Trimmed for the Telegram alert "Insight:" line. |
+| `bot_remark`     | str    | Human-readable: "5/5 strong — opt 8% above VWAP, RSI 67 healthy zone..." |
+| `bot_tags`       | str    | Comma-separated ML tags, no spaces.                    |
+| `telegram_short_remark` | str | Trimmed for the Telegram alert "Insight:" line.   |
 
 ### Outcome columns (alert only — populated by user via Excel)
-
-These columns are back-filled by `sync_excel_notes_to_parquet`.
 
 | Column            | Type   | Notes                                                |
 |-------------------|--------|------------------------------------------------------|
@@ -1191,8 +1184,6 @@ These columns are back-filled by `sync_excel_notes_to_parquet`.
 | `pnl_rupees`      | float  | Sign convention: positive = profit.                  |
 | `outcome_remark`  | str    | Auto-generated from `bot_remark` + `order_status`.   |
 | `user_notes`      | str    | Free-form user observation.                          |
-
----
 
 ## Rejection-only columns (event_type == "rejection")
 
@@ -1203,27 +1194,21 @@ These columns are back-filled by `sync_excel_notes_to_parquet`.
 | `rejection_blocker`   | str  | Which condition / guardrail failed (e.g. `C0`, `RE_ENTRY_BLOCKED`). |
 | `rejection_reason`    | str  | One-line human explanation.                            |
 
----
-
 ## Gap-only columns (event_type == "gap")
-
-One row per bot startup.
 
 | Column                    | Type   | Notes                                              |
 |---------------------------|--------|----------------------------------------------------|
 | `decision`                | str    | `NORMAL`, `GAP_UP`, `GAP_DOWN`, `GAP_UP_DISABLED`, `GAP_DOWN_DISABLED`. Legacy: `GAP_DAY`, `GAP_DETECTED_BUT_DISABLED`. |
-| `enabled`                 | bool   | Gap-day rule toggle at the time of detection.       |
-| `threshold_pct`           | float  | The threshold % in force.                           |
-| `direction`               | str    | `both` / `up` / `down`.                             |
-| `any_triggered`           | bool   | At least one symbol breached threshold.             |
-| `nifty_open`              | float  | Today's 09:15 open for NIFTY.                       |
-| `nifty_prev_close`        | float  | Previous trading-day close for NIFTY.               |
-| `nifty_gap_pct`           | float  | Signed gap percentage for NIFTY.                    |
-| `nifty_triggers`          | bool   | NIFTY breached threshold this morning.              |
-| `nifty_error`             | str    | Diagnostic if gap math could not be computed.       |
+| `enabled`                 | bool   | Gap-day rule toggle at time of detection.          |
+| `threshold_pct`           | float  | The threshold % in force.                          |
+| `direction`               | str    | `both` / `up` / `down`.                            |
+| `any_triggered`           | bool   | At least one symbol breached threshold.            |
+| `nifty_open`              | float  | Today's 09:15 open for NIFTY.                      |
+| `nifty_prev_close`        | float  | Previous trading-day close for NIFTY.              |
+| `nifty_gap_pct`           | float  | Signed gap percentage for NIFTY.                   |
+| `nifty_triggers`          | bool   | NIFTY breached threshold this morning.             |
+| `nifty_error`             | str    | Diagnostic if gap math could not be computed.      |
 | (same six for `banknifty_*`) |     |                                                    |
-
----
 
 ## data_issue-only columns (event_type == "data_issue")
 
@@ -1234,114 +1219,18 @@ One row per bot startup.
 | `issue_type`     | str  | Typically `INSUFFICIENT_LOOKBACK`.                     |
 | `issue_message`  | str  | Indicator-calc error text (e.g. "need 33 candles").    |
 
----
-
 ## Forward-compatibility notes
 
-- **Adding a column:** future bot versions append columns. The writer's
-  `pd.concat` preserves new columns as nulls in old rows. Don't rename
-  existing columns; deprecate and add new ones.
+- **Adding a column:** append columns. `pd.concat` preserves new columns
+  as nulls in old rows. Don't rename existing columns; deprecate + add new.
 - **Adding a new event_type:** the writer accepts any string. Update
-  this doc and the Excel builder if the new type warrants its own
-  sheet or chart bucket.
+  this doc and the Excel builder if the new type warrants its own sheet.
 - **Removing a column:** never delete. Backfill with null in old files.
-
----
-
-## Example pandas queries
-
-### What did the bot remark on the first NIFTY alert each day?
-
-```python
-df = pd.read_parquet("data/scc_data_2026-05.parquet")
-alerts = df[df["event_type"] == "alert"]
-first_per_day = alerts.groupby("date").first()
-print(first_per_day[["symbol", "strike", "option_type", "bot_remark"]])
-```
-
-### How often did "strong" entries hit TP2?
-
-```python
-df = df[df["event_type"] == "alert"].copy()
-df["is_strong"] = df["bot_remark"].fillna("").str.contains("strong", case=False)
-counts = df.groupby(["is_strong", "order_status"]).size().unstack(fill_value=0)
-print(counts)
-```
-
-### Cumulative P&L curve
-
-```python
-df = df[df["event_type"] == "alert"].sort_values("timestamp_ist")
-df = df[df["pnl_rupees"].notna()]
-df["cum_pnl"] = df["pnl_rupees"].cumsum()
-df.set_index("timestamp_ist")["cum_pnl"].plot()
-```
-
-### Alerts grouped by C1 distance zone
-
-```python
-alerts = df[df["event_type"].isin(["alert", "would_alert_extended"])].copy()
-alerts["c1_zone"] = pd.cut(
-    alerts["opt_above_vwap_pct"],
-    bins=[-100, 10, 20, 25, 30, 50, 100],
-    labels=["fresh", "clean", "mid", "late_kept", "extended", "outside"],
-)
-print(alerts.groupby(["event_type", "c1_zone"]).size())
-```
-
-### Distribution of bot_tags across alerts
-
-```python
-from collections import Counter
-tags = df[df["event_type"] == "alert"]["bot_tags"].dropna()
-counter = Counter(t for row in tags for t in row.split(","))
-print(counter.most_common(20))
-```
 ````
 
 ---
 
-## Section 4 — EXCEL DASHBOARD LAYER
-
-### 3.4 — `src/dashboard/excel_builder.py`
-
-Reads the monthly Parquet files (via `load_parquet_for_quarter`) and
-emits a quarterly workbook at
-`logs/dashboards/dashboard_YYYY_QN.xlsx`. Eight sheets in this order:
-
-1. **Strategy Dashboard** — KPI tiles + 4 charts
-2. **Daily Summary** — one row per trading day with directional gap label
-3. **All Alerts** — full alert list with `opt_above_vwap_pct`, `bot_remark`, `bot_tags`
-4. **Order Place** — auto cols + manual cols, outcome cell coloring
-5. **All Signals** — `scan` / `alert` / `would_alert_extended` (last
-   highlighted light orange)
-6. **Rejections** — grouped by blocker
-7. **Gap History** — directional labels with color swatches
-8. **Config Snapshot** — current config values
-
-Idempotent: re-running rebuilds from scratch using latest Parquet. The
-function `_resolve_excel_path(year, quarter)` returns
-`logs/dashboards/dashboard_YYYY_QN.xlsx`. Quarters: Q1=Jan–Mar,
-Q2=Apr–Jun, Q3=Jul–Sep, Q4=Oct–Dec.
-
-**Style palette** (hex):
-
-| Element                  | Hex      | Notes                       |
-|--------------------------|----------|-----------------------------|
-| Header background        | `1F4E78` | Deep navy, white bold font  |
-| `TP2_HIT` fill           | `6FBF73` | Strong green                |
-| `TP1_HIT` fill           | `C8E6C9` | Light green                 |
-| `SL_HIT` fill            | `EF9A9A` | Red                         |
-| `WOULD_SKIP` fill        | `E0E0E0` | Grey                        |
-| `PARTIAL` fill           | `FFE082` | Yellow                      |
-| `GAP_UP` cell            | `FFCDD2` | Light red                   |
-| `GAP_DOWN` cell          | `BBDEFB` | Light blue                  |
-| `GAP_UP_DISABLED` cell   | `FFE0B2` | Orange                      |
-| `would_alert_extended` row | `FFE0B2` | Light orange              |
-| `all_passed` row         | `FFF59D` | Yellow                      |
-| KPI tile palette         | rotating: navy / green / orange / purple / teal / red |
-
-**Full source:**
+### 2.4 — `src/dashboard/excel_builder.py`
 
 ```python
 """Phase 5.2 — Quarterly Excel dashboard builder.
@@ -1349,8 +1238,24 @@ Q2=Apr–Jun, Q3=Jul–Sep, Q4=Oct–Dec.
 Reads the unified monthly Parquet files in ``data/`` and produces a
 human-facing workbook at ``logs/dashboards/dashboard_YYYY_QN.xlsx``.
 
-Idempotent: re-running ``update_dashboard`` rebuilds the workbook from
-scratch using the latest Parquet state.
+Eight sheets in order:
+
+1. Strategy Dashboard — KPI tiles + 4 charts (visual at-a-glance view)
+2. Daily Summary       — one row per trading day with the directional
+                         gap label and aggregate counts
+3. All Alerts          — every 5/5 alert; includes opt_above_vwap_pct,
+                         bot_remark, bot_tags
+4. Order Place         — automatic columns + manual columns the user
+                         fills in (order status, exit price, P&L,
+                         user notes); coloured by outcome
+5. All Signals         — full audit including ``would_alert_extended``
+                         rows highlighted in light orange
+6. Rejections          — grouped by blocker
+7. Gap History         — directional labels with colour swatches
+8. Config Snapshot     — current config values for this quarter
+
+Idempotent: re-running ``update_dashboard`` will rebuild the workbook
+from scratch using the latest Parquet state.
 """
 
 from __future__ import annotations
@@ -1366,6 +1271,7 @@ from loguru import logger
 from openpyxl import Workbook
 from openpyxl.chart import BarChart, LineChart, Reference
 from openpyxl.chart.label import DataLabelList
+from openpyxl.formatting.rule import CellIsRule
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 from openpyxl.worksheet.worksheet import Worksheet
@@ -1382,7 +1288,7 @@ IST = ZoneInfo("Asia/Kolkata")
 # Style palette
 # ---------------------------------------------------------------------------
 
-_HEADER_FILL = PatternFill("solid", fgColor="1F4E78")
+_HEADER_FILL = PatternFill("solid", fgColor="1F4E78")  # deep navy
 _HEADER_FONT = Font(name="Calibri", bold=True, color="FFFFFF", size=11)
 _TITLE_FONT = Font(name="Calibri", bold=True, color="1F4E78", size=16)
 _SUBTITLE_FONT = Font(name="Calibri", italic=True, color="595959", size=10)
@@ -1391,11 +1297,11 @@ _THIN = Side(style="thin", color="BFBFBF")
 _BORDER = Border(top=_THIN, bottom=_THIN, left=_THIN, right=_THIN)
 
 OUTCOME_FILLS = {
-    "TP2_HIT": PatternFill("solid", fgColor="6FBF73"),
-    "TP1_HIT": PatternFill("solid", fgColor="C8E6C9"),
-    "SL_HIT": PatternFill("solid", fgColor="EF9A9A"),
-    "WOULD_SKIP": PatternFill("solid", fgColor="E0E0E0"),
-    "PARTIAL": PatternFill("solid", fgColor="FFE082"),
+    "TP2_HIT": PatternFill("solid", fgColor="6FBF73"),      # strong green
+    "TP1_HIT": PatternFill("solid", fgColor="C8E6C9"),      # light green
+    "SL_HIT": PatternFill("solid", fgColor="EF9A9A"),       # red
+    "WOULD_SKIP": PatternFill("solid", fgColor="E0E0E0"),   # grey
+    "PARTIAL": PatternFill("solid", fgColor="FFE082"),      # yellow
 }
 
 GAP_FILLS = {
@@ -1426,6 +1332,11 @@ KPI_FILLS = [
 ]
 
 
+# ---------------------------------------------------------------------------
+# Path resolution
+# ---------------------------------------------------------------------------
+
+
 def _resolve_excel_path(year: int, quarter: int) -> Path:
     return DASHBOARDS_DIR / f"dashboard_{year:04d}_Q{quarter}.xlsx"
 
@@ -1445,17 +1356,25 @@ def _set_headers(ws: Worksheet, headers: Iterable[str], row: int = 1) -> None:
 
 
 def _autofit(ws: Worksheet, df: pd.DataFrame, header_row: int = 1) -> None:
+    """Approximate-autofit column widths from frame contents."""
     for col_idx, col in enumerate(df.columns, start=1):
-        max_len = max([len(str(col))] + [len(str(v)) for v in df[col].head(200).tolist()])
-        ws.column_dimensions[get_column_letter(col_idx)].width = min(max(12, max_len + 2), 48)
+        max_len = max(
+            [len(str(col))] + [len(str(v)) for v in df[col].head(200).tolist()]
+        )
+        ws.column_dimensions[get_column_letter(col_idx)].width = min(
+            max(12, max_len + 2), 48
+        )
 
 
-def _write_dataframe(ws: Worksheet, df: pd.DataFrame, header_row: int = 1) -> int:
+def _write_dataframe(
+    ws: Worksheet, df: pd.DataFrame, header_row: int = 1, start_row: int | None = None,
+) -> int:
+    """Write ``df`` to ``ws``. Returns row count written (excluding header)."""
     if df.empty:
         ws.cell(row=header_row, column=1, value="(no data yet)").font = _SUBTITLE_FONT
         return 0
     _set_headers(ws, [_pretty(c) for c in df.columns], row=header_row)
-    sr = header_row + 1
+    sr = start_row if start_row is not None else header_row + 1
     for row_offset, (_, row) in enumerate(df.iterrows()):
         for col_idx, col in enumerate(df.columns, start=1):
             value = row[col]
@@ -1467,84 +1386,614 @@ def _write_dataframe(ws: Worksheet, df: pd.DataFrame, header_row: int = 1) -> in
 
 
 def _pretty(col: str) -> str:
-    mapping = {
-        "opt_above_vwap_pct": "Opt Above VWAP %",
-        "bot_remark": "Bot Remark",
-        "bot_tags": "Bot Tags",
-        "outcome_remark": "Outcome Remark",
-        "user_notes": "User Notes",
-        "order_status": "Order Status",
-        "exit_price": "Exit Price",
-        "pnl_rupees": "P&L",
-        "timestamp_ist": "Timestamp IST",
-    }
-    if col in mapping:
-        return mapping[col]
+    """Convert ``opt_above_vwap_pct`` → ``Opt Above VWAP %`` etc."""
+    if col == "opt_above_vwap_pct": return "Opt Above VWAP %"
+    if col == "bot_remark":         return "Bot Remark"
+    if col == "bot_tags":           return "Bot Tags"
+    if col == "outcome_remark":     return "Outcome Remark"
+    if col == "user_notes":         return "User Notes"
+    if col == "order_status":       return "Order Status"
+    if col == "exit_price":         return "Exit Price"
+    if col == "pnl_rupees":         return "P&L"
+    if col == "timestamp_ist":      return "Timestamp IST"
     return col.replace("_", " ").title()
 
 
-def _outcome_fill_for(value):
+def _outcome_fill_for(value) -> PatternFill | None:
     if value is None or (isinstance(value, float) and pd.isna(value)):
         return None
     return OUTCOME_FILLS.get(str(value).strip().upper())
 
 
-def _gap_fill_for(value):
+def _gap_fill_for(value) -> PatternFill | None:
     if value is None or (isinstance(value, float) and pd.isna(value)):
         return None
     return GAP_FILLS.get(str(value).strip().upper())
+
+
+# ---------------------------------------------------------------------------
+# Sheet builders
+# ---------------------------------------------------------------------------
+
+
+def _build_strategy_dashboard(
+    ws: Worksheet, df: pd.DataFrame, year: int, quarter: int
+) -> None:
+    """KPI tiles + 4 charts. Designed to be the first thing the user sees."""
+    ws.sheet_view.showGridLines = False
+
+    ws.merge_cells("A1:H1")
+    title = ws.cell(row=1, column=1, value=f"SCC Strategy Dashboard — {year} Q{quarter}")
+    title.font = _TITLE_FONT
+    title.alignment = Alignment(horizontal="left", vertical="center")
+    ws.row_dimensions[1].height = 28
+
+    ws.merge_cells("A2:H2")
+    subtitle = ws.cell(
+        row=2, column=1,
+        value=(
+            "Auto-generated from Parquet · refreshes at 15:35 IST · "
+            "filter the All Alerts / All Signals sheets for detail"
+        ),
+    )
+    subtitle.font = _SUBTITLE_FONT
+
+    alerts = df[df["event_type"] == "alert"] if "event_type" in df.columns else df.iloc[0:0]
+    signals = df[df["event_type"].isin(["scan", "alert"])] if "event_type" in df.columns else df.iloc[0:0]
+    extended = df[df["event_type"] == "would_alert_extended"] if "event_type" in df.columns else df.iloc[0:0]
+
+    total_alerts = len(alerts)
+    nifty_alerts = int(((alerts.get("symbol") == "NIFTY").sum()) if not alerts.empty else 0)
+    bn_alerts = int(((alerts.get("symbol") == "BANKNIFTY").sum()) if not alerts.empty else 0)
+    total_scans = len(signals)
+    extended_count = len(extended)
+
+    outcome_series = alerts.get("order_status") if "order_status" in alerts.columns else pd.Series(dtype=object)
+    tp2 = int(((outcome_series == "TP2_HIT").sum()) if not alerts.empty else 0)
+    tp1 = int(((outcome_series == "TP1_HIT").sum()) if not alerts.empty else 0)
+    sl = int(((outcome_series == "SL_HIT").sum()) if not alerts.empty else 0)
+    realised_pnl = float(alerts.get("pnl_rupees", pd.Series(dtype=float)).sum()) if not alerts.empty else 0.0
+    filled_outcomes = int(outcome_series.notna().sum()) if not alerts.empty else 0
+    win_rate = (tp1 + tp2) / filled_outcomes * 100.0 if filled_outcomes > 0 else 0.0
+
+    kpi_rows = [
+        ("Total Alerts", total_alerts, 0),
+        ("NIFTY Alerts", nifty_alerts, 1),
+        ("BankNifty Alerts", bn_alerts, 2),
+        ("Total Scans", total_scans, 3),
+        ("Extended-Zone Scans", extended_count, 4),
+        ("Win Rate (filled)", f"{win_rate:.1f}%", 5),
+        ("TP2 Hit", tp2, 0),
+        ("TP1 Hit", tp1, 1),
+        ("SL Hit", sl, 2),
+        ("Filled Outcomes", filled_outcomes, 3),
+        ("Realised P&L (₹)", f"{realised_pnl:,.0f}", 4),
+        ("As of", datetime.now(IST).strftime("%Y-%m-%d %H:%M"), 5),
+    ]
+
+    base_row = 4
+    for idx, (label, value, palette_idx) in enumerate(kpi_rows):
+        row_off = (idx // 3) * 4
+        col_off = (idx % 3) * 3
+        top_row = base_row + row_off
+        anchor_col = 1 + col_off
+
+        # Top stripe (KPI accent).
+        for c in range(anchor_col, anchor_col + 2):
+            cell = ws.cell(row=top_row, column=c)
+            cell.fill = KPI_FILLS[palette_idx % len(KPI_FILLS)]
+            cell.font = Font(color="FFFFFF", bold=True, size=10)
+        ws.cell(row=top_row, column=anchor_col, value=label.upper())
+
+        # Big value cell (merged 2-wide).
+        ws.merge_cells(
+            start_row=top_row + 1, start_column=anchor_col,
+            end_row=top_row + 1, end_column=anchor_col + 1,
+        )
+        v_cell = ws.cell(row=top_row + 1, column=anchor_col, value=value)
+        v_cell.font = Font(size=18, bold=True, color="1F4E78")
+        v_cell.alignment = Alignment(horizontal="center", vertical="center")
+        v_cell.border = _BORDER
+        ws.row_dimensions[top_row + 1].height = 32
+
+    for col_letter in ("A", "B", "C", "D", "E", "F", "G", "H"):
+        ws.column_dimensions[col_letter].width = 18
+
+    # ---------- charts ----------
+    chart_start_row = base_row + (((len(kpi_rows) - 1) // 3) + 1) * 4 + 2
+
+    def _write_agg_table(
+        title: str, items: list[tuple[str, float]], col_anchor: int
+    ) -> tuple[int, int, int]:
+        """Off-screen aggregation table that the chart references."""
+        ws.cell(row=chart_start_row, column=col_anchor, value=title).font = Font(
+            bold=True, color="1F4E78"
+        )
+        ws.cell(row=chart_start_row + 1, column=col_anchor, value="Bucket").font = _HEADER_FONT
+        ws.cell(row=chart_start_row + 1, column=col_anchor).fill = _HEADER_FILL
+        ws.cell(row=chart_start_row + 1, column=col_anchor + 1, value="Count").font = _HEADER_FONT
+        ws.cell(row=chart_start_row + 1, column=col_anchor + 1).fill = _HEADER_FILL
+        for i, (k, v) in enumerate(items, start=1):
+            ws.cell(row=chart_start_row + 1 + i, column=col_anchor, value=k)
+            ws.cell(row=chart_start_row + 1 + i, column=col_anchor + 1, value=v)
+        return chart_start_row + 1, chart_start_row + 1 + len(items), col_anchor
+
+    # 1. Wins vs Losses by Strike Relation
+    relation_alerts = (
+        alerts[alerts.get("relation").notna()]
+        if not alerts.empty and "relation" in alerts.columns else pd.DataFrame()
+    )
+    rel_buckets: list[tuple[str, float]] = []
+    if not relation_alerts.empty:
+        for relation in ("ITM", "ATM", "OTM"):
+            slice_ = relation_alerts[relation_alerts["relation"] == relation]
+            wins = int(
+                ((slice_.get("order_status") == "TP2_HIT").sum() if "order_status" in slice_.columns else 0)
+                + ((slice_.get("order_status") == "TP1_HIT").sum() if "order_status" in slice_.columns else 0)
+            )
+            losses = int(((slice_.get("order_status") == "SL_HIT").sum()) if "order_status" in slice_.columns else 0)
+            rel_buckets.append((f"{relation} Win", wins))
+            rel_buckets.append((f"{relation} Loss", losses))
+    if not rel_buckets:
+        rel_buckets = [("No filled outcomes yet", 0)]
+
+    hdr_row, end_row, anchor = _write_agg_table(
+        "Wins / Losses by Strike Relation", rel_buckets, col_anchor=10
+    )
+    if any(v > 0 for _, v in rel_buckets):
+        chart1 = BarChart(); chart1.type = "col"; chart1.style = 11
+        chart1.title = "Wins vs Losses by Strike Relation"
+        chart1.y_axis.title = "Count"; chart1.x_axis.title = "Bucket"
+        data_ref = Reference(ws, min_col=anchor + 1, min_row=hdr_row, max_row=end_row, max_col=anchor + 1)
+        cats_ref = Reference(ws, min_col=anchor, min_row=hdr_row + 1, max_row=end_row)
+        chart1.add_data(data_ref, titles_from_data=True); chart1.set_categories(cats_ref)
+        chart1.dataLabels = DataLabelList(showVal=True)
+        ws.add_chart(chart1, f"A{chart_start_row}")
+
+    # 2. Alerts by VIX Regime
+    vix_counts = (
+        alerts["vix_regime"].fillna("Unknown").value_counts().to_dict()
+        if not alerts.empty and "vix_regime" in alerts.columns else {}
+    )
+    vix_items = list(vix_counts.items()) or [("(no alerts)", 0)]
+    hdr2, end2, anc2 = _write_agg_table("Alerts by VIX Regime", vix_items, col_anchor=13)
+    if any(v > 0 for _, v in vix_items):
+        chart2 = BarChart(); chart2.type = "bar"; chart2.style = 12
+        chart2.title = "Alerts by VIX Regime"
+        data_ref = Reference(ws, min_col=anc2 + 1, min_row=hdr2, max_row=end2, max_col=anc2 + 1)
+        cats_ref = Reference(ws, min_col=anc2, min_row=hdr2 + 1, max_row=end2)
+        chart2.add_data(data_ref, titles_from_data=True); chart2.set_categories(cats_ref)
+        chart2.dataLabels = DataLabelList(showVal=True)
+        ws.add_chart(chart2, f"E{chart_start_row}")
+
+    # 3. Alerts by Time of Day (30-min buckets)
+    time_buckets: dict[str, int] = {}
+    if not alerts.empty and "time" in alerts.columns:
+        for t in alerts["time"].dropna().astype(str):
+            try:
+                hh, mm = int(t[:2]), int(t[3:5])
+            except Exception:
+                continue
+            anchor_minute = (mm // 30) * 30
+            key = f"{hh:02d}:{anchor_minute:02d}"
+            time_buckets[key] = time_buckets.get(key, 0) + 1
+    time_items = sorted(time_buckets.items()) or [("(no alerts)", 0)]
+    hdr3, end3, anc3 = _write_agg_table("Alerts by 30-min Time Bucket", time_items, col_anchor=16)
+    if any(v > 0 for _, v in time_items):
+        chart3 = BarChart(); chart3.type = "col"; chart3.style = 13
+        chart3.title = "Alerts by Time of Day (30-min buckets)"
+        chart3.x_axis.title = "Time bucket"; chart3.y_axis.title = "Alerts"
+        data_ref = Reference(ws, min_col=anc3 + 1, min_row=hdr3, max_row=end3, max_col=anc3 + 1)
+        cats_ref = Reference(ws, min_col=anc3, min_row=hdr3 + 1, max_row=end3)
+        chart3.add_data(data_ref, titles_from_data=True); chart3.set_categories(cats_ref)
+        chart3.dataLabels = DataLabelList(showVal=True)
+        ws.add_chart(chart3, f"A{chart_start_row + 16}")
+
+    # 4. Cumulative P&L line
+    cum_items: list[tuple[str, float]] = []
+    if not alerts.empty and "pnl_rupees" in alerts.columns:
+        pnl_rows = alerts[alerts["pnl_rupees"].notna()].sort_values("timestamp_ist")
+        running = 0.0
+        for _, r in pnl_rows.iterrows():
+            running += float(r["pnl_rupees"])
+            label = str(r.get("date") or r.get("timestamp_ist", ""))[:10]
+            cum_items.append((label, running))
+    if not cum_items:
+        cum_items = [("(no filled P&L)", 0.0)]
+    hdr4, end4, anc4 = _write_agg_table("Cumulative P&L", cum_items, col_anchor=19)
+    if any(isinstance(v, (int, float)) and v != 0 for _, v in cum_items):
+        chart4 = LineChart(); chart4.style = 12
+        chart4.title = "Cumulative P&L (₹)"
+        chart4.x_axis.title = "Date"; chart4.y_axis.title = "Cumulative P&L"
+        data_ref = Reference(ws, min_col=anc4 + 1, min_row=hdr4, max_row=end4, max_col=anc4 + 1)
+        cats_ref = Reference(ws, min_col=anc4, min_row=hdr4 + 1, max_row=end4)
+        chart4.add_data(data_ref, titles_from_data=True); chart4.set_categories(cats_ref)
+        ws.add_chart(chart4, f"E{chart_start_row + 16}")
+
+
+def _build_daily_summary(ws: Worksheet, df: pd.DataFrame) -> int:
+    if df.empty or "date" not in df.columns:
+        _set_headers(ws, ["Date", "Note"])
+        ws.cell(row=2, column=1, value="(no data)").font = _SUBTITLE_FONT
+        return 0
+
+    alerts = df[df["event_type"] == "alert"]
+    signals = df[df["event_type"].isin(["scan", "alert"])]
+    extended = df[df["event_type"] == "would_alert_extended"]
+    rejections = df[df["event_type"] == "rejection"]
+    gaps = df[df["event_type"] == "gap"]
+
+    dates = sorted({d for d in df["date"].dropna().unique()})
+
+    rows: list[dict] = []
+    for d in dates:
+        gap_row = gaps[gaps["date"] == d]
+        decision = (
+            gap_row.iloc[0]["decision"]
+            if not gap_row.empty and "decision" in gap_row.columns else "NORMAL"
+        )
+        nifty_gap = gap_row.iloc[0].get("nifty_gap_pct") if not gap_row.empty else None
+        bn_gap = gap_row.iloc[0].get("banknifty_gap_pct") if not gap_row.empty else None
+        rows.append({
+            "date": d, "gap_decision": decision,
+            "nifty_gap_pct": nifty_gap, "banknifty_gap_pct": bn_gap,
+            "scans": int(len(signals[signals["date"] == d])),
+            "alerts": int(len(alerts[alerts["date"] == d])),
+            "extended": int(len(extended[extended["date"] == d])),
+            "rejections": int(len(rejections[rejections["date"] == d])),
+            "nifty_alerts": int(((alerts["date"] == d) & (alerts.get("symbol") == "NIFTY")).sum())
+                if not alerts.empty else 0,
+            "banknifty_alerts": int(((alerts["date"] == d) & (alerts.get("symbol") == "BANKNIFTY")).sum())
+                if not alerts.empty else 0,
+        })
+
+    out = pd.DataFrame(rows)
+    written = _write_dataframe(ws, out)
+
+    if "gap_decision" in out.columns and written:
+        gap_col_idx = list(out.columns).index("gap_decision") + 1
+        for i in range(written):
+            cell = ws.cell(row=2 + i, column=gap_col_idx)
+            fill = _gap_fill_for(cell.value)
+            if fill:
+                cell.fill = fill
+    ws.freeze_panes = "A2"
+    return written
+
+
+def _build_all_alerts(ws: Worksheet, df: pd.DataFrame) -> int:
+    alerts = df[df["event_type"] == "alert"] if "event_type" in df.columns else pd.DataFrame()
+    if alerts.empty:
+        _set_headers(ws, ["(no alerts yet)"])
+        return 0
+
+    show_cols = [
+        "timestamp_ist", "date", "time", "symbol", "strike", "relation",
+        "option_type", "expiry", "spot_price", "entry", "sl", "tp1", "tp2",
+        "lots", "total_risk", "vix", "vix_regime", "day_type",
+        "opt_above_vwap_pct", "rsi", "rsi_ma", "oi", "oi_ma",
+        "volume", "volume_ma", "bot_remark", "bot_tags",
+    ]
+    cols = [c for c in show_cols if c in alerts.columns]
+    out = alerts[cols].sort_values("timestamp_ist").reset_index(drop=True)
+    written = _write_dataframe(ws, out)
+
+    for wrap_col in ("bot_remark", "bot_tags"):
+        if wrap_col in out.columns:
+            ci = list(out.columns).index(wrap_col) + 1
+            ws.column_dimensions[get_column_letter(ci)].width = 60
+            for r in range(2, written + 2):
+                ws.cell(row=r, column=ci).alignment = Alignment(
+                    wrap_text=True, vertical="top"
+                )
+    ws.freeze_panes = "A2"
+    return written
+
+
+def _build_order_place(ws: Worksheet, df: pd.DataFrame) -> int:
+    alerts = df[df["event_type"] == "alert"] if "event_type" in df.columns else pd.DataFrame()
+
+    auto_cols = [
+        "timestamp_ist", "date", "time", "symbol", "strike", "relation",
+        "option_type", "entry", "sl", "tp1", "tp2", "lots", "total_risk",
+        "bot_remark",
+    ]
+    manual_cols = ["order_status", "exit_price", "pnl_rupees", "outcome_remark", "user_notes"]
+
+    if alerts.empty:
+        _set_headers(ws, [_pretty(c) for c in auto_cols + manual_cols])
+        ws.cell(row=2, column=1,
+                value="(no alerts yet — manual columns activate after first alert)").font = _SUBTITLE_FONT
+        return 0
+
+    out = alerts.copy()
+    for col in manual_cols:
+        if col not in out.columns:
+            out[col] = None
+    out = out[auto_cols + manual_cols].sort_values("timestamp_ist").reset_index(drop=True)
+    written = _write_dataframe(ws, out)
+
+    if "order_status" in out.columns and written:
+        status_col_idx = list(out.columns).index("order_status") + 1
+        for i in range(written):
+            cell = ws.cell(row=2 + i, column=status_col_idx)
+            fill = _outcome_fill_for(cell.value)
+            if fill:
+                cell.fill = fill
+
+    if "pnl_rupees" in out.columns and written:
+        pnl_idx = list(out.columns).index("pnl_rupees") + 1
+        green = PatternFill("solid", fgColor="C8E6C9")
+        red = PatternFill("solid", fgColor="EF9A9A")
+        for i in range(written):
+            cell = ws.cell(row=2 + i, column=pnl_idx)
+            v = cell.value
+            if v is None or (isinstance(v, float) and pd.isna(v)):
+                continue
+            try:
+                fv = float(v)
+            except (TypeError, ValueError):
+                continue
+            cell.fill = green if fv >= 0 else red
+
+    for wrap_col in ("bot_remark", "outcome_remark", "user_notes"):
+        if wrap_col in out.columns:
+            ci = list(out.columns).index(wrap_col) + 1
+            ws.column_dimensions[get_column_letter(ci)].width = 48
+            for r in range(2, written + 2):
+                ws.cell(row=r, column=ci).alignment = Alignment(
+                    wrap_text=True, vertical="top"
+                )
+
+    # Legend strip below the data.
+    legend_row = written + 3
+    ws.cell(row=legend_row, column=1, value="Outcome legend:").font = Font(bold=True)
+    for i, (label, fill) in enumerate(OUTCOME_FILLS.items(), start=2):
+        cell = ws.cell(row=legend_row, column=i, value=label)
+        cell.fill = fill
+        cell.alignment = Alignment(horizontal="center")
+    ws.freeze_panes = "A2"
+    return written
+
+
+def _build_all_signals(ws: Worksheet, df: pd.DataFrame) -> int:
+    if df.empty or "event_type" not in df.columns:
+        _set_headers(ws, ["(no signals yet)"])
+        return 0
+
+    signals = df[df["event_type"].isin(["scan", "alert", "would_alert_extended"])].copy()
+    if signals.empty:
+        _set_headers(ws, ["(no signals yet)"])
+        return 0
+
+    show_cols = [
+        "timestamp_ist", "date", "time", "event_type", "symbol", "strike",
+        "relation", "option_type", "spot_price", "spot_vwap",
+        "option_close", "option_vwap", "opt_above_vwap_pct",
+        "rsi", "rsi_ma", "oi", "oi_ma", "volume", "volume_ma",
+        "is_green", "all_passed", "summary",
+    ]
+    cols = [c for c in show_cols if c in signals.columns]
+    if "time" not in signals.columns and "timestamp_ist" in signals.columns:
+        signals["time"] = signals["timestamp_ist"].astype(str).str.slice(11, 16)
+        cols = [c for c in show_cols if c in signals.columns]
+
+    out = signals[cols].sort_values("timestamp_ist").reset_index(drop=True)
+    written = _write_dataframe(ws, out)
+
+    # Highlight: would_alert_extended → light orange; all_passed → yellow;
+    # else colour by Relation.
+    if written:
+        all_passed_col = (
+            list(out.columns).index("all_passed") + 1 if "all_passed" in out.columns else None
+        )
+        event_col = list(out.columns).index("event_type") + 1
+        relation_col = (
+            list(out.columns).index("relation") + 1 if "relation" in out.columns else None
+        )
+        for i in range(written):
+            event_val = ws.cell(row=2 + i, column=event_col).value
+            if event_val == "would_alert_extended":
+                for c in range(1, len(out.columns) + 1):
+                    ws.cell(row=2 + i, column=c).fill = EXTENDED_FILL
+                continue
+            ap_val = ws.cell(row=2 + i, column=all_passed_col).value if all_passed_col else False
+            if ap_val is True or ap_val == "True":
+                for c in range(1, len(out.columns) + 1):
+                    ws.cell(row=2 + i, column=c).fill = ALL_PASSED_FILL
+                continue
+            if relation_col is not None:
+                rel = ws.cell(row=2 + i, column=relation_col).value
+                fill = RELATION_FILLS.get(str(rel)) if rel else None
+                if fill:
+                    for c in range(1, len(out.columns) + 1):
+                        ws.cell(row=2 + i, column=c).fill = fill
+    ws.freeze_panes = "A2"
+    return written
+
+
+def _build_rejections(ws: Worksheet, df: pd.DataFrame) -> int:
+    if df.empty or "event_type" not in df.columns:
+        _set_headers(ws, ["(no rejections)"])
+        return 0
+    rej = df[df["event_type"] == "rejection"].copy()
+    if rej.empty:
+        _set_headers(ws, ["(no rejections)"])
+        return 0
+    cols = [
+        c for c in (
+            "timestamp_ist", "date", "symbol", "strike", "option_type",
+            "rejection_blocker", "rejection_reason",
+        ) if c in rej.columns
+    ]
+    out = (
+        rej[cols].sort_values(["rejection_blocker", "timestamp_ist"]).reset_index(drop=True)
+    )
+    written = _write_dataframe(ws, out)
+    ws.freeze_panes = "A2"
+    return written
+
+
+def _build_gap_history(ws: Worksheet, df: pd.DataFrame) -> int:
+    if df.empty or "event_type" not in df.columns:
+        _set_headers(ws, ["(no gap history)"])
+        return 0
+    gaps = df[df["event_type"] == "gap"].copy()
+    if gaps.empty:
+        _set_headers(ws, ["(no gap history)"])
+        return 0
+    cols = [
+        c for c in (
+            "timestamp_ist", "date", "decision", "enabled", "threshold_pct",
+            "direction", "any_triggered",
+            "nifty_open", "nifty_prev_close", "nifty_gap_pct",
+            "banknifty_open", "banknifty_prev_close", "banknifty_gap_pct",
+        ) if c in gaps.columns
+    ]
+    out = gaps[cols].sort_values("timestamp_ist").reset_index(drop=True)
+    written = _write_dataframe(ws, out)
+
+    if "decision" in out.columns and written:
+        dec_col_idx = list(out.columns).index("decision") + 1
+        for i in range(written):
+            cell = ws.cell(row=2 + i, column=dec_col_idx)
+            fill = _gap_fill_for(cell.value)
+            if fill:
+                cell.fill = fill
+    ws.freeze_panes = "A2"
+    return written
+
+
+def _build_config_snapshot(ws: Worksheet) -> None:
+    """Flatten the current config.yaml into a Setting/Value sheet."""
+    from src.config_loader import load_config
+
+    project_root = Path(__file__).resolve().parents[2]
+    config_path = project_root / "config" / "config.yaml"
+    try:
+        cfg = load_config(config_path)
+    except Exception as e:
+        ws.cell(row=1, column=1, value=f"Failed to load config: {e}").font = _SUBTITLE_FONT
+        return
+
+    rows = []
+    rows.append(("Generated at", datetime.now(IST).strftime("%Y-%m-%d %H:%M:%S")))
+    rows.append(("Active feed", cfg.feeds.active_feed))
+    rows.append(("Alert mode", cfg.mode.alert_mode))
+    rows.append(("Order place mode", cfg.mode.order_place_mode))
+    rows.append(("Paper trade mode", cfg.mode.paper_trade_mode))
+    rows.append(("NIFTY enabled", cfg.instruments.nifty_enabled))
+    rows.append(("BankNifty enabled", cfg.instruments.banknifty_enabled))
+    rows.append(("NIFTY lot size", cfg.instruments.nifty_lot_size))
+    rows.append(("BankNifty lot size", cfg.instruments.banknifty_lot_size))
+    rows.append(("Normal start time", cfg.time_rules.normal_start_time))
+    rows.append(("Gap-day start time", cfg.time_rules.gap_day_start_time))
+    rows.append(("Last entry time", cfg.time_rules.last_entry_time))
+    rows.append(("Hard squareoff time", cfg.time_rules.hard_squareoff_time))
+    rows.append(("Gap-day enabled", cfg.time_rules.gap_day_enabled))
+    rows.append(("Gap-day threshold %", cfg.time_rules.gap_day_threshold_pct))
+    rows.append(("Gap-day direction", cfg.time_rules.gap_day_direction))
+    rows.append(("Target risk / trade (₹)", cfg.risk_reward.target_risk_per_trade))
+    rows.append(("Risk range", f"₹{cfg.risk_reward.risk_range_min}–{cfg.risk_reward.risk_range_max}"))
+    rows.append(("TP1 / TP2 (normal)", f"{cfg.risk_reward.normal_day_tp1_r}R / {cfg.risk_reward.normal_day_tp2_r}R"))
+    rows.append(("TP1 / TP2 (expiry)", f"{cfg.risk_reward.expiry_day_tp1_r}R / {cfg.risk_reward.expiry_day_tp2_r}R"))
+    rows.append(("Max SL per day", cfg.circuit_breakers.max_sl_per_day))
+    rows.append(("Max loss per day (₹)", cfg.circuit_breakers.max_loss_per_day_rupees))
+    rows.append(("RSI min / max", f"{cfg.conditions.c3_rsi_min} – {cfg.conditions.c3_rsi_max}"))
+    rows.append(("C1 max distance %", cfg.conditions.c1_max_distance_pct))
+    rows.append(("C1 extended zone max %", cfg.conditions.c1_extended_zone_max_pct))
+    rows.append(("Auto-dashboard at 15:35", cfg.dashboard.auto_trigger_at_1535))
+
+    _set_headers(ws, ["Setting", "Value"])
+    for i, (k, v) in enumerate(rows, start=2):
+        ws.cell(row=i, column=1, value=k).font = _BODY_FONT
+        ws.cell(row=i, column=2, value=v).font = _BODY_FONT
+    ws.column_dimensions["A"].width = 30
+    ws.column_dimensions["B"].width = 30
+
+
+# ---------------------------------------------------------------------------
+# Public — update_dashboard
+# ---------------------------------------------------------------------------
+
+
+def update_dashboard() -> dict:
+    """Refresh every quarter touched by the data files. Idempotent."""
+    DASHBOARDS_DIR.mkdir(parents=True, exist_ok=True)
+
+    now_ist = datetime.now(IST)
+    today_q = quarter_for_date(now_ist)
+
+    # Find every (year, quarter) present in the Parquet data.
+    from src.dashboard.data_writer import _all_parquet_months  # avoid cycle
+
+    months = _all_parquet_months()
+    quarters: set[tuple[int, int]] = set()
+    for p in months:
+        try:
+            month_str = p.stem.replace("scc_data_", "")
+            year, month = map(int, month_str.split("-"))
+            quarters.add((year, (month - 1) // 3 + 1))
+        except Exception:
+            continue
+
+    # Always include current quarter so the file exists on day 1.
+    quarters.add(today_q)
+
+    if not quarters:
+        return {"status": "no_data", "output_path": None}
+
+    latest_written: Path | None = None
+    counts = {
+        "alerts_added": 0, "signals_added": 0,
+        "order_place_added": 0, "rejections_added": 0,
+        "gaps_added": 0, "quarters_touched": 0,
+    }
+
+    for year, quarter in sorted(quarters):
+        df = load_parquet_for_quarter(year, quarter)
+        path = _build_workbook(year, quarter, df)
+        latest_written = path
+        counts["quarters_touched"] += 1
+        if not df.empty and "event_type" in df.columns:
+            counts["alerts_added"] += int((df["event_type"] == "alert").sum())
+            counts["signals_added"] += int(
+                df["event_type"].isin(["scan", "alert", "would_alert_extended"]).sum()
+            )
+            counts["order_place_added"] += int((df["event_type"] == "alert").sum())
+            counts["rejections_added"] += int((df["event_type"] == "rejection").sum())
+            counts["gaps_added"] += int((df["event_type"] == "gap").sum())
+
+    return {
+        "status": "ok",
+        "output_path": str(latest_written) if latest_written else None,
+        **counts,
+    }
+
+
+def _build_workbook(year: int, quarter: int, df: pd.DataFrame) -> Path:
+    wb = Workbook()
+    dash = wb.active
+    dash.title = "Strategy Dashboard"
+    _build_strategy_dashboard(dash, df, year, quarter)
+
+    daily = wb.create_sheet("Daily Summary");   _build_daily_summary(daily, df)
+    alerts = wb.create_sheet("All Alerts");     _build_all_alerts(alerts, df)
+    order = wb.create_sheet("Order Place");     _build_order_place(order, df)
+    signals = wb.create_sheet("All Signals");   _build_all_signals(signals, df)
+    rejects = wb.create_sheet("Rejections");    _build_rejections(rejects, df)
+    gaps = wb.create_sheet("Gap History");      _build_gap_history(gaps, df)
+    cfg_sheet = wb.create_sheet("Config Snapshot"); _build_config_snapshot(cfg_sheet)
+
+    path = _resolve_excel_path(year, quarter)
+    wb.save(path)
+    logger.info(f"Dashboard written: {path}")
+    return path
 ```
 
-(The full `excel_builder.py` continues with the eight sheet builders.
-Each builder reads its slice of `df` by `event_type` and produces the
-sheet described above. The builders preserve the exact column lists
-from `data/schema.md`. For the complete in-tree implementation see the
-existing source — its behaviour is fully specified by the data schema
-and the style palette table above, so a rebuild from scratch follows
-mechanically.)
+---
 
-**Sheet-by-sheet specification:**
-
-| Sheet | Source rows | Columns shown | Cell coloring | Freeze pane |
-|---|---|---|---|---|
-| Strategy Dashboard | All event_types | 12 KPI tiles + 4 charts | KPI tile palette | n/a |
-| Daily Summary | All event_types, grouped by `date` | date, gap_decision, nifty_gap_pct, banknifty_gap_pct, scans, alerts, extended, rejections, nifty_alerts, banknifty_alerts | gap_decision cell colored by GAP_FILLS | A2 |
-| All Alerts | `event_type=="alert"` | timestamp_ist, date, time, symbol, strike, relation, option_type, expiry, spot_price, entry, sl, tp1, tp2, lots, total_risk, vix, vix_regime, day_type, opt_above_vwap_pct, rsi, rsi_ma, oi, oi_ma, volume, volume_ma, bot_remark, bot_tags | bot_remark/bot_tags columns wrap text, width 60 | A2 |
-| Order Place | `event_type=="alert"` | Auto: timestamp_ist, date, time, symbol, strike, relation, option_type, entry, sl, tp1, tp2, lots, total_risk, bot_remark. Manual: order_status, exit_price, pnl_rupees, outcome_remark, user_notes | order_status colored by OUTCOME_FILLS, pnl_rupees green/red by sign | A2 |
-| All Signals | `event_type in {scan, alert, would_alert_extended}` | timestamp_ist, date, time, event_type, symbol, strike, relation, option_type, spot_price, spot_vwap, option_close, option_vwap, opt_above_vwap_pct, rsi, rsi_ma, oi, oi_ma, volume, volume_ma, is_green, all_passed, summary | would_alert_extended rows EXTENDED_FILL; all_passed rows ALL_PASSED_FILL; others by RELATION_FILLS | A2 |
-| Rejections | `event_type=="rejection"` | timestamp_ist, date, symbol, strike, option_type, rejection_blocker, rejection_reason | — | A2 |
-| Gap History | `event_type=="gap"` | timestamp_ist, date, decision, enabled, threshold_pct, direction, any_triggered, nifty_open, nifty_prev_close, nifty_gap_pct, banknifty_open, banknifty_prev_close, banknifty_gap_pct | decision cell colored by GAP_FILLS | A2 |
-| Config Snapshot | live `load_config()` | Setting, Value | — | n/a |
-
-**The four Strategy Dashboard charts:**
-
-1. **Wins vs Losses by Strike Relation** — `BarChart` col, style 11.
-   Buckets: ITM Win, ITM Loss, ATM Win, ATM Loss, OTM Win, OTM Loss.
-   Wins = TP2_HIT + TP1_HIT, Losses = SL_HIT.
-2. **Alerts by VIX Regime** — `BarChart` bar, style 12.
-   Buckets: alert counts grouped by `vix_regime`.
-3. **Alerts by Time of Day (30-min buckets)** — `BarChart` col, style 13.
-   `time` → `f"{hh:02d}:{(mm//30)*30:02d}"`.
-4. **Cumulative P&L** — `LineChart` style 12.
-   Sort alerts by timestamp, take running sum of `pnl_rupees`, x-axis = date.
-
-Charts are anchored at `A{chart_start_row}` and `E{chart_start_row}`
-(top row), then `A{chart_start_row+16}` and `E{chart_start_row+16}`
-(bottom row). Aggregation tables are written off-screen at column
-anchors 10, 13, 16, 19 so `Reference()` can point at them.
-
-The complete `_build_workbook` entry point creates an empty `Workbook`,
-renames the first sheet to "Strategy Dashboard", builds it, then
-creates and builds each subsequent sheet in the order above, then
-calls `wb.save(_resolve_excel_path(year, quarter))`.
-
-**Public entry point** `update_dashboard()` returns
-`{"status": "ok"|"no_data", "output_path": str|None, "alerts_added": int, "signals_added": int, "order_place_added": int, "rejections_added": int, "gaps_added": int, "quarters_touched": int}`.
-It walks every (year, quarter) present in the Parquet data (always
-including the current quarter so the file exists even on day 1) and
-rebuilds each workbook in place.
-
-### 3.5 — `src/dashboard/__init__.py`
+### 2.5 — `src/dashboard/__init__.py`
 
 ```python
 from src.dashboard.data_writer import (
@@ -1568,7 +2017,7 @@ __all__ = [
 ]
 ```
 
-### 3.6 — `scripts/update_dashboard.py` + `update_dashboard.bat`
+### 2.6 — `scripts/update_dashboard.py` + `update_dashboard.bat`
 
 Manual entry point. Same sequence as the `finally`-block auto-run:
 JSONL → Parquet, then Excel rebuild, then Excel-notes → Parquet
@@ -1649,202 +2098,7 @@ pause
 
 ---
 
-## STEP 4 — Orchestrator wiring
-
-These are the small deltas inside `src/main.py`. Each one is already
-present in the §2.4 source of PHASE_5A as an inert hook with a
-`# Phase 5.2:` comment; activating the dashboard module simply makes
-each of those hooks live.
-
-### 4.1 — `bot_remark` + `bot_tags` in `_fire_alert`
-
-After building `alert_data` but before `signal_logger.log_alert(...)`:
-
-```python
-try:
-    context = {
-        "time_hhmm": now.strftime("%H:%M"),
-        "vix_regime": self.session_vix_info.regime.value,
-        "is_expiry_day": is_expiry,
-        "daily_sl_count": self.state.get_daily_sl_count(),
-        "daily_alert_count": self.session_alert_count,
-    }
-    snapshot_dict = {
-        "option_close": snapshot.close,
-        "option_vwap": snapshot.vwap,
-        "rsi": snapshot.rsi,
-        "rsi_ma": snapshot.rsi_ma,
-        "oi": snapshot.oi,
-        "oi_ma": snapshot.oi_ma,
-        "volume": snapshot.volume,
-        "volume_ma": snapshot.volume_ma,
-        "opt_above_vwap_pct": signal_record.get("opt_above_vwap_pct", 0.0),
-    }
-    bot_remark, bot_tags = generate_remark_and_tags(snapshot_dict, context)
-    alert_data["bot_remark"] = bot_remark
-    alert_data["bot_tags"] = bot_tags
-    alert_data["telegram_short_remark"] = telegram_short_remark(bot_remark)
-except Exception as e:
-    logger.warning(f"Bot remark generation failed: {e}")
-    alert_data.setdefault("bot_remark", "")
-    alert_data.setdefault("bot_tags", "")
-    alert_data.setdefault("telegram_short_remark", "")
-```
-
-### 4.2 — "Insight:" line in `TelegramAlerter._format_signal`
-
-In `src/alerts/telegram_bot.py`, change `_format_signal` to read the
-short remark from the dict and inject a line between the "Total Risk"
-line and the "C0 ✓ ..." line:
-
-```python
-insight = (s.get("telegram_short_remark") or "").strip()
-insight_line = f"\nInsight: {insight}\n" if insight else "\n"
-return (
-    "🚨 SHORT COVER CASCADE SIGNAL\n"
-    "─────────────────────────────\n"
-    ...
-    f"Lots: {s['lots']} → Total Risk: ₹{s['total_risk']:,.2f}\n"
-    f"({s['lots']} × {s['lot_size']} × ₹{s['risk_per_unit']:.2f})\n"
-    f"{insight_line}"
-    "C0 ✓ C1 ✓ C2 ✓ C3 ✓ C4 ✓\n"
-    ...
-)
-```
-
-When `telegram_short_remark` is missing/blank, the rendering is identical
-to Phase 5A.
-
-### 4.3 — `_maybe_log_extended_zone` in `_scan_strike`
-
-Already present in PHASE_5A as an inert method (it checks for the
-Phase 5B config keys via try/except AttributeError and bails out
-silently in 5A). Once the `conditions` section exists in config.yaml
-(§2.2 above), the method becomes live. No code change required.
-
-Reproduced here for clarity:
-
-```python
-def _maybe_log_extended_zone(self, signal_record: dict, result) -> None:
-    """Capture 4/5 scans where C1's late-entry filter is the only blocker
-    AND the option sits in the extended zone window.
-    """
-    cfg = self.config
-    try:
-        log_enabled = cfg.logging.log_extended_zone
-        zone_enabled = cfg.conditions.c1_extended_zone_enabled
-        max_pct = cfg.conditions.c1_max_distance_pct
-        ext_max = cfg.conditions.c1_extended_zone_max_pct
-    except AttributeError:
-        return
-
-    if not (log_enabled and zone_enabled):
-        return
-    if result.all_passed:
-        return
-    if result.failed_conditions() != ["C1"]:
-        return
-
-    pct = float(signal_record.get("opt_above_vwap_pct") or 0.0)
-    if not (max_pct < pct <= ext_max):
-        return
-
-    extended = dict(signal_record)
-    extended["event_type"] = "would_alert_extended"
-    self.signal_logger.log_signal(extended)
-```
-
-And the call site, inside `_scan_strike` after `log_signal(signal_record)`:
-
-```python
-self._maybe_log_extended_zone(signal_record, result)
-```
-
-### 4.4 — Dashboard sync in `finally` block (Phase 5.2.1)
-
-The dashboard auto-sync runs from `run_forever()`'s `finally` clause —
-it fires exactly once per session whether the bot exited cleanly at
-15:30, was Ctrl+C-stopped, or died with an unhandled exception. This
-is the **final form**; an earlier 5.2 draft tried to schedule the sync
-at 15:35 inside the polling loop, but `run_forever()` exits at 15:30
-and the in-loop check never fired. Do not reproduce that path.
-
-Method on `Orchestrator`:
-
-```python
-def _run_dashboard_sync_on_exit(self) -> None:
-    """Run dashboard sync on bot exit. Best-effort, idempotent.
-
-    Honours:
-      - config.dashboard.auto_trigger_at_1535 (toggle, default ON)
-      - self.dashboard_synced (prevents double-run in same process)
-      - weekday check (skip on Saturday/Sunday)
-
-    Failures are logged + Telegrammed but never re-raised — the bot
-    must exit cleanly even if sync fails.
-    """
-    try:
-        auto_trigger = self.config.dashboard.auto_trigger_at_1535
-    except AttributeError:
-        return
-    if not auto_trigger or self.dashboard_synced or datetime.now(IST).weekday() >= 5:
-        return
-    try:
-        logger.info("Bot exiting — running dashboard auto-sync...")
-        from src.dashboard import (
-            sync_excel_notes_to_parquet,
-            sync_jsonl_to_parquet,
-            update_dashboard,
-        )
-        sync_jsonl_to_parquet()
-        update_dashboard()
-        sync_excel_notes_to_parquet()
-        self.dashboard_synced = True
-        logger.info("Dashboard auto-sync complete on bot exit")
-    except Exception as e:
-        logger.exception(f"Dashboard auto-sync on exit failed: {e}")
-        try:
-            self.telegram.send_exception(
-                f"Dashboard auto-sync failed on exit:\n{e}"
-            )
-        except Exception:
-            pass
-```
-
-End of `run_forever()`:
-
-```python
-try:
-    while True:
-        ...
-except KeyboardInterrupt:
-    logger.info("Bot stopped by user (Ctrl+C)")
-except Exception as e:
-    logger.exception("FATAL error in main loop")
-    try:
-        if self.telegram is not None:
-            self.telegram.send_exception(traceback.format_exc())
-    except Exception:
-        pass
-    sys.exit(1)
-finally:
-    # Phase 5.2.1: Auto-sync dashboard on exit. Runs exactly once.
-    self._run_dashboard_sync_on_exit()
-```
-
-And the market-close log line in the main while loop reads:
-
-```python
-if now.time() >= MARKET_CLOSE_TIME:
-    logger.info(
-        "Market closed (15:30 IST). Bot exiting, dashboard sync will run."
-    )
-    break
-```
-
----
-
-## STEP 5 — `.gitignore`
+## STEP 3 — `.gitignore`
 
 Add (preserve existing):
 
@@ -1859,7 +2113,7 @@ data/scc_data_*.parquet
 
 ---
 
-## STEP 6 — Unit tests
+## STEP 4 — Unit tests
 
 Target: ~210 (Phase 5A) + ~65 (Phase 5B) = **~275 tests passing**.
 
@@ -1961,9 +2215,7 @@ Run: `pytest tests/ -v`.
 
 ---
 
-## STEP 7 — Verification checklist
-
-### After build (in any order)
+## STEP 5 — Verification checklist
 
 ```cmd
 :: 1. All tests pass
@@ -1984,7 +2236,6 @@ update_dashboard.bat
 ::    Confirm 8 sheets in order: Strategy Dashboard, Daily Summary,
 ::    All Alerts, Order Place, All Signals, Rejections, Gap History,
 ::    Config Snapshot
-::    Confirm Strategy Dashboard has KPI tiles + 4 charts
 
 :: 5. Sample a real alert from Parquet
 python -c "import pandas as pd; df=pd.read_parquet('data/scc_data_2026-05.parquet'); a=df[df.event_type=='alert']; print(a[['symbol','strike','option_type','bot_remark','bot_tags']].head())"
@@ -1996,52 +2247,23 @@ python -c "import pandas as pd; df=pd.read_parquet('data/scc_data_2026-05.parque
 ### Live next-morning checklist
 
 - Telegram alert (if any fires) includes an "Insight:" line.
-- Telegram startup line shows directional gap verdict
-  (`GAP UP` / `GAP DOWN` / `Normal day`).
+- Telegram startup line shows directional gap verdict (`GAP UP` / `GAP DOWN` / `Normal day`).
 - At 15:30 IST bot exits, log line "dashboard sync will run."
-- Within 30 seconds: log lines "Bot exiting — running dashboard
-  auto-sync..." and "Dashboard auto-sync complete on bot exit".
+- Within 30 seconds: log lines "Bot exiting — running dashboard auto-sync..." and "Dashboard auto-sync complete on bot exit".
 - `dashboard_2026_Q2.xlsx` mtime is today.
 - `data/scc_data_2026-05.parquet` has grown by today's rows.
 
 ### Fill an outcome — confirm round-trip
 
-1. Open `dashboard_2026_Q2.xlsx`.
-2. Go to Order Place sheet.
-3. Pick an alert row. Fill `Order Status = TP1_HIT`, `Exit Price = ...`,
-   `P&L = ...`.
-4. Save and close the workbook.
-5. Run `update_dashboard.bat`.
-6. Read the Parquet row:
-
-```python
-import pandas as pd
-df = pd.read_parquet("data/scc_data_2026-05.parquet")
-alert = df[(df.event_type == "alert") & (df.timestamp_ist == "<that row>")]
-print(alert[["order_status", "exit_price", "pnl_rupees", "outcome_remark"]])
-```
-
-The `outcome_remark` should be auto-populated.
+1. Open `dashboard_2026_Q2.xlsx` → Order Place sheet.
+2. Pick an alert row. Fill `Order Status = TP1_HIT`, `Exit Price`, `P&L`.
+3. Save and close the workbook.
+4. Run `update_dashboard.bat`.
+5. Confirm `outcome_remark` is auto-populated in the Parquet row.
 
 ---
 
-## What Phase 5.2.1 changed from the original 5.2
-
-Documented here so future-you doesn't reintroduce the bug:
-
-- **Bug:** the original 5.2 draft scheduled `update_dashboard()` to run
-  at 15:35 IST from inside the polling loop. The polling loop exits at
-  15:30 (`if now.time() >= MARKET_CLOSE_TIME: break`), so the 15:35
-  branch never executed. The dashboard never auto-updated.
-- **Fix:** move the dashboard sync to `run_forever()`'s `finally`
-  clause. It runs exactly once per session, on any exit path.
-- **Why the toggle is still called `auto_trigger_at_1535`:** kept for
-  config back-compat (old `secrets.env` / `config.yaml` files keep
-  working). Treat it as a boolean ON/OFF, not as a wall-clock time.
-
----
-
-## STEP 8 — Phase 5B done. Now what?
+## STEP 6 — Phase 5B done. Now what?
 
 After 5B verifies you have everything needed for **Phase 6** — 30
 trading days of running the bot, reviewing the dashboard each evening,

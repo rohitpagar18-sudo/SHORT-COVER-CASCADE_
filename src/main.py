@@ -421,16 +421,21 @@ class Orchestrator:
             logger.error(f"Failed to write gap_log.jsonl: {e}")
 
     def _check_market_status(self) -> MarketStatusResult:
-        """Decide whether NSE is open today, using candle data as truth.
+        """Decide whether NSE is open today, using candle data as primary truth.
 
         Decision tree (first match wins):
           A. Weekend (Sat/Sun) → WEEKEND (no API call)
           B. Weekday before 09:15 → PRE_OPEN (no API call)
           C. Candle check (API):
              - today_count > 0           → OPEN
-             - today_count == 0, ≥ 09:30 → HOLIDAY (definitive)
+             - today_count == 0, ≥ 09:30 → HOLIDAY (candidate)
              - today_count == 0, < 09:30 → PRE_OPEN (opening window)
           D. Any exception in candle fetch → UNKNOWN (fail-open)
+
+        Second-source confirmation: when the candle check yields HOLIDAY,
+        we cross-check with India VIX's last-trade timestamp. A fresh VIX
+        tick means market is live and the candle fetch glitched — we
+        downgrade to UNKNOWN (fail-open) so scans resume.
 
         UNKNOWN never aborts scans — it just marks the check as inconclusive
         so run_forever() will retry. Never raises.
@@ -439,95 +444,115 @@ class Orchestrator:
         today_d = now.date()
         checked_at = now.isoformat()
 
-        if now.weekday() >= 5:
-            result = MarketStatusResult(
-                status=MarketStatus.WEEKEND,
-                reason=f"weekday={now.strftime('%A')}",
-                today_candle_count=0,
-                latest_candle_date=None,
-                checked_at=checked_at,
-            )
-            logger.info(
-                f"Market status: WEEKEND ({result.reason}) — no candle fetch."
-            )
-            return result
+        status: MarketStatus
+        reason: str
+        today_count: int = 0
+        latest_date: str | None = None
 
-        if now.time() < dt_time(9, 15):
-            result = MarketStatusResult(
-                status=MarketStatus.PRE_OPEN,
-                reason=f"time={now.strftime('%H:%M')} before 09:15",
-                today_candle_count=0,
-                latest_candle_date=None,
-                checked_at=checked_at,
-            )
-            logger.info(f"Market status: PRE_OPEN ({result.reason}).")
-            return result
+        if now.weekday() >= 5:
+            status = MarketStatus.WEEKEND
+            reason = f"weekday={now.strftime('%A')}"
+            logger.info(f"Market status: WEEKEND ({reason}) — no candle fetch.")
+        elif now.time() < dt_time(9, 15):
+            status = MarketStatus.PRE_OPEN
+            reason = f"time={now.strftime('%H:%M')} before 09:15"
+            logger.info(f"Market status: PRE_OPEN ({reason}).")
+        else:
+            try:
+                candles = self._get_spot_candles("NIFTY", lookback_candles=10)
+                if candles is None or len(candles) == 0:
+                    status = MarketStatus.UNKNOWN
+                    reason = "candle fetch returned no data"
+                    logger.warning(f"Market status: UNKNOWN ({reason}).")
+                else:
+                    ts_dates = pd.to_datetime(candles["timestamp"]).dt.date
+                    today_count = int((ts_dates == today_d).sum())
+                    latest_date = str(ts_dates.max()) if len(candles) else None
+
+                    if today_count > 0:
+                        status = MarketStatus.OPEN
+                        reason = f"today_n={today_count}, latest={latest_date}"
+                        logger.info(f"Market status: OPEN ({reason}).")
+                    elif now.time() >= dt_time(9, 30):
+                        status = MarketStatus.HOLIDAY
+                        reason = (
+                            f"today_n=0 at {now.strftime('%H:%M')} (>=09:30); "
+                            f"latest candle date={latest_date}"
+                        )
+                        logger.info(f"Market status: HOLIDAY ({reason}).")
+                    else:
+                        status = MarketStatus.PRE_OPEN
+                        reason = (
+                            f"today_n=0 at {now.strftime('%H:%M')} (<09:30); "
+                            "opening window, will recheck"
+                        )
+                        logger.info(f"Market status: PRE_OPEN ({reason}).")
+            except Exception as e:
+                status = MarketStatus.UNKNOWN
+                reason = f"candle fetch error: {e}"
+                logger.warning(f"Market status: UNKNOWN ({reason}).")
+
+        # Second-source check: confirm via VIX timestamp ONLY when the
+        # candle check yielded HOLIDAY. All other statuses pass through
+        # untouched so the second check stays cheap on normal trading days.
+        if status == MarketStatus.HOLIDAY:
+            confirmed, vix_reason = self._confirm_holiday_via_vix(now)
+            if not confirmed:
+                logger.warning(
+                    f"Candle check said HOLIDAY but VIX is fresh ({vix_reason}). "
+                    "Likely a candle-fetch glitch. Falling back to UNKNOWN — "
+                    "scans will proceed."
+                )
+                status = MarketStatus.UNKNOWN
+                reason = f"Candles stale but VIX fresh: {vix_reason}"
+            else:
+                logger.info(f"HOLIDAY confirmed by VIX check: {vix_reason}")
+                reason = f"{reason} | VIX confirms: {vix_reason}"
+
+        return MarketStatusResult(
+            status=status,
+            reason=reason,
+            today_candle_count=today_count,
+            latest_candle_date=latest_date,
+            checked_at=checked_at,
+        )
+
+    def _confirm_holiday_via_vix(self, now: datetime) -> tuple[bool, str]:
+        """Second-source holiday confirmation using India VIX timestamp.
+
+        Returns ``(is_holiday_confirmed, reason)``.
+
+        - VIX timestamp < 10 minutes old → market is live → NOT holiday.
+        - VIX timestamp >= 10 minutes old → confirms holiday.
+        - VIX fetch fails or timestamp is None → trust the first check
+          (returns ``(True, ...)``).
+        """
+        try:
+            vix_value, vix_ts_iso = self.feed.get_india_vix_with_timestamp()
+        except Exception as e:
+            logger.warning(f"VIX confirmation check errored: {e}")
+            return True, f"VIX check errored, trusting candle check: {e}"
+
+        if vix_ts_iso is None:
+            return True, "VIX timestamp unavailable, trusting candle check"
 
         try:
-            candles = self._get_spot_candles("NIFTY", lookback_candles=10)
-            if candles is None or len(candles) == 0:
-                result = MarketStatusResult(
-                    status=MarketStatus.UNKNOWN,
-                    reason="candle fetch returned no data",
-                    today_candle_count=0,
-                    latest_candle_date=None,
-                    checked_at=checked_at,
-                )
-                logger.warning(f"Market status: UNKNOWN ({result.reason}).")
-                return result
-
-            ts_dates = pd.to_datetime(candles["timestamp"]).dt.date
-            today_count = int((ts_dates == today_d).sum())
-            latest_date = str(ts_dates.max()) if len(candles) else None
-
-            if today_count > 0:
-                result = MarketStatusResult(
-                    status=MarketStatus.OPEN,
-                    reason=f"today_n={today_count}, latest={latest_date}",
-                    today_candle_count=today_count,
-                    latest_candle_date=latest_date,
-                    checked_at=checked_at,
-                )
-                logger.info(f"Market status: OPEN ({result.reason}).")
-                return result
-
-            if now.time() >= dt_time(9, 30):
-                result = MarketStatusResult(
-                    status=MarketStatus.HOLIDAY,
-                    reason=(
-                        f"today_n=0 at {now.strftime('%H:%M')} (>=09:30); "
-                        f"latest candle date={latest_date}"
-                    ),
-                    today_candle_count=0,
-                    latest_candle_date=latest_date,
-                    checked_at=checked_at,
-                )
-                logger.info(f"Market status: HOLIDAY ({result.reason}).")
-                return result
-
-            result = MarketStatusResult(
-                status=MarketStatus.PRE_OPEN,
-                reason=(
-                    f"today_n=0 at {now.strftime('%H:%M')} (<09:30); "
-                    "opening window, will recheck"
-                ),
-                today_candle_count=0,
-                latest_candle_date=latest_date,
-                checked_at=checked_at,
-            )
-            logger.info(f"Market status: PRE_OPEN ({result.reason}).")
-            return result
-
+            vix_ts = datetime.fromisoformat(vix_ts_iso)
+            if vix_ts.tzinfo is None:
+                vix_ts = vix_ts.replace(tzinfo=IST)
+            age_minutes = (now - vix_ts).total_seconds() / 60.0
         except Exception as e:
-            result = MarketStatusResult(
-                status=MarketStatus.UNKNOWN,
-                reason=f"candle fetch error: {e}",
-                today_candle_count=0,
-                latest_candle_date=None,
-                checked_at=checked_at,
+            return True, f"VIX timestamp parse failed: {e}"
+
+        if age_minutes < 10:
+            return False, (
+                f"VIX updated {age_minutes:.1f} min ago "
+                f"(value={vix_value:.2f}) — market is live"
             )
-            logger.warning(f"Market status: UNKNOWN ({result.reason}).")
-            return result
+        return True, (
+            f"VIX last updated {age_minutes:.1f} min ago "
+            f"(value={vix_value:.2f}) — confirms holiday"
+        )
 
     def _enabled_instruments_str(self) -> str:
         out = []

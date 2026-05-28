@@ -86,6 +86,16 @@ class BaseFeed(ABC):
         raise NotImplementedError
 
     @abstractmethod
+    def get_india_vix_with_timestamp(self) -> tuple[float, str | None]:
+        """Return ``(vix_value, last_trade_time_iso)`` for the holiday-guard
+        second check. ``last_trade_time_iso`` is the IST ISO timestamp of
+        the most recent VIX tick, or ``None`` if the broker does not
+        expose one. Returns ``(-1.0, None)`` on any error so callers can
+        treat it as 'unknown — trust the first check'.
+        """
+        raise NotImplementedError
+
+    @abstractmethod
     def get_atm_strike(self, symbol: str) -> int:
         """Return the ATM strike for the given index based on current spot."""
         raise NotImplementedError

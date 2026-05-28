@@ -1073,6 +1073,112 @@ def test_mark_holiday_scans_idempotent(tmp_path):
     assert first_state == second_state  # second run did not double-mark
 
 
+# ======================================================================
+# VIX second-source holiday confirmation tests
+#
+# Cover the five paths through _confirm_holiday_via_vix():
+#   - both candles and VIX stale → HOLIDAY confirmed
+#   - candles stale, VIX fresh   → flip to UNKNOWN (connectivity glitch)
+#   - candles OPEN               → VIX check never invoked
+#   - VIX fetch raises           → trust the candle check (HOLIDAY)
+#   - VIX returns (value, None)  → trust the candle check (HOLIDAY)
+# ======================================================================
+
+
+def _vix_iso(now_iso: str, minutes_ago: float) -> str:
+    """Return an IST ISO timestamp ``minutes_ago`` before ``now_iso``."""
+    from datetime import timedelta
+    base = datetime.fromisoformat(now_iso).replace(tzinfo=IST)
+    return (base - timedelta(minutes=minutes_ago)).isoformat()
+
+
+def test_holiday_confirmed_when_both_candles_and_vix_stale(monkeypatch):
+    """Candle check + VIX both stale → HOLIDAY survives confirmation."""
+    now_iso = "2026-05-28 10:00"
+    orch, _ = _orch_with_mocked_now(monkeypatch, now_iso)
+    orch.feed.get_5min_candles.return_value = _make_candles(
+        ["2026-05-27 14:55", "2026-05-27 15:00", "2026-05-27 15:25"]
+    )
+    # VIX last tick 2 hours ago — also confirms market is closed.
+    orch.feed.get_india_vix_with_timestamp = MagicMock(
+        return_value=(12.5, _vix_iso(now_iso, minutes_ago=120))
+    )
+    result = orch._check_market_status()
+    assert result.status.value == "holiday"
+    orch.feed.get_india_vix_with_timestamp.assert_called_once()
+    assert "VIX confirms" in result.reason
+
+
+def test_holiday_overridden_when_vix_is_fresh(monkeypatch):
+    """Candle check says HOLIDAY but VIX updated 2 min ago → UNKNOWN.
+
+    This is the key glitch scenario: a real trading day where the broker
+    candle endpoint hiccupped for 10–30 minutes. Fail-open by flipping
+    to UNKNOWN so the loop keeps scanning.
+    """
+    now_iso = "2026-05-28 10:00"
+    orch, _ = _orch_with_mocked_now(monkeypatch, now_iso)
+    orch.feed.get_5min_candles.return_value = _make_candles(
+        ["2026-05-27 14:55", "2026-05-27 15:00", "2026-05-27 15:25"]
+    )
+    orch.feed.get_india_vix_with_timestamp = MagicMock(
+        return_value=(13.1, _vix_iso(now_iso, minutes_ago=2.0))
+    )
+    result = orch._check_market_status()
+    assert result.status.value == "unknown"
+    assert "VIX fresh" in result.reason
+    # Caller has not yet latched holiday_abort — UNKNOWN keeps the loop alive.
+    assert orch.holiday_abort is False
+
+
+def test_vix_check_skipped_when_first_check_is_open(monkeypatch):
+    """When the candle check says OPEN, the VIX path must not even fire."""
+    orch, _ = _orch_with_mocked_now(monkeypatch, "2026-05-29 10:30")
+    orch.feed.get_5min_candles.return_value = _make_candles(
+        ["2026-05-29 09:15", "2026-05-29 09:20", "2026-05-29 09:25"]
+    )
+    orch.feed.get_india_vix_with_timestamp = MagicMock(
+        return_value=(13.1, "2026-05-29T10:28:00+05:30")
+    )
+    result = orch._check_market_status()
+    assert result.status.value == "open"
+    orch.feed.get_india_vix_with_timestamp.assert_not_called()
+
+
+def test_vix_check_failure_defaults_to_trusting_first_check(monkeypatch):
+    """If the VIX fetch raises, the candle-check verdict (HOLIDAY) stands."""
+    orch, _ = _orch_with_mocked_now(monkeypatch, "2026-05-28 10:00")
+    orch.feed.get_5min_candles.return_value = _make_candles(
+        ["2026-05-27 14:55", "2026-05-27 15:00", "2026-05-27 15:25"]
+    )
+    orch.feed.get_india_vix_with_timestamp = MagicMock(
+        side_effect=RuntimeError("Kite timeout")
+    )
+    result = orch._check_market_status()
+    assert result.status.value == "holiday"
+    assert "VIX confirms" in result.reason
+    assert "errored" in result.reason
+
+
+def test_vix_check_no_timestamp_field_defaults_to_holiday(monkeypatch):
+    """If the feed returns ``(value, None)`` for timestamp, HOLIDAY stands.
+
+    Upstox in particular may not expose a usable last-trade-time field;
+    in that case the second check has nothing to verify against and must
+    not override the candle check.
+    """
+    orch, _ = _orch_with_mocked_now(monkeypatch, "2026-05-28 10:00")
+    orch.feed.get_5min_candles.return_value = _make_candles(
+        ["2026-05-27 14:55", "2026-05-27 15:00", "2026-05-27 15:25"]
+    )
+    orch.feed.get_india_vix_with_timestamp = MagicMock(
+        return_value=(13.1, None)
+    )
+    result = orch._check_market_status()
+    assert result.status.value == "holiday"
+    assert "VIX timestamp unavailable" in result.reason
+
+
 def test_mark_holiday_scans_handles_no_holiday_dates(tmp_path):
     """If gap_log has no today_n=0 evidence, nothing is marked."""
     import json

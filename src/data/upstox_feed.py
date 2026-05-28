@@ -400,6 +400,72 @@ class UpstoxFeed(BaseFeed):
             logger.warning("Upstox India VIX fetch failed: {}", e)
             return -1.0
 
+    def get_india_vix_with_timestamp(self) -> tuple[float, str | None]:
+        """Best-effort: Upstox's quote response timestamp format varies by
+        SDK version. If we can't normalise to an IST ISO string cleanly we
+        return ``(value, None)`` and the holiday-guard second check will
+        skip gracefully (fall back to trusting the candle check).
+        """
+        try:
+            resp = self._market_quote_api.get_full_market_quote(
+                symbol=_UPSTOX_VIX_KEY, api_version="2.0"
+            )
+            value = self._extract_last_price(resp, _UPSTOX_VIX_KEY)
+            ts_iso = self._extract_last_trade_time(resp, _UPSTOX_VIX_KEY)
+            return value, ts_iso
+        except Exception as e:
+            logger.warning("Upstox India VIX with-timestamp fetch failed: {}", e)
+            return -1.0, None
+
+    @staticmethod
+    def _extract_last_trade_time(resp: Any, instrument_key: str) -> str | None:
+        data = getattr(resp, "data", None)
+        if data is None and isinstance(resp, dict):
+            data = resp.get("data")
+        if data is None:
+            return None
+        candidates = [instrument_key, instrument_key.replace("|", ":")]
+        record = None
+        if isinstance(data, dict):
+            for k in candidates:
+                if k in data:
+                    record = data[k]
+                    break
+            if record is None and len(data) == 1:
+                record = next(iter(data.values()))
+        else:
+            record = data
+        if record is None:
+            return None
+        raw = None
+        for field in ("last_trade_time", "timestamp"):
+            raw = getattr(record, field, None)
+            if raw is None and isinstance(record, dict):
+                raw = record.get(field)
+            if raw is not None:
+                break
+        if raw is None:
+            return None
+        try:
+            if isinstance(raw, datetime):
+                ts = raw
+            elif isinstance(raw, (int, float)):
+                # Treat large ints as ms epoch, small ints as seconds.
+                secs = raw / 1000.0 if raw > 1e12 else float(raw)
+                ts = datetime.fromtimestamp(secs, tz=IST)
+            else:
+                s = str(raw).strip()
+                try:
+                    ts = datetime.fromisoformat(s)
+                except ValueError:
+                    # "DD-MM-YYYY HH:MM:SS" — Upstox often uses this form.
+                    ts = datetime.strptime(s, "%d-%m-%Y %H:%M:%S")
+            if ts.tzinfo is None:
+                ts = ts.replace(tzinfo=IST)
+            return ts.isoformat()
+        except Exception:
+            return None
+
     def get_atm_strike(self, symbol: str) -> int:
         spot = self.get_spot_price(symbol)
         interval = _STRIKE_INTERVAL[symbol]

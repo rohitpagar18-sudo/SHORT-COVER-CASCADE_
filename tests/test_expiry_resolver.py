@@ -56,6 +56,9 @@ class FakeFeed(BaseFeed):
     def get_india_vix(self) -> float:
         return 0.0
 
+    def get_india_vix_with_timestamp(self) -> tuple[float, str | None]:
+        return 0.0, None
+
     def get_atm_strike(self, symbol: str) -> int:
         return 0
 

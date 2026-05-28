@@ -285,6 +285,30 @@ class KiteFeed(BaseFeed):
             logger.warning("Kite India VIX fetch failed: {}", e)
             return -1.0
 
+    def get_india_vix_with_timestamp(self) -> tuple[float, str | None]:
+        try:
+            quote = self._kite.quote(["NSE:INDIA VIX"])
+            data = quote.get("NSE:INDIA VIX", {}) if isinstance(quote, dict) else {}
+            value = float(data.get("last_price", -1.0))
+            last_trade_time = data.get("last_trade_time")
+            ts_iso: str | None = None
+            if last_trade_time is not None:
+                if isinstance(last_trade_time, datetime):
+                    ts = last_trade_time
+                else:
+                    try:
+                        ts = datetime.fromisoformat(str(last_trade_time))
+                    except ValueError:
+                        ts = None
+                if ts is not None:
+                    if ts.tzinfo is None:
+                        ts = ts.replace(tzinfo=IST)
+                    ts_iso = ts.isoformat()
+            return value, ts_iso
+        except Exception as e:
+            logger.warning("Kite India VIX with-timestamp fetch failed: {}", e)
+            return -1.0, None
+
     def get_atm_strike(self, symbol: str) -> int:
         spot = self.get_spot_price(symbol)
         interval = _STRIKE_INTERVAL[symbol]

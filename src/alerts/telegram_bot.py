@@ -1,31 +1,28 @@
-"""Telegram alert sender.
+"""Telegram alert sender (synchronous HTTP, no asyncio).
 
-Thin synchronous wrapper around ``python-telegram-bot``. Every public
-``send_*`` method returns True/False; failures are logged but never
-raised — Telegram outages must not crash the live scan loop.
-
-Token and chat id are read from environment (``load_secrets`` populates
-them at process start).
+Direct calls to api.telegram.org via requests.post. No
+python-telegram-bot dependency, no asyncio event loop juggling.
+All send_* methods return True on success, False on failure;
+failures are logged but never raised.
 """
 
 from __future__ import annotations
 
-import asyncio
 import os
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
+import requests
 from loguru import logger
-from telegram import Bot
 
 IST = ZoneInfo("Asia/Kolkata")
 
+TELEGRAM_API_BASE = "https://api.telegram.org"
+SEND_TIMEOUT_SECONDS = 10
+
 
 class TelegramAlerter:
-    """Send formatted alerts to a single Telegram chat.
-
-    Construct once at bot startup; reuse for the whole session.
-    """
+    """Send formatted alerts to a single Telegram chat."""
 
     def __init__(self) -> None:
         self.token = os.getenv("TELEGRAM_BOT_TOKEN")
@@ -34,31 +31,33 @@ class TelegramAlerter:
             raise RuntimeError(
                 "TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID missing from secrets.env"
             )
-        self._bot = Bot(token=self.token)
+        self._url = f"{TELEGRAM_API_BASE}/bot{self.token}/sendMessage"
 
     # ----- public sending API -----
 
     def send(self, message: str) -> bool:
-        """Send a raw message. Returns True on success, False on failure.
-
-        Uses a fresh event loop per call so it remains safe in mixed
-        sync/async environments.
-        """
+        """POST to Telegram. Returns True on 2xx, False otherwise."""
         try:
-            loop = asyncio.new_event_loop()
-            try:
-                loop.run_until_complete(
-                    self._bot.send_message(
-                        chat_id=self.chat_id,
-                        text=message,
-                        parse_mode=None,
-                    )
-                )
+            resp = requests.post(
+                self._url,
+                data={
+                    "chat_id": self.chat_id,
+                    "text": message,
+                },
+                timeout=SEND_TIMEOUT_SECONDS,
+            )
+            if resp.status_code // 100 == 2:
                 return True
-            finally:
-                loop.close()
-        except Exception as e:
+            logger.error(
+                f"Telegram send failed: HTTP {resp.status_code} "
+                f"body={resp.text[:300]}"
+            )
+            return False
+        except requests.RequestException as e:
             logger.error(f"Telegram send failed: {e}")
+            return False
+        except Exception as e:
+            logger.error(f"Telegram send unexpected error: {e}")
             return False
 
     def send_startup(self, config_summary: dict) -> bool:

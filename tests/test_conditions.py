@@ -29,6 +29,22 @@ from src.indicators.calculator import IndicatorSnapshot
 # ---------------------------------------------------------------------------
 
 
+def _with_c0_enabled(config: AppConfig) -> AppConfig:
+    """Return a copy of config with the C0 spot-trend filter ON.
+
+    The default config ships with c0_spot_trend_filter_enabled=False
+    (C0 is reported as SKIPPED and treated as PASS). Tests that exercise
+    the real C0 direction logic need to flip the toggle.
+    """
+    return config.model_copy(
+        update={
+            "conditions": config.conditions.model_copy(
+                update={"c0_spot_trend_filter_enabled": True}
+            )
+        }
+    )
+
+
 def make_snapshot(**kwargs: Any) -> IndicatorSnapshot:
     """Build IndicatorSnapshot with sensible defaults; override via kwargs."""
     defaults: dict[str, Any] = dict(
@@ -308,19 +324,24 @@ def test_all_conditions_c0_fails_wrong_direction(config: AppConfig) -> None:
         volume=15_000, volume_ma=10_000,
     )
     # Asking for CE while spot is BELOW VWAP -> C0 fails.
+    # C0 filter must be ON for this assertion (default is OFF).
     result = check_all_conditions(
         option_snapshot=s,
         spot_close=24400,
         spot_vwap=24500,
         option_type="CE",
-        config=config,
+        config=_with_c0_enabled(config),
     )
     assert result.all_passed is False
     assert "C0" in result.failed_conditions()
 
 
 def test_all_conditions_runs_every_check(config: AppConfig) -> None:
-    """Orchestrator must not short-circuit: every result must be present."""
+    """Orchestrator must not short-circuit: every result must be present.
+
+    Uses C0 filter ON so C0 itself can fail too (default is OFF, where
+    C0 is reported as SKIPPED/PASS).
+    """
     s = make_snapshot(
         close=95, vwap=100, open=100, is_green=False,
         rsi=30, rsi_ma=40,
@@ -332,7 +353,7 @@ def test_all_conditions_runs_every_check(config: AppConfig) -> None:
         spot_close=24400,
         spot_vwap=24500,
         option_type="CE",
-        config=config,
+        config=_with_c0_enabled(config),
     )
     names = [r.name for r in result.results]
     assert names == ["C0", "C1", "C2", "C3", "C4"]

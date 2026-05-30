@@ -25,7 +25,7 @@ import sys
 import time as time_mod
 import traceback
 from dataclasses import dataclass
-from datetime import date as date_cls, datetime, time as dt_time
+from datetime import date as date_cls, datetime, time as dt_time, timedelta
 from enum import Enum
 from pathlib import Path
 from typing import Any
@@ -77,6 +77,13 @@ class MarketStatusResult:
     today_candle_count: int
     latest_candle_date: str | None
     checked_at: str
+
+
+class _StaleCandleError(RuntimeError):
+    """Raised by _fetch_closed_candles_with_retry when the expected
+    last-closed 5-min candle is still missing after all retries, or the
+    most recent candle is older than the staleness threshold.
+    Caller logs this as a data_issue (NOT a rejection)."""
 
 
 class Orchestrator:
@@ -656,20 +663,29 @@ class Orchestrator:
             logger.error(f"Failed to fetch spot data for {symbol}: {e}")
             return
 
+        c0_enabled = bool(
+            getattr(self.config.conditions, "c0_spot_trend_filter_enabled", False)
+        )
+
+        per_symbol_count = 0
         for option_type in ("CE", "PE"):
-            # C0 fast-fail — saves an option chain fetch when spot/VWAP disagree.
-            if option_type == "CE" and spot_close <= spot_vwap:
-                self._log_rejection(
-                    symbol, None, option_type, "C0",
-                    f"spot {spot_close:.2f} not above VWAP {spot_vwap:.2f}", now,
-                )
-                continue
-            if option_type == "PE" and spot_close >= spot_vwap:
-                self._log_rejection(
-                    symbol, None, option_type, "C0",
-                    f"spot {spot_close:.2f} not below VWAP {spot_vwap:.2f}", now,
-                )
-                continue
+            if c0_enabled:
+                # C0 fast-fail — saves an option chain fetch when spot/VWAP
+                # disagree. Only runs when the filter is ON.
+                if option_type == "CE" and spot_close <= spot_vwap:
+                    self._log_rejection(
+                        symbol, None, option_type, "C0",
+                        f"spot {spot_close:.2f} not above VWAP {spot_vwap:.2f}",
+                        now,
+                    )
+                    continue
+                if option_type == "PE" and spot_close >= spot_vwap:
+                    self._log_rejection(
+                        symbol, None, option_type, "C0",
+                        f"spot {spot_close:.2f} not below VWAP {spot_vwap:.2f}",
+                        now,
+                    )
+                    continue
 
             try:
                 strikes = get_alert_strikes(
@@ -682,11 +698,83 @@ class Orchestrator:
                 )
                 continue
 
+            per_symbol_count += len(strikes)
             for strike_choice in strikes:
                 self._scan_strike(
                     symbol, strike_choice, option_type, expiry,
                     lot_size, spot_close, spot_vwap, now,
                 )
+
+        logger.info(
+            "Scan plan: {} will check {} option contracts this candle "
+            "(c0_filter={})",
+            symbol, per_symbol_count, "ON" if c0_enabled else "OFF",
+        )
+
+    def _fetch_closed_candles_with_retry(
+        self,
+        symbol: str,
+        strike_choice,
+        option_type: str,
+        now: datetime,
+    ) -> pd.DataFrame:
+        """Fetch option 5-min candles, retrying until the expected last-closed
+        candle is present. Raises :class:`_StaleCandleError` if the data still
+        looks stale (last candle > 6 min older than now, or no candles at all)
+        after ``config.bot.api_retry_count`` retries.
+
+        Both feeds already drop the still-forming candle, so .iloc[-1] is
+        supposed to be the last fully closed 5-min boundary. The expected
+        timestamp is ``(current 5-min boundary) - 5 min``. If the candle
+        endpoint is lagging we briefly retry — that's much cheaper than
+        scanning a partial bar.
+        """
+        boundary = now.replace(second=0, microsecond=0)
+        boundary = boundary - timedelta(minutes=now.minute % 5)
+        expected_last_ts = boundary - timedelta(minutes=5)
+
+        retries = self.config.bot.api_retry_count
+        delay = self.config.bot.api_retry_delay_seconds
+        last_ts = None
+        df = pd.DataFrame()
+
+        for attempt in range(retries + 1):
+            df = self.feed.get_5min_candles(strike_choice.instrument_key, 100)
+            if df is None or df.empty:
+                logger.warning(
+                    "Candle fetch returned empty for {} {}{} (attempt {}/{})",
+                    symbol, strike_choice.strike, option_type,
+                    attempt + 1, retries + 1,
+                )
+            else:
+                last_ts = pd.to_datetime(df["timestamp"].iloc[-1])
+                if last_ts.tzinfo is None:
+                    last_ts = last_ts.tz_localize(IST)
+                if last_ts >= expected_last_ts:
+                    return df
+                logger.warning(
+                    "Stale candle for {} {}{} on attempt {}/{}: "
+                    "last_ts={}, expected>={}",
+                    symbol, strike_choice.strike, option_type,
+                    attempt + 1, retries + 1, last_ts, expected_last_ts,
+                )
+            if attempt < retries:
+                time_mod.sleep(delay)
+
+        if df is None or df.empty:
+            raise _StaleCandleError(
+                f"no candles returned after {retries + 1} attempts; "
+                f"expected last_ts >= {expected_last_ts.isoformat()}"
+            )
+
+        age_minutes = (now - last_ts).total_seconds() / 60.0
+        if age_minutes > 6:
+            raise _StaleCandleError(
+                f"last candle ts={last_ts.isoformat()} is "
+                f"{age_minutes:.1f} min older than now={now.isoformat()} "
+                f"(expected within 6 min)"
+            )
+        return df
 
     def _scan_strike(
         self,
@@ -711,7 +799,27 @@ class Orchestrator:
             return
 
         try:
-            df = self.feed.get_5min_candles(strike_choice.instrument_key, 100)
+            df = self._fetch_closed_candles_with_retry(
+                symbol, strike_choice, option_type, now,
+            )
+        except _StaleCandleError as e:
+            self._log_data_issue(
+                symbol, strike_choice.strike, option_type,
+                "STALE_CANDLE", str(e), now,
+            )
+            return
+
+        # DEBUG: surface the last fully closed candle's ts/close/volume
+        # so future stale-candle mismatches are diagnosable from bot.log.
+        if self.config.logging.log_indicator_values and not df.empty:
+            last = df.iloc[-1]
+            logger.debug(
+                "Candle check {} {}{}: last_ts={} close={} volume={}",
+                symbol, strike_choice.strike, option_type,
+                last["timestamp"], last["close"], last["volume"],
+            )
+
+        try:
             snapshot = get_latest_snapshot(df)
         except (ValueError, RuntimeError) as e:
             err_msg = str(e)

@@ -21,6 +21,20 @@ from src.data.base_feed import BaseFeed
 
 IST = ZoneInfo("Asia/Kolkata")
 
+def _drop_in_progress_5min(df: pd.DataFrame) -> pd.DataFrame:
+    """Drop any candle whose timestamp is at or after the current 5-min
+    boundary in IST. Result: ``.iloc[-1]`` is always the last fully
+    closed 5-min candle.
+    """
+    if df is None or df.empty or "timestamp" not in df.columns:
+        return df
+    now_ist = datetime.now(IST)
+    boundary = now_ist.replace(second=0, microsecond=0)
+    boundary = boundary - timedelta(minutes=now_ist.minute % 5)
+    ts = pd.to_datetime(df["timestamp"])
+    return df[ts < boundary].reset_index(drop=True)
+
+
 _UPSTOX_SPOT_KEY = {
     "NIFTY": "NSE_INDEX|Nifty 50",
     "BANKNIFTY": "NSE_INDEX|Nifty Bank",
@@ -218,6 +232,12 @@ class UpstoxFeed(BaseFeed):
         df = pd.concat(frames, ignore_index=True)
         df = df.drop_duplicates(subset="timestamp", keep="last")
         df = df.sort_values("timestamp").reset_index(drop=True)
+        # Drop the still-forming candle so callers see only fully closed
+        # 5-min bars. Upstox's intraday endpoint exposes a partial candle
+        # whose volume is far below the final value — identical Kite bug.
+        df = _drop_in_progress_5min(df)
+        if lookback_candles and len(df) > lookback_candles:
+            df = df.iloc[-lookback_candles:].reset_index(drop=True)
         return df
 
     def _fetch_intraday_candles(self, instrument_key: str) -> pd.DataFrame:

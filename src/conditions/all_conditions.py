@@ -104,8 +104,19 @@ def check_all_conditions(
     """
     results: list[ConditionResult] = []
 
-    ok, reason = check_c0(spot_close, spot_vwap, option_type)
-    results.append(ConditionResult("C0", ok, reason))
+    c0_enabled = getattr(
+        getattr(config, "conditions", None),
+        "c0_spot_trend_filter_enabled",
+        False,
+    )
+    if c0_enabled:
+        ok, reason = check_c0(spot_close, spot_vwap, option_type)
+        results.append(ConditionResult("C0", ok, reason))
+    else:
+        results.append(ConditionResult(
+            "C0", True,
+            "C0 SKIPPED: spot trend filter disabled in config",
+        ))
 
     c1_max = _c1_max_distance(config)
     c1_ok, c1_reason, opt_above_vwap_pct = check_c1(option_snapshot, c1_max)

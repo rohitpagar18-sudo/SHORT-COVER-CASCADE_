@@ -308,12 +308,21 @@ class ConditionsConfig(_Base):
     c3_rsi_min: float = Field(ge=0, le=100)
     c3_rsi_max: float = Field(ge=0, le=100)
 
+    # C0 spot-trend filter toggle. Default False so older configs (without
+    # this field) load cleanly AND the new safer default applies: scan
+    # both CE and PE on every selected strike, let C1–C4 decide.
+    c0_spot_trend_filter_enabled: bool = Field(default=False)
+
     # Phase 5.2: C1 late-entry filter (configurable + extended zone logging).
     c1_max_distance_pct: float = Field(default=30.0, gt=0)
     c1_extended_zone_enabled: bool = Field(default=True)
     c1_extended_zone_max_pct: float = Field(default=50.0, gt=0)
 
-    @field_validator("c1_extended_zone_enabled", mode="before")
+    @field_validator(
+        "c0_spot_trend_filter_enabled",
+        "c1_extended_zone_enabled",
+        mode="before",
+    )
     @classmethod
     def _onoff(cls, v: Any) -> Any:
         return _onoff_to_bool(v)

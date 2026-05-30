@@ -57,7 +57,8 @@ strike:
   late_entry_threshold_percent: 30     # If option is >30% above VWAP already, skip (chasing)
 
   # Which strikes to SCAN and ALERT on (Phase 5+)
-  # Default ON for all 3 = maximum signal coverage
+  # All three ON = full ITM/ATM/OTM coverage on every selected expiry.
+  # Validator in config_loader.py still requires at least one ON.
   alert_strikes:
     itm: ON                            # Alert on 1 ITM strike
     atm: ON                            # Alert on ATM strike
@@ -161,6 +162,12 @@ conditions:
   c3_rsi_min: 50                       # RSI must be ABOVE this (default 50)
   c3_rsi_max: 80                       # RSI must be BELOW this (overbought guard)
 
+  # C0 = spot-vs-VWAP direction filter.
+  # OFF (default) = scan BOTH CE and PE on every selected strike each candle
+  # and let C1–C4 decide. C0 result is reported as SKIPPED in logs.
+  # ON  = original behavior: CE only when spot above VWAP, PE only when below.
+  c0_spot_trend_filter_enabled: OFF
+
   # C1 late-entry filter (Phase 5.2)
   c1_max_distance_pct: 30              # Reject alerts where option >30% above own VWAP.
                                        # Default 30% per strategy doc.
@@ -211,8 +218,10 @@ dashboard:
 # ---------- BOT BEHAVIOR ----------
 # Internal bot tuning. Usually don't change.
 bot:
-  scan_buffer_seconds: 5               # Wait 5 sec after candle close before scanning
-                                       # (lets Kite's candle data fully sync)
+  scan_buffer_seconds: 20              # Wait N sec after candle close before scanning.
+                                       # Kite needs ~15-20s to finalize a 5-min candle —
+                                       # scanning too early reads a partial candle whose
+                                       # volume is far below the final value.
   api_retry_count: 3                   # Retry broker API calls N times on failure
   api_retry_delay_seconds: 2           # Wait N seconds between retries
   state_persistence_enabled: ON        # ON = save daily state to logs/state.json

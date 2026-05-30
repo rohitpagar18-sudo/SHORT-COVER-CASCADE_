@@ -692,6 +692,7 @@ class _FakeFeed:
 
 
 def test_strikes_alert_default_all_three(config: AppConfig) -> None:
+    """Default config ships with itm=ON, atm=ON, otm=ON (full coverage)."""
     feed = _FakeFeed([24000, 24050, 24100])
     choices = get_alert_strikes(
         feed=feed, symbol="NIFTY", spot_price=24030.0, option_type="CE",
@@ -714,7 +715,9 @@ def test_strikes_alert_config_filters_off_itm(config: AppConfig) -> None:
             "strike": config.strike.model_copy(
                 update={
                     "alert_strikes": config.strike.alert_strikes.model_copy(
-                        update={"itm": False}
+                        # Force OTM on for this test — default ships OTM OFF,
+                        # so without this override only ATM would survive.
+                        update={"itm": False, "atm": True, "otm": True}
                     )
                 }
             )
@@ -741,10 +744,23 @@ def test_strikes_order_config_only_atm(config: AppConfig) -> None:
 
 def test_strikes_missing_in_chain_skipped(config: AppConfig) -> None:
     # ITM (24000) is missing from the chain — should be silently skipped.
+    # Force OTM on for this test so the chain-skip behavior is observable
+    # without relying on default toggles.
     feed = _FakeFeed([24050, 24100])
+    forced = config.model_copy(
+        update={
+            "strike": config.strike.model_copy(
+                update={
+                    "alert_strikes": config.strike.alert_strikes.model_copy(
+                        update={"itm": True, "atm": True, "otm": True}
+                    )
+                }
+            )
+        }
+    )
     choices = get_alert_strikes(
         feed=feed, symbol="NIFTY", spot_price=24030.0, option_type="CE",
-        expiry="2026-06-02", config=config,
+        expiry="2026-06-02", config=forced,
     )
     relations = [c.relation for c in choices]
     assert "ITM" not in relations
@@ -763,9 +779,20 @@ def test_strikes_empty_chain_returns_empty(config: AppConfig) -> None:
 
 def test_strikes_banknifty_uses_100_interval(config: AppConfig) -> None:
     feed = _FakeFeed([50800, 50900, 51000])
+    forced = config.model_copy(
+        update={
+            "strike": config.strike.model_copy(
+                update={
+                    "alert_strikes": config.strike.alert_strikes.model_copy(
+                        update={"itm": True, "atm": True, "otm": True}
+                    )
+                }
+            )
+        }
+    )
     choices = get_alert_strikes(
         feed=feed, symbol="BANKNIFTY", spot_price=50930.0, option_type="CE",
-        expiry="2026-06-25", config=config,
+        expiry="2026-06-25", config=forced,
     )
     strikes = [c.strike for c in choices]
     # ATM = round(50930/100)*100 = 50900; CE -> ITM 50800, OTM 51000.

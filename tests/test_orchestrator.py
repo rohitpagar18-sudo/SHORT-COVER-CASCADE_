@@ -98,6 +98,19 @@ def _make_config(
             method=1, use_vix_multiplier=True,
             hard_exit_red_candle_below_vwap=True,
         ),
+        bot=_NS(
+            scan_buffer_seconds=20,
+            api_retry_count=0,
+            api_retry_delay_seconds=0,
+            state_persistence_enabled=True,
+        ),
+        conditions=_NS(
+            c3_rsi_min=50, c3_rsi_max=80,
+            c0_spot_trend_filter_enabled=False,
+            c1_max_distance_pct=30,
+            c1_extended_zone_enabled=True,
+            c1_extended_zone_max_pct=50,
+        ),
     )
 
 
@@ -659,7 +672,20 @@ def test_scan_strike_logs_data_issue_not_rejection_on_insufficient_lookback(
         trading_symbol="NIFTY24050CE",
     )
     orch.state.can_re_enter = MagicMock(return_value=(True, ""))
-    orch.feed.get_5min_candles = MagicMock(return_value=pd.DataFrame())
+    # Feed a non-empty, fresh candle so the new stale-candle guard does
+    # NOT fire — we want INSUFFICIENT_LOOKBACK from the indicator calc.
+    from datetime import timedelta as _td
+    now_local = datetime.now(IST)
+    boundary_local = now_local.replace(second=0, microsecond=0) - _td(
+        minutes=now_local.minute % 5
+    )
+    fresh_ts = boundary_local - _td(minutes=5)
+    fresh_df = pd.DataFrame([{
+        "timestamp": pd.Timestamp(fresh_ts),
+        "open": 100.0, "high": 101.0, "low": 99.0, "close": 100.5,
+        "volume": 1000.0, "oi": 0,
+    }])
+    orch.feed.get_5min_candles = MagicMock(return_value=fresh_df)
 
     def _raise_insufficient(_df):
         raise ValueError(
@@ -669,7 +695,7 @@ def test_scan_strike_logs_data_issue_not_rejection_on_insufficient_lookback(
     monkeypatch.setattr(main_mod, "get_latest_snapshot", _raise_insufficient)
     orch._scan_strike(
         "NIFTY", strike_choice, "CE", "2026-05-28", 65,
-        spot_close=24050.0, spot_vwap=24000.0, now=_dt(11, 30),
+        spot_close=24050.0, spot_vwap=24000.0, now=now_local,
     )
 
     # Rejection logger must NOT have been called.

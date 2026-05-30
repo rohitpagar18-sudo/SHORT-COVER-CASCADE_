@@ -21,6 +21,20 @@ from src.data.base_feed import BaseFeed
 
 IST = ZoneInfo("Asia/Kolkata")
 
+def _drop_in_progress_5min(df: pd.DataFrame) -> pd.DataFrame:
+    """Drop any candle whose timestamp is at or after the current 5-min
+    boundary in IST. Result: ``.iloc[-1]`` is always the last fully
+    closed 5-min candle. Safe on empty / missing timestamp frames.
+    """
+    if df is None or df.empty or "timestamp" not in df.columns:
+        return df
+    now_ist = datetime.now(IST)
+    boundary = now_ist.replace(second=0, microsecond=0)
+    boundary = boundary - timedelta(minutes=now_ist.minute % 5)
+    ts = pd.to_datetime(df["timestamp"])
+    return df[ts < boundary].reset_index(drop=True)
+
+
 _KITE_SPOT_INSTRUMENT = {
     "NIFTY": "NSE:NIFTY 50",
     "BANKNIFTY": "NSE:NIFTY BANK",
@@ -228,6 +242,13 @@ class KiteFeed(BaseFeed):
             df["timestamp"] = df["timestamp"].dt.tz_convert(IST)
         df = df[["timestamp", "open", "high", "low", "close", "volume", "oi"]]
         df = df.sort_values("timestamp").reset_index(drop=True)
+        # Drop any in-progress (still-forming) 5-min candle so the caller
+        # always sees the LAST FULLY CLOSED candle as .iloc[-1]. Kite has
+        # been observed returning partial candles whose volume is ~100x
+        # below the final value, which breaks indicator accuracy.
+        df = _drop_in_progress_5min(df)
+        if lookback_candles and len(df) > lookback_candles:
+            df = df.iloc[-lookback_candles:].reset_index(drop=True)
         return df
 
     @staticmethod

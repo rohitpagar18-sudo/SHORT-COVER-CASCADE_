@@ -2276,3 +2276,111 @@ of `event_type=alert` rows, each carrying `bot_remark`, `bot_tags`, and
 user-filled `order_status` / `pnl_rupees`. That's the input for
 **Phase 7 backtesting** and the threshold-tuning prerequisite for
 **Phase 8 order placement**.
+
+---
+
+## Phase 5B Addendum — Robustness fixes (post-first-live-run)
+
+Three small but important fixes folded in after the very first
+alert-only live runs surfaced a partial-candle data bug and a need to
+make the C0 gate flexible.
+
+### A. Stale / in-progress candle guard (data accuracy)
+
+**Symptom:** Intermittently the orchestrator read the wrong candle
+(e.g. close=125.90, volume=57k while the real just-closed candle was
+close=133.85, volume=5.65M — the partial-candle volume was ~100× too
+small, proving an unfinalised candle was being scanned).
+
+**Root cause:** Broker candle endpoints sometimes include the
+currently-forming candle in their response.
+
+**Fixes in code:**
+- `src/data/kite_feed.py` and `src/data/upstox_feed.py` both have a
+  new module-level helper `_drop_in_progress_5min(df)` that filters
+  out any candle whose timestamp is `>= current 5-min boundary`
+  (IST). It's called inside `get_5min_candles()` after the response
+  is normalised into a DataFrame and before the lookback trim, so
+  `.iloc[-1]` is ALWAYS the last fully closed candle.
+- `src/main.py` adds `_fetch_closed_candles_with_retry()`. It calls
+  the feed, checks that the last candle's timestamp matches the
+  expected `(current 5-min boundary) - 5 min`, and retries
+  `config.bot.api_retry_count` times with
+  `config.bot.api_retry_delay_seconds` between tries. If the data is
+  still stale (>6 min old) after all retries — or empty — it raises a
+  `_StaleCandleError` which `_scan_strike()` catches and routes to
+  `_log_data_issue(... issue_type="STALE_CANDLE", ...)`.
+- DEBUG-level log of the last candle's `(timestamp, close, volume)` is
+  emitted whenever `config.logging.log_indicator_values` is ON, so
+  future mismatches are diagnosable from `bot.log`.
+- `config/config.yaml`: `bot.scan_buffer_seconds` raised from `5` to
+  `20`. Kite takes ~15-20s to finalise a 5-min candle; scanning too
+  early was the trigger for the partial-candle bug.
+
+### B. C0 (spot trend filter) is now toggleable, default OFF
+
+**Goal:** Let users disable the spot-vs-VWAP direction gate so the bot
+scans BOTH CE and PE on every selected strike each candle (C1–C4 still
+decide). Keeps the original C0 logic available — just behind a switch.
+
+**Fixes in code:**
+- `config/config.yaml` under `conditions:` now has
+  `c0_spot_trend_filter_enabled: OFF` (new safe default).
+- `src/config_loader.py`: `ConditionsConfig` gains
+  `c0_spot_trend_filter_enabled: bool = Field(default=False)` and the
+  ON/OFF validator. Default `False` so older configs (missing the
+  field) load cleanly with the new behaviour.
+- `src/conditions/all_conditions.py`: when the toggle is OFF,
+  `check_all_conditions()` appends
+  `ConditionResult("C0", True, "C0 SKIPPED: spot trend filter disabled in config")`
+  so `all_passed` math, the `C0 ✓ C1 ✓ …` summary, and dashboards
+  continue to see C0 in the row. The real `check_c0()` is still
+  exported and runs only when the toggle is ON.
+- `src/main.py` `_scan_symbol()`: when the toggle is OFF the
+  CE/PE fast-fail spot/VWAP gate is bypassed and BOTH CE and PE are
+  scanned per selected strike. When ON, original Phase 5A behaviour
+  is preserved unchanged (a CE option with spot ≤ VWAP gets a C0
+  rejection logged and no option chain fetch happens).
+- One INFO log per scan per symbol: `Scan plan: NIFTY will check N
+  option contracts this candle (c0_filter=OFF)`.
+
+### C. ITM/ATM/OTM alert toggles — defaults restored to all-ON
+
+The toggles `strike.alert_strikes.{itm,atm,otm}` already existed in
+Phase 4. Phase 5B verifies the wiring (`src/data/strike_selector.py`
+`_select_strikes` honours each flag and skips OFF relations) and ships
+with all three ON for maximum signal coverage:
+
+```yaml
+strike:
+  alert_strikes:
+    itm: ON
+    atm: ON
+    otm: ON
+```
+
+The "at least one must be ON" validator in
+`AlertStrikesConfig._at_least_one_on` is retained.
+
+With C0 off + all three alert_strikes ON, a single candle scans
+exactly **6 option contracts per symbol** (CE-ITM, CE-ATM, CE-OTM,
+PE-ITM, PE-ATM, PE-OTM). Note the edge case: CE-ATM and PE-ATM share
+the same strike *number* but are distinct contracts (different
+`instrument_key` and `trading_symbol`), so there is no collision.
+
+### Tests covering the above (`tests/test_phase5b_fixes.py`)
+
+- `test_kite_get_5min_candles_drops_in_progress_candle`
+- `test_upstox_get_5min_candles_drops_in_progress_candle`
+- `test_scan_strike_logs_stale_candle_when_last_candle_too_old`
+- `test_scan_strike_stale_candle_retries_then_succeeds_when_fresh`
+- `test_config_defaults_c0_filter_to_false`
+- `test_c0_disabled_appends_skipped_result_passed_true`
+- `test_c0_enabled_preserves_current_fast_fail_behavior`
+- `test_c0_disabled_scans_both_ce_and_pe`
+- `test_c0_enabled_fast_fails_pe_when_spot_above_vwap`
+- `test_alert_strikes_otm_off_excludes_otm`
+- `test_alert_strikes_itm_atm_on_otm_off_returns_correct_relations`
+- `test_config_validator_rejects_all_strikes_off`
+
+Total suite after this addendum: **305 passed**.

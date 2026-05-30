@@ -1669,3 +1669,29 @@ next layer — Excel dashboards, Parquet ML store, bot remarks, C1 tuning — is
 **`PHASE_5B.md`**. See **`PHASE_5C.md`** for the retroactive holiday-scan
 cleanup script (`mark_holiday_scans.py`) and the `is_holiday_scan` schema
 column.
+
+---
+
+## Post-first-live-run patches (see PHASE_5B Addendum for full detail)
+
+After the first live runs, three orchestrator-side patches were folded
+in. They live in `src/main.py`, both feeds, and `config.yaml`:
+
+1. **In-progress candle drop** — `kite_feed.py` / `upstox_feed.py`
+   `get_5min_candles()` now drop any candle whose timestamp is at or
+   after the current 5-min boundary (IST). `.iloc[-1]` is therefore
+   always the last fully closed bar.
+2. **Stale-candle guard with retry** — `_scan_strike()` calls
+   `_fetch_closed_candles_with_retry()` which retries up to
+   `config.bot.api_retry_count` times and routes a still-stale fetch
+   to `_log_data_issue(... issue_type="STALE_CANDLE", ...)` (NOT a
+   rejection). `config.bot.scan_buffer_seconds` raised from 5 → 20.
+3. **C0 toggleable, default OFF** — new
+   `config.conditions.c0_spot_trend_filter_enabled` flag. When OFF,
+   `check_all_conditions()` appends a SKIPPED C0 result and
+   `_scan_symbol()` scans both CE and PE on every selected strike. The
+   original `check_c0()` is retained and runs only when the toggle is
+   ON.
+
+Full text in **`PHASE_5B.md` → Phase 5B Addendum`**. New test file:
+`tests/test_phase5b_fixes.py` (12 tests). Total suite: 305 passing.

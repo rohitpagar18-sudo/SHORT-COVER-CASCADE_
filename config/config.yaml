@@ -56,13 +56,19 @@ strike:
   max_deviation_from_atm: 1            # Hard cap — never go beyond ± 1 strike
   late_entry_threshold_percent: 30     # If option is >30% above VWAP already, skip (chasing)
 
-  # Which strikes to SCAN and ALERT on (Phase 5+)
-  # All three ON = full ITM/ATM/OTM coverage on every selected expiry.
-  # Validator in config_loader.py still requires at least one ON.
+  # Which strikes to SCAN and ALERT on (Phase 5+).
+  # Each strike depth is an independent ON/OFF toggle. ITMn = n strikes
+  # in-the-money, OTMn = n strikes out-of-the-money. Non-contiguous
+  # combos are allowed (e.g. itm1 ON, itm2 OFF, itm3 ON).
+  # Validator in config_loader.py requires at least one level ON.
   alert_strikes:
-    itm: ON                            # Alert on 1 ITM strike
-    atm: ON                            # Alert on ATM strike
-    otm: ON                            # Alert on 1 OTM strike
+    itm3: OFF                          # Alert on ITM-3 strike
+    itm2: ON                           # Alert on ITM-2 strike
+    itm1: ON                           # Alert on ITM-1 strike
+    atm:  ON                           # Alert on ATM strike
+    otm1: OFF                          # Alert on OTM-1 strike
+    otm2: OFF                          # Alert on OTM-2 strike
+    otm3: OFF                          # Alert on OTM-3 strike
 
   # Which strikes to AUTO-ORDER on (Phase 8+ only)
   # Safer to start with ATM only. Add others after you trust the bot.

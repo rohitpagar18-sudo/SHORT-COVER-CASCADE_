@@ -167,7 +167,7 @@ class TelegramAlerter:
             "🚨 SHORT COVER CASCADE SIGNAL\n"
             "─────────────────────────────\n"
             f"Instrument: {s['symbol']} {s['strike']} {s['option_type']}\n"
-            f"Strike relation: {s['relation']} (ITM/ATM/OTM)\n"
+            f"Strike relation: {s['relation']}\n"
             f"Expiry: {s['expiry']}\n"
             f"Date: {s['date']} | Time: {s['time']}\n"
             f"Day Type: {s['day_type']}\n"

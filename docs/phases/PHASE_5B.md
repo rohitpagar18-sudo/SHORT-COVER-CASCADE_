@@ -2344,29 +2344,72 @@ decide). Keeps the original C0 logic available — just behind a switch.
 - One INFO log per scan per symbol: `Scan plan: NIFTY will check N
   option contracts this candle (c0_filter=OFF)`.
 
-### C. ITM/ATM/OTM alert toggles — defaults restored to all-ON
+### C. Per-level strike depth toggles (ITM3..ATM..OTM3)
 
-The toggles `strike.alert_strikes.{itm,atm,otm}` already existed in
-Phase 4. Phase 5B verifies the wiring (`src/data/strike_selector.py`
-`_select_strikes` honours each flag and skips OFF relations) and ships
-with all three ON for maximum signal coverage:
+The Phase-4 three-way toggles (`itm/atm/otm`) were superseded by
+**seven per-level booleans** so each strike depth can be enabled
+independently. The old single-bool `itm`/`otm` flags scanned exactly
+one strike in each direction; the new schema lets the operator choose
+any combination of depths 1/2/3 — including non-contiguous combos
+(e.g. ITM1 ON, ITM2 OFF, ITM3 ON).
+
+`config/config.yaml` defaults — ITM2/ITM1/ATM ON, rest OFF (6
+contracts per symbol per scan with C0 off):
 
 ```yaml
 strike:
   alert_strikes:
-    itm: ON
-    atm: ON
-    otm: ON
+    itm3: OFF
+    itm2: ON
+    itm1: ON
+    atm:  ON
+    otm1: OFF
+    otm2: OFF
+    otm3: OFF
 ```
 
-The "at least one must be ON" validator in
-`AlertStrikesConfig._at_least_one_on` is retained.
+Strike arithmetic (interval from `get_strike_interval(symbol)` —
+NIFTY=50, BANKNIFTY=100, never hardcoded inside the selector):
 
-With C0 off + all three alert_strikes ON, a single candle scans
-exactly **6 option contracts per symbol** (CE-ITM, CE-ATM, CE-OTM,
-PE-ITM, PE-ATM, PE-OTM). Note the edge case: CE-ATM and PE-ATM share
-the same strike *number* but are distinct contracts (different
-`instrument_key` and `trading_symbol`), so there is no collision.
+| Relation | CE strike                | PE strike                |
+|----------|--------------------------|--------------------------|
+| ITM3     | atm − 3 × interval       | atm + 3 × interval       |
+| ITM2     | atm − 2 × interval       | atm + 2 × interval       |
+| ITM1     | atm − 1 × interval       | atm + 1 × interval       |
+| ATM      | atm                      | atm                      |
+| OTM1     | atm + 1 × interval       | atm − 1 × interval       |
+| OTM2     | atm + 2 × interval       | atm − 2 × interval       |
+| OTM3     | atm + 3 × interval       | atm − 3 × interval       |
+
+If an arithmetic strike is missing from the broker option chain
+(illiquid, doesn't exist), it is **skipped silently with a debug
+log** — the selector never invents a contract.
+
+`AlertStrikesConfig` (in `src/config_loader.py`) keeps the
+"at least one level ON" validator: every toggle OFF is rejected so
+the bot can never be silently disabled.
+
+`signals.jsonl` / `alerts.jsonl` / `data/*.parquet` `relation`
+column now contains values from `{ITM3, ITM2, ITM1, ATM, OTM1,
+OTM2, OTM3}`. Downstream code (`src/dashboard/excel_builder.py`
+RELATION_FILLS, Win/Loss-by-Relation aggregation) handles the
+seven labels and tolerates any unknown label by appending it at
+the end of the display order — no hardcoded 3-relation list.
+
+**Killed-strike tracking** (`src/state/state_manager.py`) keys off
+the actual strike *number* (`{SYMBOL}_{STRIKE}_{OPTION_TYPE}`), not
+the relation label. So a strike killed when scanned as ITM1 stays
+killed when later scanned as ITM2 (after spot drifts) — each strike
+number is tracked once across all depth levels.
+
+**One-time migration** (`scripts/migrate_relation_labels.py`):
+renames legacy `relation` values in JSONL + Parquet — `ITM → ITM1`,
+`OTM → OTM1`; `ATM` is unchanged. Idempotent; safe to re-run.
+
+`order_strikes` (Phase 8 auto-order config) is **unchanged** —
+still uses the legacy three-way `itm/atm/otm` schema. Alert and
+order paths are intentionally decoupled (alert on more, order on
+fewer).
 
 ### Tests covering the above (`tests/test_phase5b_fixes.py`)
 
@@ -2382,5 +2425,12 @@ the same strike *number* but are distinct contracts (different
 - `test_alert_strikes_otm_off_excludes_otm`
 - `test_alert_strikes_itm_atm_on_otm_off_returns_correct_relations`
 - `test_config_validator_rejects_all_strikes_off`
+- `test_default_toggles_itm1_itm2_atm_on_rest_off`
+- `test_enabled_toggles_generate_matching_relations`
+- `test_itm_levels_mirror_correctly_for_ce_vs_pe`
+- `test_non_contiguous_toggles_allowed`
+- `test_all_toggles_off_rejected_by_validator`
+- `test_strike_interval_read_from_config_not_hardcoded`
+- `test_killed_strike_tracks_by_number_across_levels`
 
-Total suite after this addendum: **305 passed**.
+Total suite after this addendum: **312 passed**.

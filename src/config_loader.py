@@ -260,24 +260,41 @@ class ReEntryConfig(_Base):
 # ---------- STRIKE ----------
 
 
-class AlertStrikesConfig(_Base):
-    itm: bool
-    atm: bool
-    otm: bool
+# Per-level strike-depth toggles. Each level is independent — non-contiguous
+# combos (e.g. itm1 ON, itm2 OFF, itm3 ON) are allowed.
+_ALERT_STRIKE_LEVELS: tuple[str, ...] = (
+    "itm3", "itm2", "itm1", "atm", "otm1", "otm2", "otm3",
+)
 
-    @field_validator("itm", "atm", "otm", mode="before")
+
+class AlertStrikesConfig(_Base):
+    # New defaults: itm2/itm1/atm ON, the rest OFF.
+    itm3: bool = False
+    itm2: bool = True
+    itm1: bool = True
+    atm: bool = True
+    otm1: bool = False
+    otm2: bool = False
+    otm3: bool = False
+
+    @field_validator(*_ALERT_STRIKE_LEVELS, mode="before")
     @classmethod
     def _onoff(cls, v: Any) -> Any:
         return _onoff_to_bool(v)
 
     @model_validator(mode="after")
     def _at_least_one_on(self) -> "AlertStrikesConfig":
-        if not (self.itm or self.atm or self.otm):
+        if not any(getattr(self, lvl) for lvl in _ALERT_STRIKE_LEVELS):
             raise ValueError(
-                "strike.alert_strikes: at least one of itm/atm/otm must be ON "
+                "strike.alert_strikes: at least one of "
+                "itm1/itm2/itm3/atm/otm1/otm2/otm3 must be ON "
                 "(otherwise the bot would never alert)"
             )
         return self
+
+    def enabled_levels(self) -> list[str]:
+        """Levels that are ON, in display order ITM3..ATM..OTM3."""
+        return [lvl.upper() for lvl in _ALERT_STRIKE_LEVELS if getattr(self, lvl)]
 
 
 class OrderStrikesConfig(_Base):

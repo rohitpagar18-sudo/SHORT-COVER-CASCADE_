@@ -1,14 +1,16 @@
-"""Smart strike selector for ATM / ITM / OTM scanning.
+"""Smart strike selector for per-level ITM / ATM / OTM scanning.
 
-Strategy doc Section 4 restricts trades to ATM ± 1 strike. This module
-turns spot price + option type + config into a list of concrete strikes
-to scan, with their broker-specific instrument keys already resolved
-from the option chain.
+Each strike depth (ITM1/ITM2/ITM3, ATM, OTM1/OTM2/OTM3) is an independent
+ON/OFF toggle in ``config.strike.alert_strikes``. This module turns spot
+price + option type + config into a list of concrete strikes to scan,
+with their broker-specific instrument keys already resolved from the
+option chain.
 
 Two entry points:
-  - ``get_alert_strikes`` — uses ``config.strike.alert_strikes`` toggles.
+  - ``get_alert_strikes`` — uses ``config.strike.alert_strikes`` toggles
+    (7 per-level booleans).
   - ``get_order_strikes`` — uses ``config.strike.order_strikes`` toggles
-    (Phase 8). Same logic, different config sub-block.
+    (3-way ITM/ATM/OTM, Phase 8). Different config sub-block.
 
 Both call ``feed.get_option_chain(symbol, expiry)`` exactly once and
 filter the rows in-memory.
@@ -23,7 +25,23 @@ import pandas as pd
 from loguru import logger
 
 _STRIKE_INTERVAL = {"NIFTY": 50, "BANKNIFTY": 100}
-_ORDERED_RELATIONS: tuple[str, ...] = ("ITM", "ATM", "OTM")
+
+# Per-level alert toggles, in display order ITM3..ATM..OTM3. Each entry maps
+# the relation label to (toggle_attr, ce_offset_units, pe_offset_units),
+# where the offset is multiplied by the symbol strike interval. CE puts ITM
+# below ATM and OTM above; PE mirrors.
+_ALERT_LEVELS: tuple[tuple[str, str, int, int], ...] = (
+    ("ITM3", "itm3", -3, +3),
+    ("ITM2", "itm2", -2, +2),
+    ("ITM1", "itm1", -1, +1),
+    ("ATM",  "atm",   0,  0),
+    ("OTM1", "otm1", +1, -1),
+    ("OTM2", "otm2", +2, -2),
+    ("OTM3", "otm3", +3, -3),
+)
+
+# Legacy 3-way relations used by ``get_order_strikes`` (Phase 8 config).
+_ORDER_RELATIONS: tuple[str, ...] = ("ITM", "ATM", "OTM")
 
 
 @dataclass(frozen=True)
@@ -31,7 +49,8 @@ class StrikeChoice:
     """One scanable strike with its broker-resolved instrument key."""
 
     strike: int
-    relation: str              # "ITM" / "ATM" / "OTM"
+    relation: str              # "ITM1" / "ITM2" / "ITM3" / "ATM" / "OTM1" / "OTM2" / "OTM3"
+                               #  (or legacy "ITM"/"ATM"/"OTM" from get_order_strikes)
     instrument_key: str        # opaque string accepted by feed.get_5min_candles
     trading_symbol: str        # human-readable, e.g. NIFTY26JUN24050CE
 
@@ -53,24 +72,17 @@ def _select_relation_strikes(
     interval: int,
     option_type: str,
 ) -> dict[str, int]:
-    """Return {relation -> strike} for ITM, ATM, OTM of a CE or PE.
+    """Return {relation -> strike} for every per-level relation of a CE or PE.
 
-    For a CE: lower strike is ITM, higher strike is OTM.
-    For a PE: higher strike is ITM, lower strike is OTM.
+    For a CE: ITMn = atm - n*interval, OTMn = atm + n*interval.
+    For a PE: ITMn = atm + n*interval, OTMn = atm - n*interval.
+    ATM is the same strike on both sides.
     """
     opt = option_type.strip().upper()
     if opt == "CE":
-        return {
-            "ITM": atm - interval,
-            "ATM": atm,
-            "OTM": atm + interval,
-        }
+        return {label: atm + ce * interval for (label, _, ce, _) in _ALERT_LEVELS}
     if opt == "PE":
-        return {
-            "ITM": atm + interval,
-            "ATM": atm,
-            "OTM": atm - interval,
-        }
+        return {label: atm + pe * interval for (label, _, _, pe) in _ALERT_LEVELS}
     raise ValueError(f"Unknown option_type '{option_type}', expected CE or PE")
 
 
@@ -129,49 +141,17 @@ def _row_to_choice(
     )
 
 
-def _select_strikes(
-    feed: Any,
-    symbol: str,
-    spot_price: float,
-    option_type: str,
-    expiry: str,
-    toggles: Any,
-) -> list[StrikeChoice]:
-    """Shared core for ``get_alert_strikes`` and ``get_order_strikes``."""
-    interval = get_strike_interval(symbol)
-    atm = _compute_atm(spot_price, interval)
-    strikes_by_relation = _select_relation_strikes(atm, interval, option_type)
-
+def _fetch_chain(
+    feed: Any, symbol: str, expiry: str, option_type: str,
+) -> tuple[pd.DataFrame | None, str | None, str | None]:
     chain = feed.get_option_chain(symbol, expiry)
     if chain is None or chain.empty:
         logger.warning(
             "Option chain for {} {} {} is empty — no strikes returned",
-            symbol,
-            expiry,
-            option_type,
+            symbol, expiry, option_type,
         )
-        return []
-
-    key_col = _instrument_key_col(chain.columns)
-    sym_col = _trading_symbol_col(chain.columns)
-
-    out: list[StrikeChoice] = []
-    for relation in _ORDERED_RELATIONS:
-        if not getattr(toggles, relation.lower()):
-            continue
-        strike = strikes_by_relation[relation]
-        row = _find_row(chain, strike, option_type)
-        if row is None:
-            logger.debug(
-                "Strike {} {} not in option chain for {} {} — skipping",
-                strike,
-                option_type,
-                symbol,
-                expiry,
-            )
-            continue
-        out.append(_row_to_choice(row, strike, relation, key_col, sym_col))
-    return out
+        return None, None, None
+    return chain, _instrument_key_col(chain.columns), _trading_symbol_col(chain.columns)
 
 
 def get_alert_strikes(
@@ -182,15 +162,43 @@ def get_alert_strikes(
     expiry: str,
     config,
 ) -> list[StrikeChoice]:
-    """Return strikes to ALERT on, filtered by ``config.strike.alert_strikes``.
+    """Return strikes to ALERT on, filtered by per-level toggles in
+    ``config.strike.alert_strikes`` (ITM3/ITM2/ITM1/ATM/OTM1/OTM2/OTM3).
 
-    A strike absent from the option chain (illiquid, doesn't exist) is
-    skipped silently with a debug log.
+    Strikes computed by arithmetic (atm ± n*interval) but only returned if
+    present in the broker option chain — gaps in the chain (illiquid,
+    doesn't exist) are skipped silently with a debug log. Returned in
+    display order ITM3..ATM..OTM3.
     """
-    return _select_strikes(
-        feed, symbol, spot_price, option_type, expiry,
-        config.strike.alert_strikes,
+    interval = get_strike_interval(symbol)
+    atm = _compute_atm(spot_price, interval)
+    strikes_by_relation = _select_relation_strikes(atm, interval, option_type)
+
+    chain, key_col, sym_col = _fetch_chain(feed, symbol, expiry, option_type)
+    if chain is None:
+        return []
+
+    toggles = config.strike.alert_strikes
+    out: list[StrikeChoice] = []
+    for relation, attr, _, _ in _ALERT_LEVELS:
+        if not getattr(toggles, attr):
+            continue
+        strike = strikes_by_relation[relation]
+        row = _find_row(chain, strike, option_type)
+        if row is None:
+            logger.debug(
+                "Strike {} {} not in option chain for {} {} — skipping",
+                strike, option_type, symbol, expiry,
+            )
+            continue
+        out.append(_row_to_choice(row, strike, relation, key_col, sym_col))
+
+    logger.info(
+        "Strike selector: {} {} {} ATM={} -> {} enabled contracts ({})",
+        symbol, expiry, option_type, atm, len(out),
+        ",".join(c.relation for c in out) if out else "none",
     )
+    return out
 
 
 def get_order_strikes(
@@ -202,9 +210,36 @@ def get_order_strikes(
     config,
 ) -> list[StrikeChoice]:
     """Return strikes to AUTO-ORDER on (Phase 8), filtered by
-    ``config.strike.order_strikes``.
+    ``config.strike.order_strikes`` (legacy 3-way ITM/ATM/OTM).
+
+    ITM = atm ∓ interval (1 strike deep) — same as the old behavior.
     """
-    return _select_strikes(
-        feed, symbol, spot_price, option_type, expiry,
-        config.strike.order_strikes,
-    )
+    interval = get_strike_interval(symbol)
+    atm = _compute_atm(spot_price, interval)
+    opt = option_type.strip().upper()
+    if opt == "CE":
+        legacy = {"ITM": atm - interval, "ATM": atm, "OTM": atm + interval}
+    elif opt == "PE":
+        legacy = {"ITM": atm + interval, "ATM": atm, "OTM": atm - interval}
+    else:
+        raise ValueError(f"Unknown option_type '{option_type}', expected CE or PE")
+
+    chain, key_col, sym_col = _fetch_chain(feed, symbol, expiry, option_type)
+    if chain is None:
+        return []
+
+    toggles = config.strike.order_strikes
+    out: list[StrikeChoice] = []
+    for relation in _ORDER_RELATIONS:
+        if not getattr(toggles, relation.lower()):
+            continue
+        strike = legacy[relation]
+        row = _find_row(chain, strike, option_type)
+        if row is None:
+            logger.debug(
+                "Order strike {} {} not in option chain for {} {} — skipping",
+                strike, option_type, symbol, expiry,
+            )
+            continue
+        out.append(_row_to_choice(row, strike, relation, key_col, sym_col))
+    return out

@@ -516,14 +516,18 @@ class _FakeOptionChain:
 
 
 def test_alert_strikes_otm_off_excludes_otm(config: AppConfig) -> None:
-    """alert_strikes.otm=OFF must drop the OTM row from the returned list."""
+    """alert_strikes otm levels OFF must drop OTM rows from the returned list."""
     feed = _FakeOptionChain([24000, 24050, 24100])
     cfg = config.model_copy(
         update={
             "strike": config.strike.model_copy(
                 update={
                     "alert_strikes": config.strike.alert_strikes.model_copy(
-                        update={"itm": True, "atm": True, "otm": False}
+                        update={
+                            "itm3": False, "itm2": False, "itm1": True,
+                            "atm": True,
+                            "otm1": False, "otm2": False, "otm3": False,
+                        }
                     )
                 }
             )
@@ -534,16 +538,16 @@ def test_alert_strikes_otm_off_excludes_otm(config: AppConfig) -> None:
         expiry="2026-06-02", config=cfg,
     )
     relations = [c.relation for c in choices]
-    assert "OTM" not in relations
-    assert relations == ["ITM", "ATM"]
+    assert not any(r.startswith("OTM") for r in relations)
+    assert relations == ["ITM1", "ATM"]
 
 
 def test_alert_strikes_itm_atm_on_otm_off_returns_correct_relations(
     config: AppConfig,
 ) -> None:
-    """CE: ITM=atm-interval, OTM=atm+interval; PE: ITM=atm+interval,
-    OTM=atm-interval. Verify both sides return the right strikes
-    when only ITM+ATM are ON.
+    """CE: ITM1=atm-interval, OTM1=atm+interval; PE: ITM1=atm+interval,
+    OTM1=atm-interval. Verify both sides return the right strikes
+    when only ITM1+ATM are ON.
     """
     feed = _FakeOptionChain([23950, 24000, 24050, 24100])
     cfg = config.model_copy(
@@ -551,34 +555,215 @@ def test_alert_strikes_itm_atm_on_otm_off_returns_correct_relations(
             "strike": config.strike.model_copy(
                 update={
                     "alert_strikes": config.strike.alert_strikes.model_copy(
-                        update={"itm": True, "atm": True, "otm": False}
+                        update={
+                            "itm3": False, "itm2": False, "itm1": True,
+                            "atm": True,
+                            "otm1": False, "otm2": False, "otm3": False,
+                        }
                     )
                 }
             )
         }
     )
     # ATM for spot 24030 = round(24030/50)*50 = 24050.
-    # CE: ITM = 24050-50 = 24000, ATM = 24050.
+    # CE: ITM1 = 24050-50 = 24000, ATM = 24050.
     ce_choices = get_alert_strikes(
         feed, "NIFTY", 24030.0, "CE", "2026-06-02", cfg,
     )
     assert [(c.relation, c.strike) for c in ce_choices] == [
-        ("ITM", 24000), ("ATM", 24050),
+        ("ITM1", 24000), ("ATM", 24050),
     ]
-    # PE: ITM = 24050+50 = 24100, ATM = 24050.
+    # PE: ITM1 = 24050+50 = 24100, ATM = 24050.
     pe_choices = get_alert_strikes(
         feed, "NIFTY", 24030.0, "PE", "2026-06-02", cfg,
     )
     assert [(c.relation, c.strike) for c in pe_choices] == [
-        ("ITM", 24100), ("ATM", 24050),
+        ("ITM1", 24100), ("ATM", 24050),
     ]
 
 
 def test_config_validator_rejects_all_strikes_off() -> None:
-    """AlertStrikesConfig validator must reject itm=atm=otm=OFF — bot
+    """AlertStrikesConfig validator must reject every level OFF — bot
     would never alert otherwise.
     """
     with pytest.raises(Exception):
-        AlertStrikesConfig.model_validate(
-            {"itm": False, "atm": False, "otm": False}
-        )
+        AlertStrikesConfig.model_validate({
+            "itm3": False, "itm2": False, "itm1": False,
+            "atm": False,
+            "otm1": False, "otm2": False, "otm3": False,
+        })
+
+
+# ---------------------------------------------------------------------------
+# Per-level strike depth toggles (7-wide ITM3..ATM..OTM3)
+# ---------------------------------------------------------------------------
+
+
+def test_default_toggles_itm1_itm2_atm_on_rest_off(config: AppConfig) -> None:
+    """Default config.yaml ships with itm2/itm1/atm ON, every other level OFF."""
+    a = config.strike.alert_strikes
+    assert (a.itm3, a.itm2, a.itm1, a.atm, a.otm1, a.otm2, a.otm3) == (
+        False, True, True, True, False, False, False,
+    )
+    assert a.enabled_levels() == ["ITM2", "ITM1", "ATM"]
+
+
+def test_enabled_toggles_generate_matching_relations(config: AppConfig) -> None:
+    """Enabling itm3+atm+otm2 must yield exactly those three relations,
+    in display order ITM3..ATM..OTM3."""
+    feed = _FakeOptionChain([23900, 23950, 24000, 24050, 24100, 24150, 24200])
+    cfg = config.model_copy(
+        update={
+            "strike": config.strike.model_copy(
+                update={
+                    "alert_strikes": config.strike.alert_strikes.model_copy(
+                        update={
+                            "itm3": True, "itm2": False, "itm1": False,
+                            "atm": True,
+                            "otm1": False, "otm2": True, "otm3": False,
+                        }
+                    )
+                }
+            )
+        }
+    )
+    choices = get_alert_strikes(
+        feed, "NIFTY", 24030.0, "CE", "2026-06-02", cfg,
+    )
+    assert [(c.relation, c.strike) for c in choices] == [
+        ("ITM3", 23900), ("ATM", 24050), ("OTM2", 24150),
+    ]
+
+
+def test_itm_levels_mirror_correctly_for_ce_vs_pe(config: AppConfig) -> None:
+    """CE: ITMn = atm - n*interval, OTMn = atm + n*interval.
+    PE mirrors. Verified across all 3 ITM depths and all 3 OTM depths."""
+    feed = _FakeOptionChain([23900, 23950, 24000, 24050, 24100, 24150, 24200])
+    cfg = config.model_copy(
+        update={
+            "strike": config.strike.model_copy(
+                update={
+                    "alert_strikes": config.strike.alert_strikes.model_copy(
+                        update={
+                            "itm3": True, "itm2": True, "itm1": True,
+                            "atm": True,
+                            "otm1": True, "otm2": True, "otm3": True,
+                        }
+                    )
+                }
+            )
+        }
+    )
+    ce = get_alert_strikes(feed, "NIFTY", 24030.0, "CE", "2026-06-02", cfg)
+    assert [(c.relation, c.strike) for c in ce] == [
+        ("ITM3", 23900), ("ITM2", 23950), ("ITM1", 24000),
+        ("ATM",  24050),
+        ("OTM1", 24100), ("OTM2", 24150), ("OTM3", 24200),
+    ]
+    pe = get_alert_strikes(feed, "NIFTY", 24030.0, "PE", "2026-06-02", cfg)
+    assert [(c.relation, c.strike) for c in pe] == [
+        ("ITM3", 24200), ("ITM2", 24150), ("ITM1", 24100),
+        ("ATM",  24050),
+        ("OTM1", 24000), ("OTM2", 23950), ("OTM3", 23900),
+    ]
+
+
+def test_non_contiguous_toggles_allowed(config: AppConfig) -> None:
+    """itm1 ON, itm2 OFF, itm3 ON is a legal combo — validator must not
+    reject it, and the selector must return only the enabled levels."""
+    cfg = AlertStrikesConfig.model_validate({
+        "itm3": True, "itm2": False, "itm1": True,
+        "atm": False,
+        "otm1": False, "otm2": False, "otm3": False,
+    })
+    assert cfg.enabled_levels() == ["ITM3", "ITM1"]
+
+    feed = _FakeOptionChain([23900, 23950, 24000, 24050])
+    forced = config.model_copy(
+        update={
+            "strike": config.strike.model_copy(
+                update={"alert_strikes": cfg}
+            )
+        }
+    )
+    choices = get_alert_strikes(
+        feed, "NIFTY", 24030.0, "CE", "2026-06-02", forced,
+    )
+    assert [(c.relation, c.strike) for c in choices] == [
+        ("ITM3", 23900), ("ITM1", 24000),
+    ]
+
+
+def test_all_toggles_off_rejected_by_validator() -> None:
+    """Every toggle OFF must raise — bot would never alert."""
+    with pytest.raises(Exception):
+        AlertStrikesConfig.model_validate({
+            "itm3": False, "itm2": False, "itm1": False,
+            "atm": False,
+            "otm1": False, "otm2": False, "otm3": False,
+        })
+
+
+def test_strike_interval_read_from_config_not_hardcoded(config: AppConfig) -> None:
+    """Strike interval comes from get_strike_interval(symbol). Switching
+    symbols must change the spacing without any change to the toggles."""
+    from src.data.strike_selector import get_strike_interval
+
+    assert get_strike_interval("NIFTY") == 50
+    assert get_strike_interval("BANKNIFTY") == 100
+
+    # All-on toggles, but verify the same toggles produce different strike
+    # spacing for the two symbols.
+    cfg = config.model_copy(
+        update={
+            "strike": config.strike.model_copy(
+                update={
+                    "alert_strikes": config.strike.alert_strikes.model_copy(
+                        update={
+                            "itm3": False, "itm2": True, "itm1": True,
+                            "atm": True,
+                            "otm1": True, "otm2": True, "otm3": False,
+                        }
+                    )
+                }
+            )
+        }
+    )
+    nifty_feed = _FakeOptionChain([23950, 24000, 24050, 24100, 24150])
+    nifty = get_alert_strikes(nifty_feed, "NIFTY", 24030.0, "CE", "2026-06-02", cfg)
+    nifty_strikes = [c.strike for c in nifty]
+
+    bn_feed = _FakeOptionChain([50700, 50800, 50900, 51000, 51100])
+    bn = get_alert_strikes(bn_feed, "BANKNIFTY", 50930.0, "CE", "2026-06-25", cfg)
+    bn_strikes = [c.strike for c in bn]
+
+    # Both lists have the same 5 toggles ON, but NIFTY uses 50-pt and
+    # BANKNIFTY uses 100-pt spacing — interval is config-driven, not the toggle.
+    nifty_atm = nifty_strikes[nifty_strikes.index(24050)]
+    bn_atm = bn_strikes[bn_strikes.index(50900)]
+    assert nifty_strikes == [
+        nifty_atm - 100, nifty_atm - 50, nifty_atm, nifty_atm + 50, nifty_atm + 100,
+    ]
+    assert bn_strikes == [
+        bn_atm - 200, bn_atm - 100, bn_atm, bn_atm + 100, bn_atm + 200,
+    ]
+
+
+def test_killed_strike_tracks_by_number_across_levels(tmp_path) -> None:
+    """Re-entry / kill logic must key off the actual strike NUMBER. So if
+    24000 is killed via ITM1, the same number scanned as ITM2 (after spot
+    drifts higher) is still killed."""
+    from src.state import StateManager
+
+    state_path = tmp_path / "state.json"
+    sm = StateManager(state_file=state_path)
+    sm.load_state()
+
+    # 24000 stops out twice while it was the ITM1 strike.
+    for _ in range(2):
+        sm.increment_sl_count("NIFTY", 24000, "CE")
+
+    # Later, spot drifts higher and 24000 is now ITM2 — same number though.
+    assert sm.is_strike_killed("NIFTY", 24000, "CE") is True
+    # A different strike number must NOT be affected.
+    assert sm.is_strike_killed("NIFTY", 23950, "CE") is False

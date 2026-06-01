@@ -88,12 +88,19 @@ strike:
   max_deviation_from_atm: 1            # Hard cap — never go beyond ± 1 strike
   late_entry_threshold_percent: 30     # If option is >30% above VWAP already, skip (chasing)
   
-  # Which strikes to SCAN and ALERT on (Phase 5+)
-  # Default ON for all 3 = maximum signal coverage
+  # Which strikes to SCAN and ALERT on (Phase 5+).
+  # NOTE: This block was rewritten in Phase 5B from the original 3-way
+  # (itm/atm/otm) schema to seven per-level booleans. Each strike depth
+  # is now an independent ON/OFF toggle. Non-contiguous combos are
+  # allowed (e.g. itm1 ON, itm2 OFF, itm3 ON).
   alert_strikes:
-    itm: ON                            # Alert on 1 ITM strike
-    atm: ON                            # Alert on ATM strike
-    otm: ON                            # Alert on 1 OTM strike
+    itm3: OFF                          # Alert on ITM-3 strike
+    itm2: ON                           # Alert on ITM-2 strike
+    itm1: ON                           # Alert on ITM-1 strike
+    atm:  ON                           # Alert on ATM strike
+    otm1: OFF                          # Alert on OTM-1 strike
+    otm2: OFF                          # Alert on OTM-2 strike
+    otm3: OFF                          # Alert on OTM-3 strike
   
   # Which strikes to AUTO-ORDER on (Phase 8+ only)
   # Safer to start with ATM only. Add others after you trust the bot.
@@ -255,11 +262,23 @@ CRITICAL CORRECTNESS RULES:
 Add pydantic models for the new sub-sections:
 
 class AlertStrikesConfig(BaseModel):
-    itm: bool
-    atm: bool
-    otm: bool
+    # NOTE: Phase 4 originally shipped the 3-way (itm/atm/otm) schema.
+    # Phase 5B (and a later refinement) replaced it with seven
+    # per-level booleans so each strike depth can be toggled
+    # independently. See docs/phases/PHASE_5B.MD §C for the current
+    # schema, defaults, and CE/PE mirroring rules.
+    itm3: bool
+    itm2: bool
+    itm1: bool
+    atm:  bool
+    otm1: bool
+    otm2: bool
+    otm3: bool
 
 class OrderStrikesConfig(BaseModel):
+    # Phase 8 auto-order schema. Intentionally still 3-way — alert
+    # and order are decoupled so we can alert on many depths and
+    # order on just ATM.
     itm: bool
     atm: bool
     otm: bool
@@ -271,9 +290,9 @@ class StrikeConfig(BaseModel):
     order_strikes: OrderStrikesConfig
 
 Keep all existing models working. Add validators:
-- AlertStrikesConfig: at least one of itm/atm/otm must be ON
+- AlertStrikesConfig: at least one of the seven levels must be ON
   (otherwise bot would never alert)
-- OrderStrikesConfig: at least one must be ON if mode.order_place_mode 
+- OrderStrikesConfig: at least one must be ON if mode.order_place_mode
   is ON (validator runs at config load time)
 - VIX regime: derived, not set from config (regime is computed from VIX value)
 
@@ -641,12 +660,15 @@ from dataclasses import dataclass
 @dataclass
 class StrikeChoice:
     strike: int
-    relation: str              # "ITM" / "ATM" / "OTM"
+    # Phase 5B+: per-level relation labels.
+    relation: str              # "ITM3" / "ITM2" / "ITM1" / "ATM" / "OTM1" / "OTM2" / "OTM3"
+                               #  (or legacy "ITM" / "ATM" / "OTM" from get_order_strikes)
     instrument_key: str        # for fetching candles from feed
     trading_symbol: str        # human-readable, e.g. NIFTY2660224050CE
 
 def get_strike_interval(symbol: str) -> int:
-    """NIFTY = 50, BANKNIFTY = 100."""
+    """NIFTY = 50, BANKNIFTY = 100. Never hardcoded in selectors —
+    callers always go through this lookup."""
 
 def _select_relation_strikes(
     atm: int,
@@ -654,9 +676,11 @@ def _select_relation_strikes(
     option_type: str,
 ) -> dict[str, int]:
     """
-    Given ATM and interval, returns dict:
-      For CE: {"ITM": atm - interval, "ATM": atm, "OTM": atm + interval}
-      For PE: {"ITM": atm + interval, "ATM": atm, "OTM": atm - interval}
+    Phase 5B+: returns dict with all 7 per-level relations.
+      For CE: ITMn = atm - n*interval,  OTMn = atm + n*interval
+      For PE: ITMn = atm + n*interval,  OTMn = atm - n*interval
+      ATM = atm (same strike on both sides; distinct contracts via
+            instrument_key / trading_symbol).
     """
 
 def get_alert_strikes(
@@ -665,19 +689,23 @@ def get_alert_strikes(
 ) -> list[StrikeChoice]:
     """
     Returns the list of StrikeChoice objects to ALERT on.
-    Reads config.strike.alert_strikes to decide ITM/ATM/OTM inclusion.
-    Calls feed.get_option_chain() to resolve each strike to instrument_key 
-    and trading_symbol.
-    
-    If a strike from the calculation isn't in the option chain 
-    (illiquid, doesn't exist), skip it silently with a debug log.
+    Reads config.strike.alert_strikes (7 per-level toggles) to decide
+    which depths to include. Returned in display order ITM3..ATM..OTM3
+    (filtered to the enabled levels).
+
+    Calls feed.get_option_chain() to resolve each strike to
+    instrument_key and trading_symbol. If a strike from the calculation
+    isn't in the option chain (illiquid, doesn't exist), skip it
+    silently with a debug log.
     """
 
 def get_order_strikes(
     feed, symbol: str, spot_price: float, option_type: str,
     expiry: str, config,
 ) -> list[StrikeChoice]:
-    """Same logic but reads config.strike.order_strikes. Phase 8 will use this."""
+    """Same idea but reads config.strike.order_strikes (still the
+    legacy 3-way ITM/ATM/OTM schema — Phase 8). Alert and order paths
+    are intentionally decoupled."""
 
 =========================================================
 --- TASK 9: Create scripts/check_risk.py ---
@@ -844,10 +872,17 @@ def test_state_persists_across_restarts(tmp_path): create, save,
     create new manager, verify same state
 
 # Strike selector tests
-def test_strikes_ce_atm_plus_minus_1(): spot=24030 -> ITM=24000, ATM=24050, OTM=24100
-def test_strikes_pe_atm_plus_minus_1(): spot=24030 -> ITM=24100, ATM=24050, OTM=24000
-def test_strikes_alert_config_filters(): config itm=OFF -> only ATM+OTM returned
-def test_strikes_order_config_filters(): config order_strikes only ATM -> only 1 strike
+# NOTE: these were rewritten in Phase 5B for the per-level (ITM3..OTM3)
+# schema — see tests/test_phase5b_fixes.py and tests/test_risk.py for
+# the current test list.
+def test_strikes_ce_atm_plus_minus_1():
+    # spot=24030 -> ATM=24050; CE ITMn = atm - n*50, OTMn = atm + n*50.
+    pass
+def test_strikes_pe_atm_plus_minus_1():
+    # PE mirrors: ITMn = atm + n*50, OTMn = atm - n*50.
+    pass
+def test_strikes_alert_config_filters(): pass  # per-level toggles drop OFF depths
+def test_strikes_order_config_filters(): pass  # legacy 3-way schema (Phase 8)
 
 After writing all files, run:
   pytest tests/ -v

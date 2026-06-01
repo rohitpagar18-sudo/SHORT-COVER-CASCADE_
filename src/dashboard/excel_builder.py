@@ -87,11 +87,27 @@ GAP_FILLS = {
     "GAP_DETECTED_BUT_DISABLED": PatternFill("solid", fgColor="FFE0B2"),
 }
 
-# Signal row colour by Relation
+# Signal row colour by Relation. Depths share a family colour:
+# ITM = grey, ATM = yellow, OTM = purple. Deeper levels darken.
+_ITM_FILL = PatternFill("solid", fgColor="F4F4F4")
+_ITM2_FILL = PatternFill("solid", fgColor="E0E0E0")
+_ITM3_FILL = PatternFill("solid", fgColor="BDBDBD")
+_ATM_FILL = PatternFill("solid", fgColor="FFF9C4")
+_OTM_FILL = PatternFill("solid", fgColor="EDE7F6")
+_OTM2_FILL = PatternFill("solid", fgColor="D1C4E9")
+_OTM3_FILL = PatternFill("solid", fgColor="B39DDB")
 RELATION_FILLS = {
-    "ITM": PatternFill("solid", fgColor="F4F4F4"),
-    "ATM": PatternFill("solid", fgColor="FFF9C4"),
-    "OTM": PatternFill("solid", fgColor="EDE7F6"),
+    # Per-level (Phase 5B+)
+    "ITM1": _ITM_FILL,
+    "ITM2": _ITM2_FILL,
+    "ITM3": _ITM3_FILL,
+    "ATM":  _ATM_FILL,
+    "OTM1": _OTM_FILL,
+    "OTM2": _OTM2_FILL,
+    "OTM3": _OTM3_FILL,
+    # Legacy (pre-per-level signals.jsonl rows, before migration ran)
+    "ITM":  _ITM_FILL,
+    "OTM":  _OTM_FILL,
 }
 
 # would_alert_extended highlight
@@ -321,10 +337,22 @@ def _build_strategy_dashboard(
         return chart_start_row + 1, chart_start_row + 1 + len(items), col_anchor
 
     # 1. Wins vs Losses by Strike Relation
+    # Relation labels are per-level (ITM3..ATM..OTM3) since Phase 5B+. The
+    # display order keeps deeper ITM at the left and deeper OTM at the right;
+    # any unexpected label (legacy or new) is appended at the end.
+    _RELATION_DISPLAY_ORDER = (
+        "ITM3", "ITM2", "ITM1", "ITM",  # "ITM" = legacy unmigrated
+        "ATM",
+        "OTM1", "OTM", "OTM2", "OTM3",  # "OTM" = legacy unmigrated
+    )
     relation_alerts = alerts[alerts.get("relation").notna()] if not alerts.empty and "relation" in alerts.columns else pd.DataFrame()
     rel_buckets: list[tuple[str, float]] = []
     if not relation_alerts.empty:
-        for relation in ("ITM", "ATM", "OTM"):
+        present = [r for r in _RELATION_DISPLAY_ORDER if (relation_alerts["relation"] == r).any()]
+        # Tack on any unknown labels at the end so nothing is silently dropped.
+        for extra in sorted(set(relation_alerts["relation"].dropna().astype(str)) - set(_RELATION_DISPLAY_ORDER)):
+            present.append(extra)
+        for relation in present:
             slice_ = relation_alerts[relation_alerts["relation"] == relation]
             wins = int(((slice_.get("order_status") == "TP2_HIT").sum() if "order_status" in slice_.columns else 0)
                        + ((slice_.get("order_status") == "TP1_HIT").sum() if "order_status" in slice_.columns else 0))

@@ -168,14 +168,24 @@ These decisions were made during phase-by-phase development. Do NOT
 revisit without explicit user approval.
 
 ### Strike Selection
-- Bot scans 3 strikes per side per scan: ITM + ATM + OTM (one strike each)
-- For CE: ITM = ATM - interval, OTM = ATM + interval
-- For PE: ITM = ATM + interval, OTM = ATM - interval
+- Bot scans up to 7 depths per side per scan via independent per-level
+  toggles: ITM3 / ITM2 / ITM1 / ATM / OTM1 / OTM2 / OTM3
+- For CE: ITMn = ATM − n × interval, OTMn = ATM + n × interval
+- For PE: ITMn = ATM + n × interval, OTMn = ATM − n × interval
 - NIFTY strike interval: 50 points
 - BankNifty strike interval: 100 points
-- config.strike.alert_strikes controls which to ALERT on (default all 3 ON)
-- config.strike.order_strikes controls which to AUTO-ORDER on (default ATM only)
-- Alert and order are decoupled — alert on more, order on fewer
+- config.strike.alert_strikes has 7 booleans (itm3/itm2/itm1/atm/otm1/otm2/otm3).
+  Defaults: itm2 + itm1 + atm ON, rest OFF. Non-contiguous combos allowed
+  (e.g. itm1 ON, itm2 OFF, itm3 ON). At least one must be ON.
+- config.strike.order_strikes is still the legacy 3-way (itm/atm/otm) for
+  Phase 8 auto-orders (default ATM only)
+- Alert and order are decoupled — alert on more depths, order on fewer
+- signals.jsonl / alerts.jsonl / Parquet `relation` column = the depth
+  label (ITM1..ITM3, ATM, OTM1..OTM3). One-time legacy migration:
+  scripts/migrate_relation_labels.py (ITM → ITM1, OTM → OTM1)
+- Killed-strike state keys off strike NUMBER, not relation label —
+  a strike killed when scanned as ITM1 stays killed when later scanned
+  as ITM2 after spot drifts
 
 ### Expiry Selection
 - Expiries are NEVER hardcoded by day-of-week

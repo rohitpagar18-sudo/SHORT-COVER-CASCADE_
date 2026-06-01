@@ -655,14 +655,23 @@ def test_strike_interval_unknown_raises() -> None:
 
 
 def test_strikes_ce_atm_plus_minus_1() -> None:
-    # spot 24030 -> ATM = round(24030/50)*50 = 24050
+    # spot 24030 -> ATM = round(24030/50)*50 = 24050.
+    # Per-level relations: CE has ITMn = atm - n*interval, OTMn = atm + n*interval.
     rel = _select_relation_strikes(atm=24050, interval=50, option_type="CE")
-    assert rel == {"ITM": 24000, "ATM": 24050, "OTM": 24100}
+    assert rel == {
+        "ITM3": 23900, "ITM2": 23950, "ITM1": 24000,
+        "ATM": 24050,
+        "OTM1": 24100, "OTM2": 24150, "OTM3": 24200,
+    }
 
 
 def test_strikes_pe_atm_plus_minus_1() -> None:
     rel = _select_relation_strikes(atm=24050, interval=50, option_type="PE")
-    assert rel == {"ITM": 24100, "ATM": 24050, "OTM": 24000}
+    assert rel == {
+        "ITM3": 24200, "ITM2": 24150, "ITM1": 24100,
+        "ATM": 24050,
+        "OTM1": 24000, "OTM2": 23950, "OTM3": 23900,
+    }
 
 
 def test_strikes_unknown_option_type_raises() -> None:
@@ -691,17 +700,17 @@ class _FakeFeed:
         return pd.DataFrame(rows)
 
 
-def test_strikes_alert_default_all_three(config: AppConfig) -> None:
-    """Default config ships with itm=ON, atm=ON, otm=ON (full coverage)."""
-    feed = _FakeFeed([24000, 24050, 24100])
+def test_strikes_alert_default_itm2_itm1_atm_on(config: AppConfig) -> None:
+    """Default config ships with itm2/itm1/atm ON, rest OFF."""
+    feed = _FakeFeed([23950, 24000, 24050, 24100])
     choices = get_alert_strikes(
         feed=feed, symbol="NIFTY", spot_price=24030.0, option_type="CE",
         expiry="2026-06-02", config=config,
     )
     relations = [c.relation for c in choices]
-    assert relations == ["ITM", "ATM", "OTM"]
+    assert relations == ["ITM2", "ITM1", "ATM"]
     strikes = [c.strike for c in choices]
-    assert strikes == [24000, 24050, 24100]
+    assert strikes == [23950, 24000, 24050]
     # Each choice has both instrument_key and trading_symbol resolved.
     for c in choices:
         assert c.instrument_key
@@ -715,9 +724,11 @@ def test_strikes_alert_config_filters_off_itm(config: AppConfig) -> None:
             "strike": config.strike.model_copy(
                 update={
                     "alert_strikes": config.strike.alert_strikes.model_copy(
-                        # Force OTM on for this test — default ships OTM OFF,
-                        # so without this override only ATM would survive.
-                        update={"itm": False, "atm": True, "otm": True}
+                        update={
+                            "itm3": False, "itm2": False, "itm1": False,
+                            "atm": True,
+                            "otm1": True, "otm2": False, "otm3": False,
+                        }
                     )
                 }
             )
@@ -728,7 +739,7 @@ def test_strikes_alert_config_filters_off_itm(config: AppConfig) -> None:
         expiry="2026-06-02", config=filtered,
     )
     relations = [c.relation for c in choices]
-    assert relations == ["ATM", "OTM"]
+    assert relations == ["ATM", "OTM1"]
 
 
 def test_strikes_order_config_only_atm(config: AppConfig) -> None:
@@ -743,16 +754,18 @@ def test_strikes_order_config_only_atm(config: AppConfig) -> None:
 
 
 def test_strikes_missing_in_chain_skipped(config: AppConfig) -> None:
-    # ITM (24000) is missing from the chain — should be silently skipped.
-    # Force OTM on for this test so the chain-skip behavior is observable
-    # without relying on default toggles.
+    # ITM1 (24000) is missing from the chain — should be silently skipped.
     feed = _FakeFeed([24050, 24100])
     forced = config.model_copy(
         update={
             "strike": config.strike.model_copy(
                 update={
                     "alert_strikes": config.strike.alert_strikes.model_copy(
-                        update={"itm": True, "atm": True, "otm": True}
+                        update={
+                            "itm3": False, "itm2": False, "itm1": True,
+                            "atm": True,
+                            "otm1": True, "otm2": False, "otm3": False,
+                        }
                     )
                 }
             )
@@ -763,9 +776,9 @@ def test_strikes_missing_in_chain_skipped(config: AppConfig) -> None:
         expiry="2026-06-02", config=forced,
     )
     relations = [c.relation for c in choices]
-    assert "ITM" not in relations
+    assert "ITM1" not in relations
     assert "ATM" in relations
-    assert "OTM" in relations
+    assert "OTM1" in relations
 
 
 def test_strikes_empty_chain_returns_empty(config: AppConfig) -> None:
@@ -784,7 +797,11 @@ def test_strikes_banknifty_uses_100_interval(config: AppConfig) -> None:
             "strike": config.strike.model_copy(
                 update={
                     "alert_strikes": config.strike.alert_strikes.model_copy(
-                        update={"itm": True, "atm": True, "otm": True}
+                        update={
+                            "itm3": False, "itm2": False, "itm1": True,
+                            "atm": True,
+                            "otm1": True, "otm2": False, "otm3": False,
+                        }
                     )
                 }
             )
@@ -795,7 +812,7 @@ def test_strikes_banknifty_uses_100_interval(config: AppConfig) -> None:
         expiry="2026-06-25", config=forced,
     )
     strikes = [c.strike for c in choices]
-    # ATM = round(50930/100)*100 = 50900; CE -> ITM 50800, OTM 51000.
+    # ATM = round(50930/100)*100 = 50900; CE -> ITM1 50800, OTM1 51000.
     assert strikes == [50800, 50900, 51000]
 
 
@@ -807,12 +824,13 @@ def test_strikes_banknifty_uses_100_interval(config: AppConfig) -> None:
 def test_config_alert_strikes_all_off_rejected(config: AppConfig) -> None:
     """The AlertStrikesConfig validator must reject all-OFF — bot would
     never alert otherwise."""
+    from src.config_loader import AlertStrikesConfig
     with pytest.raises(Exception):
-        config.strike.alert_strikes.model_copy(
-            update={"itm": False, "atm": False, "otm": False}
-        ).model_validate(
-            {"itm": False, "atm": False, "otm": False}
-        )
+        AlertStrikesConfig.model_validate({
+            "itm3": False, "itm2": False, "itm1": False,
+            "atm": False,
+            "otm1": False, "otm2": False, "otm3": False,
+        })
 
 
 def test_config_order_strikes_blocked_when_order_mode_on(

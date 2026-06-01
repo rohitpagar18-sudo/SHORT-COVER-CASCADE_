@@ -77,7 +77,6 @@ def main() -> None:
         print(f"  Alerts: {xl.get('alerts_added', 0)}")
         print(f"  Signals: {xl.get('signals_added', 0)}")
         print(f"  Order Place rows: {xl.get('order_place_added', 0)}")
-        print(f"  Rejections: {xl.get('rejections_added', 0)}")
         print(f"  Gap rows: {xl.get('gaps_added', 0)}")
 
     print("\n[3/3] Excel notes -> Parquet sync (best-effort)...")

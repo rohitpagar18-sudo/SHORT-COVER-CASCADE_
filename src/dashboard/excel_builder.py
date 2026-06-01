@@ -3,7 +3,7 @@
 Reads the unified monthly Parquet files in ``data/`` and produces a
 human-facing workbook at ``logs/dashboards/dashboard_YYYY_QN.xlsx``.
 
-Eight sheets in order:
+Seven sheets in order:
 
 1. Strategy Dashboard — KPI tiles + 4 charts (visual at-a-glance view)
 2. Daily Summary       — one row per trading day with the directional
@@ -15,9 +15,8 @@ Eight sheets in order:
                          user notes); coloured by outcome
 5. All Signals         — full audit including ``would_alert_extended``
                          rows highlighted in light orange
-6. Rejections          — grouped by blocker
-7. Gap History         — directional labels with colour swatches
-8. Config Snapshot     — current config values for this quarter
+6. Gap History         — directional labels with colour swatches
+7. Config Snapshot     — current config values for this quarter
 
 Idempotent: re-running ``update_dashboard`` will rebuild the workbook
 from scratch using the latest Parquet state.
@@ -292,12 +291,16 @@ def _build_strategy_dashboard(
         top_row = base_row + row_off
         anchor_col = 1 + col_off
 
-        # Top stripe (KPI accent)
-        for c in range(anchor_col, anchor_col + 2):
-            cell = ws.cell(row=top_row, column=c)
-            cell.fill = KPI_FILLS[palette_idx % len(KPI_FILLS)]
-            cell.font = Font(color="FFFFFF", bold=True, size=10)
-        ws.cell(row=top_row, column=anchor_col, value=label.upper())
+        # Top stripe — merged label centered across both tile columns.
+        ws.merge_cells(
+            start_row=top_row, start_column=anchor_col,
+            end_row=top_row, end_column=anchor_col + 1,
+        )
+        label_cell = ws.cell(row=top_row, column=anchor_col, value=label.upper())
+        label_cell.fill = KPI_FILLS[palette_idx % len(KPI_FILLS)]
+        label_cell.font = Font(color="FFFFFF", bold=True, size=9)
+        label_cell.alignment = Alignment(horizontal="center", vertical="center")
+        ws.row_dimensions[top_row].height = 20
 
         # Big value cell (merged 2-wide).
         ws.merge_cells(
@@ -666,29 +669,6 @@ def _build_all_signals(ws: Worksheet, df: pd.DataFrame) -> int:
     return written
 
 
-def _build_rejections(ws: Worksheet, df: pd.DataFrame) -> int:
-    if df.empty or "event_type" not in df.columns:
-        _set_headers(ws, ["(no rejections)"])
-        return 0
-    rej = df[df["event_type"] == "rejection"].copy()
-    if rej.empty:
-        _set_headers(ws, ["(no rejections)"])
-        return 0
-    cols = [
-        c for c in (
-            "timestamp_ist", "date", "symbol", "strike", "option_type",
-            "rejection_blocker", "rejection_reason",
-        ) if c in rej.columns
-    ]
-    out = (
-        rej[cols]
-        .sort_values(["rejection_blocker", "timestamp_ist"])
-        .reset_index(drop=True)
-    )
-    written = _write_dataframe(ws, out)
-    ws.freeze_panes = "A2"
-    return written
-
 
 def _build_gap_history(ws: Worksheet, df: pd.DataFrame) -> int:
     if df.empty or "event_type" not in df.columns:
@@ -809,7 +789,6 @@ def update_dashboard() -> dict:
         "alerts_added": 0,
         "signals_added": 0,
         "order_place_added": 0,
-        "rejections_added": 0,
         "gaps_added": 0,
         "quarters_touched": 0,
     }
@@ -825,7 +804,6 @@ def update_dashboard() -> dict:
                 df["event_type"].isin(["scan", "alert", "would_alert_extended"]).sum()
             )
             counts["order_place_added"] += int((df["event_type"] == "alert").sum())
-            counts["rejections_added"] += int((df["event_type"] == "rejection").sum())
             counts["gaps_added"] += int((df["event_type"] == "gap").sum())
 
     return {
@@ -853,9 +831,6 @@ def _build_workbook(year: int, quarter: int, df: pd.DataFrame) -> Path:
 
     signals = wb.create_sheet("All Signals")
     _build_all_signals(signals, df)
-
-    rejects = wb.create_sheet("Rejections")
-    _build_rejections(rejects, df)
 
     gaps = wb.create_sheet("Gap History")
     _build_gap_history(gaps, df)

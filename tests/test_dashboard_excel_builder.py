@@ -165,13 +165,12 @@ _EXPECTED_SHEETS = [
     "All Alerts",
     "Order Place",
     "All Signals",
-    "Rejections",
     "Gap History",
     "Config Snapshot",
 ]
 
 
-def test_dashboard_creates_all_eight_sheets(isolated_paths) -> None:
+def test_dashboard_creates_all_seven_sheets(isolated_paths) -> None:
     logs, data, dashboards = isolated_paths
     _write_jsonl(logs / "alerts.jsonl", [_alert("2026-05-27T10:35:00+05:30")])
     _write_jsonl(logs / "gap_log.jsonl", [_gap("2026-05-27T09:16:00+05:30", "NORMAL")])
@@ -183,6 +182,18 @@ def test_dashboard_creates_all_eight_sheets(isolated_paths) -> None:
     wb_path = Path(result["output_path"])
     wb = load_workbook(wb_path, data_only=False)
     assert wb.sheetnames == _EXPECTED_SHEETS
+
+
+def test_workbook_has_no_rejections_sheet(isolated_paths) -> None:
+    logs, data, dashboards = isolated_paths
+    _write_jsonl(logs / "alerts.jsonl", [_alert("2026-05-27T10:35:00+05:30")])
+    _write_jsonl(logs / "gap_log.jsonl", [_gap("2026-05-27T09:16:00+05:30", "NORMAL")])
+    from src.dashboard import sync_jsonl_to_parquet, update_dashboard
+
+    sync_jsonl_to_parquet()
+    result = update_dashboard()
+    wb = load_workbook(Path(result["output_path"]), data_only=False)
+    assert "Rejections" not in wb.sheetnames
 
 
 def test_dashboard_is_idempotent(isolated_paths) -> None:

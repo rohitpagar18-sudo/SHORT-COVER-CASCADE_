@@ -34,8 +34,10 @@ runs on clean exit, Ctrl+C, or unhandled exception.
 
 - No order placement (Phase 8)
 - No backtest harness (Phase 7)
-- No paper-trade simulation — outcome columns are filled **manually**
-  by the user in the Order Place sheet, then back-synced to Parquet
+- ~~No paper-trade simulation — outcome columns are filled manually~~
+  **Superseded by the Phase 5B addendum (see end of this doc).** Auto
+  outcome replay now stamps `auto_*` columns; the manual columns are
+  still authoritative and untouched on conflict.
 - No live ML inference — `bot_tags` are written but not consumed by
   the strategy
 
@@ -2434,3 +2436,142 @@ fewer).
 - `test_killed_strike_tracks_by_number_across_levels`
 
 Total suite after this addendum: **312 passed**.
+
+---
+
+## Addendum — Phase 5B-A: Automatic Outcome Tracking (virtual, alert-only)
+
+This addendum supersedes the original "outcomes are manual" decision.
+The bot still does not place orders and still does not run live during
+the day. After EOD it replays each 5/5 alert against the day's 5-min
+option candles and stamps the result into new `auto_*` columns. Manual
+columns remain authoritative — they are never overwritten.
+
+### Why
+
+Phase 6 is a 30-trading-day live alert-only validation. Without an
+auto-outcome path, that's 30 days of manual Excel filling before any
+data can be evaluated. Auto replay gives the same data immediately
+with the same exit rules the strategy doc specifies. It is also the
+exit kernel Phase 7's backtest harness will call — one implementation,
+not two.
+
+### Exit model
+
+Follows Section 9 of `ShortCoverCascade_v3.1_FINAL.md` exactly. All
+numeric inputs come from config — nothing is hardcoded:
+
+- `R = entry − sl`, both read from the logged `alerts.jsonl` row
+  (single source of truth — config drift between alert and replay
+  cannot change historical R).
+- Entry assumption: filled at the logged `entry` on the alert candle.
+  Documented in `data/schema.md`.
+- Walk each subsequent 5-min option candle in time order:
+  - **SL_HIT** if `low <= current_sl` and TP1 not yet hit.
+  - **HARD_EXIT** if a complete red candle body forms entirely below
+    the option's running session VWAP. Implementation reuses
+    `src/indicators/vwap.compute_session_vwap` — no duplicate VWAP
+    formula.
+  - **TP1** (1.5R normal / 2.0R expiry): on touch, exit 50%. If
+    `risk_reward.move_sl_to_breakeven_after_tp1` is ON, move the
+    remaining 50%'s SL to entry. (If
+    `risk_reward.trail_sl_after_tp1` is ON, replay refuses to stamp
+    and logs a loud warning — see "Refusal" below.)
+  - **TP2** (2.5R normal / 3.0R expiry): remaining 50% exits.
+  - **3:00 PM hard deadline**: any still-open virtual position is
+    closed at the last walked candle's close.
+- **Intrabar ambiguity**: if one candle's range covers both a stop and
+  a target, assume the **stop first** (conservative) and set
+  `intrabar_ambiguous = true`.
+
+### Outcome categories
+
+Written into the new `auto_order_status` column. Mirrors the manual
+categories but adds two:
+
+| auto_order_status | When |
+|-------------------|------|
+| `TP2_HIT`         | TP1 then TP2 reached. |
+| `TP1_HIT`         | TP1 reached; second leg EOD-flat at >= adjusted SL (i.e. SL never hit). |
+| `PARTIAL`         | TP1 reached; second leg hit breakeven/SL or hard-exit. |
+| `SL_HIT`          | SL hit before TP1. |
+| `EOD_FLAT`        | Neither SL nor TP1 hit by 15:00. |
+| `HARD_EXIT`       | Hard-exit rule triggered before TP1. |
+
+### Columns appended (Parquet + Excel Order Place sheet + schema.md)
+
+Append-only, never rename, never overwrite the manual columns.
+
+| Column                | Type   | Notes                                          |
+|-----------------------|--------|------------------------------------------------|
+| `auto_order_status`   | str    | One of the categories above.                   |
+| `auto_exit_price`     | float  | Virtual exit price in ₹ (final leg close).     |
+| `auto_exit_time`      | str    | ISO IST timestamp of the exit candle.          |
+| `auto_exit_reason`    | str    | Human-readable narrative.                      |
+| `auto_pnl_per_unit`   | float  | ₹ per unit, weighted by 50/50 if TP1 hit.      |
+| `mfe`                 | float  | Max favorable excursion = max(high) − entry.   |
+| `mae`                 | float  | Max adverse excursion = entry − min(low).      |
+| `intrabar_ambiguous`  | bool   | True if SL and TP touched in same candle.      |
+
+### Refusal rules (loud, not silent)
+
+- If `risk_reward.trail_sl_after_tp1` is ON, the replay refuses to
+  stamp. It logs `WARNING: outcome_replay skipping <alert_id> — config
+  risk_reward.trail_sl_after_tp1 is ON, trailing logic not implemented
+  in v1.` Rationale: silently modelling breakeven would be wrong; the
+  user has explicitly asked for trailing.
+- If the day's candle data isn't complete yet (today before 15:00 IST,
+  or broker returned fewer candles than expected), leave `auto_*`
+  null. The next sync fills it.
+
+### Idempotency + manual precedence
+
+- Re-running `sync_auto_outcomes_to_parquet` never overwrites a non-null
+  `auto_order_status` row. Existing `auto_*` values are preserved.
+- Manual columns (`order_status`, `exit_price`, `pnl_rupees`,
+  `outcome_remark`, `user_notes`) are untouched in every code path.
+- Dedup key: `(timestamp_ist, symbol, strike, option_type)`.
+
+### Candle cache (Phase 7-reusable)
+
+- Location: `data/replay_cache/<date>/<symbol>_<strike>_<option_type>.parquet`
+- Format: identical to `BaseFeed.get_5min_candles` output (columns
+  `timestamp, open, high, low, close, volume, oi`). Phase 7's backtest
+  reads these files directly.
+- Cached only for **completed** days. A day is complete iff its IST
+  date < today, or it is today and `now >= 15:00 IST`.
+- Mid-day Ctrl+C of today's session does **not** populate the cache
+  for today. Next sync (post-15:00 or next day) does.
+- Cache misses for old alerts (pre-feature) are tolerated — those
+  alerts simply have null `auto_*` and the user can still fill the
+  manual columns.
+
+### Config toggle
+
+`config/config.yaml` adds:
+
+```yaml
+dashboard:
+  auto_outcome_tracking: OFF   # ON = replay alerts after EOD and
+                               # stamp auto_* columns. OFF (default) =
+                               # original Phase 5B manual-only flow.
+```
+
+### Wiring
+
+`sync_jsonl_to_parquet` → `sync_auto_outcomes_to_parquet(feed)` →
+`update_dashboard` → `sync_excel_notes_to_parquet`. The replay step is
+a no-op when the toggle is OFF or no feed is available. Best-effort:
+any internal error is logged at warning level and never blocks the
+remaining steps.
+
+### Tests
+
+- SL-only → `SL_HIT`.
+- TP1 then breakeven SL → `PARTIAL` with ~₹0 P&L on second leg.
+- TP1 then TP2 → `TP2_HIT`.
+- Neither hit by 15:00 → `EOD_FLAT`.
+- Single candle covers both SL and TP → `SL_HIT` + `intrabar_ambiguous`.
+- Hard-exit rule on red candle below VWAP → `HARD_EXIT`.
+- Idempotent rerun preserves manual cells AND prior auto_* values.
+- `trail_sl_after_tp1: ON` → no stamp, warning logged.

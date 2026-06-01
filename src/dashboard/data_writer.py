@@ -526,3 +526,173 @@ def quarter_for_date(d: datetime | None = None) -> tuple[int, int]:
     if d is None:
         d = datetime.now(IST)
     return d.year, (d.month - 1) // 3 + 1
+
+
+# ---------------------------------------------------------------------------
+# Public — Auto outcome replay (Phase 5B-A)
+# ---------------------------------------------------------------------------
+
+AUTO_OUTCOME_COLUMNS = (
+    "auto_order_status",
+    "auto_exit_price",
+    "auto_exit_time",
+    "auto_exit_reason",
+    "auto_pnl_per_unit",
+    "mfe",
+    "mae",
+    "intrabar_ambiguous",
+)
+
+
+def sync_auto_outcomes_to_parquet(
+    feed: Any | None = None,
+    app_config: Any | None = None,
+) -> dict:
+    """Phase 5B-A — replay each alert and stamp ``auto_*`` outcome columns.
+
+    Idempotent and append-only: existing non-null ``auto_order_status``
+    rows are skipped. Manual outcome columns are never touched.
+
+    Args:
+        feed: Active ``BaseFeed`` for option-chain + candle fetches.
+            Pass ``None`` to run in read-only / cache-only mode (any
+            slice not already cached will be skipped).
+        app_config: ``AppConfig``. Required to honour the toggle and
+            read exit knobs. If ``None`` or the toggle is OFF, this
+            function is a no-op.
+
+    Returns:
+        ``{"alerts_stamped": int, "alerts_skipped": int,
+        "skipped_reason": str | None}``
+    """
+    if app_config is None:
+        return {
+            "alerts_stamped": 0,
+            "alerts_skipped": 0,
+            "skipped_reason": "no app_config provided",
+        }
+    if not getattr(app_config.dashboard, "auto_outcome_tracking", False):
+        return {
+            "alerts_stamped": 0,
+            "alerts_skipped": 0,
+            "skipped_reason": "dashboard.auto_outcome_tracking is OFF",
+        }
+
+    # Local imports keep the module load cheap when the feature is OFF.
+    from src.dashboard.candle_cache import get_or_fetch_candles
+    from src.dashboard.outcome_replay import replay_alert
+
+    months = _all_parquet_months()
+    if not months:
+        return {
+            "alerts_stamped": 0,
+            "alerts_skipped": 0,
+            "skipped_reason": "no parquet files yet",
+        }
+
+    stamped = 0
+    skipped = 0
+    for parquet_path in months:
+        try:
+            df = pd.read_parquet(parquet_path)
+        except Exception as e:
+            logger.warning(f"auto_outcomes: skip {parquet_path}: {e}")
+            continue
+        if df.empty or "event_type" not in df.columns:
+            continue
+
+        # Ensure all auto_* columns exist so .loc assignment is safe.
+        for col in AUTO_OUTCOME_COLUMNS:
+            if col not in df.columns:
+                df[col] = None
+
+        alerts_mask = df["event_type"] == "alert"
+        if not alerts_mask.any():
+            continue
+
+        # Idempotency: only consider alerts WITHOUT a prior verdict.
+        needs_stamp = alerts_mask & df["auto_order_status"].isna()
+        if not needs_stamp.any():
+            continue
+
+        any_change = False
+        for idx in df.index[needs_stamp]:
+            row = df.loc[idx]
+            # Defensive: ensure the alert row has the required fields.
+            required = ("timestamp_ist", "entry", "sl", "tp1", "tp2",
+                        "symbol", "strike", "option_type", "expiry")
+            if any(pd.isna(row.get(k)) for k in required):
+                skipped += 1
+                continue
+
+            alert_ts = pd.to_datetime(row["timestamp_ist"])
+            trading_date = alert_ts.date()
+
+            try:
+                candles = get_or_fetch_candles(
+                    feed=feed,
+                    symbol=str(row["symbol"]),
+                    strike=int(row["strike"]),
+                    option_type=str(row["option_type"]),
+                    expiry=str(row["expiry"]),
+                    trading_date=trading_date,
+                )
+            except Exception as e:
+                logger.warning(
+                    f"auto_outcomes: candle fetch failed for "
+                    f"{row.get('timestamp_ist')}: {e}"
+                )
+                skipped += 1
+                continue
+
+            if candles is None or candles.empty:
+                skipped += 1
+                continue
+
+            try:
+                result = replay_alert(row, candles, app_config)
+            except Exception as e:
+                logger.warning(
+                    f"auto_outcomes: replay failed for "
+                    f"{row.get('timestamp_ist')}: {e}"
+                )
+                skipped += 1
+                continue
+
+            if result is None:
+                # Refusal (trailing-SL ON) or insufficient candles.
+                skipped += 1
+                continue
+
+            df.at[idx, "auto_order_status"] = result.auto_order_status
+            df.at[idx, "auto_exit_price"] = result.auto_exit_price
+            df.at[idx, "auto_exit_time"] = result.auto_exit_time
+            df.at[idx, "auto_exit_reason"] = result.auto_exit_reason
+            df.at[idx, "auto_pnl_per_unit"] = result.auto_pnl_per_unit
+            df.at[idx, "mfe"] = result.mfe
+            df.at[idx, "mae"] = result.mae
+            df.at[idx, "intrabar_ambiguous"] = result.intrabar_ambiguous
+            stamped += 1
+            any_change = True
+
+        if any_change:
+            month_key = parquet_path.stem.replace("scc_data_", "")
+            _write_parquet(month_key, df)
+
+    if stamped == 0:
+        return {
+            "alerts_stamped": 0,
+            "alerts_skipped": skipped,
+            "skipped_reason": (
+                "no eligible alerts (already stamped, cache miss, "
+                "or day not complete)"
+            ),
+        }
+    logger.info(
+        f"auto_outcomes: stamped {stamped} alerts, skipped {skipped}"
+    )
+    return {
+        "alerts_stamped": stamped,
+        "alerts_skipped": skipped,
+        "skipped_reason": None,
+    }

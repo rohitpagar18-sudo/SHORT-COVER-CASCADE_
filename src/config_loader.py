@@ -409,10 +409,13 @@ class DashboardConfig(_Base):
     outcome_categories: list[str] = Field(
         default_factory=lambda: ["TP2_HIT", "TP1_HIT", "SL_HIT", "PARTIAL", "WOULD_SKIP"]
     )
+    # Phase 5B-A — post-hoc virtual exit replay. Default OFF.
+    auto_outcome_tracking: bool = Field(default=False)
 
     @field_validator(
         "auto_trigger_at_1535",
         "send_eod_dashboard_link",
+        "auto_outcome_tracking",
         mode="before",
     )
     @classmethod

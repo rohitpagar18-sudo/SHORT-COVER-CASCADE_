@@ -17,6 +17,7 @@ Public API:
 from __future__ import annotations
 
 from src.dashboard.data_writer import (
+    sync_auto_outcomes_to_parquet,
     sync_excel_notes_to_parquet,
     sync_jsonl_to_parquet,
 )
@@ -29,6 +30,7 @@ from src.dashboard.remarks import (
 
 __all__ = [
     "sync_jsonl_to_parquet",
+    "sync_auto_outcomes_to_parquet",
     "sync_excel_notes_to_parquet",
     "update_dashboard",
     "generate_remark_and_tags",

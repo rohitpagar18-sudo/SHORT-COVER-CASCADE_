@@ -1140,11 +1140,18 @@ class Orchestrator:
         try:
             logger.info("Bot exiting — running dashboard auto-sync...")
             from src.dashboard import (
+                sync_auto_outcomes_to_parquet,
                 sync_excel_notes_to_parquet,
                 sync_jsonl_to_parquet,
                 update_dashboard,
             )
             sync_jsonl_to_parquet()
+            try:
+                sync_auto_outcomes_to_parquet(
+                    feed=self.feed, app_config=self.config
+                )
+            except Exception as e:  # never block the rest of the sync
+                logger.warning(f"auto_outcomes step failed (continuing): {e}")
             update_dashboard()
             sync_excel_notes_to_parquet()
             self.dashboard_synced = True

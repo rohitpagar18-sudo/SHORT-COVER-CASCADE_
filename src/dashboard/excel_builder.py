@@ -206,6 +206,22 @@ def _pretty(col: str) -> str:
         return "P&L"
     if col == "timestamp_ist":
         return "Timestamp IST"
+    if col == "auto_order_status":
+        return "Auto Order Status"
+    if col == "auto_exit_price":
+        return "Auto Exit Price"
+    if col == "auto_exit_time":
+        return "Auto Exit Time"
+    if col == "auto_exit_reason":
+        return "Auto Exit Reason"
+    if col == "auto_pnl_per_unit":
+        return "Auto P&L / unit"
+    if col == "mfe":
+        return "MFE"
+    if col == "mae":
+        return "MAE"
+    if col == "intrabar_ambiguous":
+        return "Intrabar Ambiguous"
     return col.replace("_", " ").title()
 
 
@@ -555,17 +571,24 @@ def _build_order_place(ws: Worksheet, df: pd.DataFrame) -> int:
         "bot_remark",
     ]
     manual_cols = ["order_status", "exit_price", "pnl_rupees", "outcome_remark", "user_notes"]
+    # Phase 5B-A: virtual-replay columns. Appended after the manual block
+    # so the manual cells stay in the user's expected position.
+    auto_outcome_cols = [
+        "auto_order_status", "auto_exit_price", "auto_exit_time",
+        "auto_exit_reason", "auto_pnl_per_unit",
+        "mfe", "mae", "intrabar_ambiguous",
+    ]
 
     if alerts.empty:
-        _set_headers(ws, [_pretty(c) for c in auto_cols + manual_cols])
+        _set_headers(ws, [_pretty(c) for c in auto_cols + manual_cols + auto_outcome_cols])
         ws.cell(row=2, column=1, value="(no alerts yet — manual columns activate after first alert)").font = _SUBTITLE_FONT
         return 0
 
     out = alerts.copy()
-    for col in manual_cols:
+    for col in manual_cols + auto_outcome_cols:
         if col not in out.columns:
             out[col] = None
-    out = out[auto_cols + manual_cols].sort_values("timestamp_ist").reset_index(drop=True)
+    out = out[auto_cols + manual_cols + auto_outcome_cols].sort_values("timestamp_ist").reset_index(drop=True)
     written = _write_dataframe(ws, out)
 
     # Colour Order Status cell.
@@ -573,6 +596,15 @@ def _build_order_place(ws: Worksheet, df: pd.DataFrame) -> int:
         status_col_idx = list(out.columns).index("order_status") + 1
         for i in range(written):
             cell = ws.cell(row=2 + i, column=status_col_idx)
+            fill = _outcome_fill_for(cell.value)
+            if fill:
+                cell.fill = fill
+
+    # Colour auto_order_status cell (same palette as manual).
+    if "auto_order_status" in out.columns and written:
+        auto_idx = list(out.columns).index("auto_order_status") + 1
+        for i in range(written):
+            cell = ws.cell(row=2 + i, column=auto_idx)
             fill = _outcome_fill_for(cell.value)
             if fill:
                 cell.fill = fill

@@ -150,6 +150,40 @@ On a fresh sync (before the user has filled anything) they are null.
 | `outcome_remark`  | str    | Auto-generated from `bot_remark` + `order_status`.   |
 | `user_notes`      | str    | Free-form user observation.                          |
 
+### Auto outcome columns (alert only — Phase 5B-A virtual replay)
+
+Populated by `sync_auto_outcomes_to_parquet`. This is a **post-hoc
+virtual** model: the bot does not place orders, but after EOD it
+walks each alert's subsequent 5-min option candles and stamps what
+would have happened under the strategy doc's exit rules (Section 9).
+
+**Entry-fill assumption:** the virtual position is filled at the
+logged `entry` (the alert candle's `option_close`). Slippage is
+ignored. This matches the strategy's signal-candle limit-order plan
+described in `ShortCoverCascade_v3.1_FINAL.md` Section 11.
+
+The same kernel (`src/dashboard/outcome_replay.replay_exits`) is the
+shared exit implementation that Phase 7's backtest harness will call.
+
+These columns NEVER overwrite the manual outcome columns above.
+Manual values remain authoritative on conflict.
+
+| Column                | Type   | Notes                                              |
+|-----------------------|--------|----------------------------------------------------|
+| `auto_order_status`   | str    | One of `TP2_HIT`, `TP1_HIT`, `PARTIAL`, `SL_HIT`, `EOD_FLAT`, `HARD_EXIT`. Null if the day isn't complete yet, candle cache miss, or the trail-SL refusal triggered. |
+| `auto_exit_price`     | float  | Virtual exit price (₹). For TP2/TP1 paths it is weighted by the 50/50 split; this column shows the *final-leg* exit price. |
+| `auto_exit_time`      | str    | ISO IST timestamp of the candle that produced the exit. |
+| `auto_exit_reason`    | str    | Human-readable narrative (e.g. `TP1 then TP2_HIT @ 175.00`). |
+| `auto_pnl_per_unit`   | float  | ₹ per unit, summed across both legs at their 50/50 weights. Positive = profit. |
+| `mfe`                 | float  | Max favorable excursion = `max(high) − entry` across the walked candles. |
+| `mae`                 | float  | Max adverse excursion = `entry − min(low)` across the walked candles. |
+| `intrabar_ambiguous`  | bool   | True if at least one candle range covered both a stop and a target. The replay assumes the stop fires first. |
+
+**Refusal:** if `risk_reward.trail_sl_after_tp1` is ON in config, the
+replay refuses to stamp (it would otherwise silently model static
+breakeven, which misrepresents a trailing strategy). The skipped
+alerts log a `WARNING` and keep null `auto_*` columns.
+
 ---
 
 ## Rejection-only columns (event_type == "rejection")

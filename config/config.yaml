@@ -212,6 +212,13 @@ dashboard:
   parquet_rotation: "monthly"          # Parquet files split monthly
   send_eod_dashboard_link: OFF         # Future: Telegram link to .xlsx
 
+  # Phase 5B-A: post-hoc virtual exit replay. Walks each 5/5 alert's
+  # subsequent 5-min option candles and stamps auto_* outcome columns
+  # in Parquet + Excel. Manual columns (order_status, exit_price,
+  # pnl_rupees, outcome_remark, user_notes) are NEVER overwritten.
+  # Refuses to stamp if risk_reward.trail_sl_after_tp1 is ON.
+  auto_outcome_tracking: OFF
+
   # Outcome categories user can mark in the Excel Order Place sheet
   outcome_categories:
     - TP2_HIT

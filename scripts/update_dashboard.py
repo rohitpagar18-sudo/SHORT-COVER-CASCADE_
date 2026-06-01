@@ -33,8 +33,9 @@ except Exception:
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from src.config_loader import load_secrets  # noqa: E402
+from src.config_loader import load_config, load_secrets  # noqa: E402
 from src.dashboard import (  # noqa: E402
+    sync_auto_outcomes_to_parquet,
     sync_excel_notes_to_parquet,
     sync_jsonl_to_parquet,
     update_dashboard,
@@ -61,13 +62,40 @@ def main() -> None:
     else:
         print(f"  ⚠ {SECRETS_PATH} not found — continuing without it")
 
-    print("\n[1/3] JSONL -> Parquet sync (monthly files)...")
+    print("\n[1/4] JSONL -> Parquet sync (monthly files)...")
     pq = sync_jsonl_to_parquet()
     print(f"  Rows added: {pq.get('rows_added', 0)}")
     print(f"  Months touched: {pq.get('months_updated', 0)}")
     print(f"  Total rows in Parquet: {pq.get('total_rows_in_parquet', 0)}")
 
-    print("\n[2/3] Updating dashboard.xlsx (quarterly file)...")
+    print("\n[2/4] Auto outcome replay (Phase 5B-A)...")
+    config_path = PROJECT_ROOT / "config" / "config.yaml"
+    cfg = None
+    feed = None
+    try:
+        cfg = load_config(config_path)
+    except Exception as e:
+        print(f"  Skipped: could not load config ({e})")
+    if cfg is not None:
+        if not cfg.dashboard.auto_outcome_tracking:
+            print("  Toggle dashboard.auto_outcome_tracking is OFF — skipped.")
+        else:
+            # Try to bring up the active feed for any cache misses.
+            # Failure here is non-fatal: cached days still replay fine.
+            try:
+                from src.data.feed_factory import connect_feed
+                feed = connect_feed(cfg)
+            except Exception as e:
+                print(
+                    f"  Feed unavailable ({e}); running in cache-only mode."
+                )
+            ao = sync_auto_outcomes_to_parquet(feed=feed, app_config=cfg)
+            print(f"  Stamped: {ao.get('alerts_stamped', 0)}")
+            print(f"  Skipped: {ao.get('alerts_skipped', 0)}")
+            if ao.get("skipped_reason"):
+                print(f"  Reason: {ao['skipped_reason']}")
+
+    print("\n[3/4] Updating dashboard.xlsx (quarterly file)...")
     xl = update_dashboard()
     if xl.get("status") == "no_data":
         print("  No data yet — skipped.")
@@ -79,7 +107,7 @@ def main() -> None:
         print(f"  Order Place rows: {xl.get('order_place_added', 0)}")
         print(f"  Gap rows: {xl.get('gaps_added', 0)}")
 
-    print("\n[3/3] Excel notes -> Parquet sync (best-effort)...")
+    print("\n[4/4] Excel notes -> Parquet sync (best-effort)...")
     notes = sync_excel_notes_to_parquet()
     if notes.get("alerts_updated", 0) > 0:
         print(f"  Outcome columns updated for {notes['alerts_updated']} alerts")

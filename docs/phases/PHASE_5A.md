@@ -29,6 +29,7 @@ confirmation). **The dashboard / ML data layer is in `PHASE_5B.md`** — rebuild
 - Token-date staleness check at startup
 - `check_risk.py` entry > ₹2,000 guard
 - Lot-size verification at startup
+- Windows sleep prevention: SetThreadExecutionState called at bot start, released on exit (no-op on Linux/Mac)
 
 ## What Phase 5A does NOT do
 
@@ -1692,6 +1693,13 @@ in. They live in `src/main.py`, both feeds, and `config.yaml`:
    `_scan_symbol()` scans both CE and PE on every selected strike. The
    original `check_c0()` is retained and runs only when the toggle is
    ON.
+4. **Windows sleep prevention** — `run_forever()` calls
+   `ctypes.windll.kernel32.SetThreadExecutionState(0x80000002)`
+   (`ES_CONTINUOUS | ES_SYSTEM_REQUIRED`) at start and releases with
+   `0x80000000` (`ES_CONTINUOUS`) in the `finally` block. Prevents
+   missed 5-min candles caused by the host OS sleeping mid-session.
+   Guarded by `sys.platform == "win32"` so it's a no-op on Linux/Mac
+   (important for future VPS migration).
 
 Full text in **`PHASE_5B.md` → Phase 5B Addendum`**. New test file:
 `tests/test_phase5b_fixes.py` (12 tests). Total suite: 305 passing.

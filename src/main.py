@@ -19,6 +19,7 @@ Critical rules (see docs/phases/PHASE_5.md):
 
 from __future__ import annotations
 
+import ctypes
 import json
 import os
 import sys
@@ -1186,6 +1187,12 @@ class Orchestrator:
 
     def run_forever(self) -> None:
         """Main loop until 15:30 IST or Ctrl+C."""
+        # Prevent Windows from sleeping while bot is running
+        # ES_CONTINUOUS | ES_SYSTEM_REQUIRED = 0x80000002
+        if sys.platform == "win32":
+            ctypes.windll.kernel32.SetThreadExecutionState(0x80000002)
+            logger.info("Windows sleep prevention activated.")
+
         self.setup()
         logger.info("Bot entered main loop")
 
@@ -1284,6 +1291,9 @@ class Orchestrator:
             # Phase 5.2.1: Auto-sync dashboard on bot exit (clean exit,
             # Ctrl+C, or exception). Runs exactly once per session.
             self._run_dashboard_sync_on_exit()
+            if sys.platform == "win32":
+                ctypes.windll.kernel32.SetThreadExecutionState(0x80000000)
+                logger.info("Windows sleep prevention released.")
 
 
 def main() -> None:

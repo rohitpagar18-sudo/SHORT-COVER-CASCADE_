@@ -970,6 +970,16 @@ class Orchestrator:
                 entry, sl_result.sl_price, symbol, lot_size, self.config
             )
 
+            # Cheap-option flag: hard lot cap already hit but total risk
+            # still below the ₹2,500 band — alert proceeds with warning.
+            cheap_option_warning = ""
+            if lot_result.below_min_risk_band:
+                cheap_option_warning = (
+                    f"⚠️ Cheap option — hard cap lots, "
+                    f"risk ₹{lot_result.total_risk_rupees:.0f} "
+                    f"(below normal ₹2,500 band)"
+                )
+
             alert_data = {
                 **signal_record,
                 "event_type": "alert",
@@ -984,6 +994,8 @@ class Orchestrator:
                 "lots": lot_result.lots,
                 "total_risk": lot_result.total_risk_rupees,
                 "lot_size": lot_size,
+                "below_min_risk_band": lot_result.below_min_risk_band,
+                "cheap_option_warning": cheap_option_warning,
                 "day_type": "Expiry" if is_expiry else "Normal",
                 "vix_multiplier": self.session_vix_info.method1_multiplier,
                 "spot": signal_record["spot_price"],

@@ -9,8 +9,11 @@ Buffer table interpretation
 ---------------------------
 Strategy doc lists ranges as ``50-100``, ``100-200``, ``200-400``, ``400+``.
 We interpret each range as lower-inclusive, upper-exclusive — so price
-100 belongs to the ``100-200`` band, not the ``50-100`` band. Below 50
-the strategy explicitly does not apply (option too cheap), so we raise.
+100 belongs to the ``100-200`` band, not the ``50-100`` band. The
+sub-₹50 ``0-50`` band is an extension to handle deep-OTM / EOD-expiry
+options whose premiums sit below the strategy's documented range; the
+hard-cap-lots branch in ``compute_lots()`` accepts these so the bot
+issues a flagged alert rather than crashing.
 """
 
 from __future__ import annotations
@@ -35,24 +38,28 @@ class SLResult:
 # Strategy doc Section 6 — NIFTY base buffer tables
 # Each row: (price_min_inclusive, price_max_exclusive, buffer_points)
 NIFTY_NORMAL_DAY_BUFFER: list[tuple[float, float, float]] = [
+    (0, 50, 3),
     (50, 100, 5),
     (100, 200, 10),
     (200, 400, 15),
     (400, float("inf"), 20),
 ]
 NIFTY_EXPIRY_DAY_BUFFER: list[tuple[float, float, float]] = [
+    (0, 50, 10),
     (50, 100, 15),
     (100, 200, 20),
     (200, 400, 25),
     (400, float("inf"), 35),
 ]
 BANKNIFTY_NORMAL_DAY_BUFFER: list[tuple[float, float, float]] = [
+    (0, 50, 5),
     (50, 100, 8),
     (100, 200, 15),
     (200, 400, 22),
     (400, float("inf"), 30),
 ]
 BANKNIFTY_EXPIRY_DAY_BUFFER: list[tuple[float, float, float]] = [
+    (0, 50, 12),
     (50, 100, 20),
     (100, 200, 28),
     (200, 400, 35),
@@ -71,17 +78,12 @@ def _lookup_buffer(
 ) -> tuple[float, str]:
     """Return (buffer_points, band_label) from a buffer table.
 
-    Range interpretation: [low, high). Raises ValueError if price < 50.
+    Range interpretation: [low, high). Tables cover from 0 upward and the
+    last band is unbounded above, so any non-negative price matches.
     """
-    if option_price < 50:
-        raise ValueError(
-            f"Option price {option_price:.2f} is below 50 — strategy does not "
-            "cover this range (option too cheap)"
-        )
     for low, high, buf in table:
         if low <= option_price < high:
             return buf, _band_label(low, high)
-    # All bands cap at +inf so this should be unreachable for price >= 50.
     raise ValueError(f"No buffer band matched price {option_price:.2f}")
 
 
@@ -106,7 +108,7 @@ def get_base_buffer(
     """Return the base SL buffer in points for the given symbol/price/day-type.
 
     Raises:
-        ValueError: symbol unknown or option_price < 50.
+        ValueError: symbol unknown.
     """
     table = _pick_table(symbol, is_expiry_day)
     buf, _ = _lookup_buffer(table, option_price)

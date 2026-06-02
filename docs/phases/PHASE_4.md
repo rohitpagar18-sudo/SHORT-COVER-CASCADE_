@@ -351,28 +351,35 @@ class SLResult:
     final_buffer_or_pct: float     # actual buffer used (after VIX adjustment)
     reason: str                    # human-readable explanation
 
-# Strategy doc Section 6 — NIFTY base buffer tables
+# Strategy doc Section 6 — NIFTY base buffer tables.
+# The 0-50 row is a sub-strategy extension so sub-₹50 deep-OTM / EOD-expiry
+# premiums don't crash. The hard-cap-lots branch in compute_lots() accepts
+# these and the alert is flagged with a "cheap option" warning.
 NIFTY_NORMAL_DAY_BUFFER = [
     # (price_min, price_max_exclusive, buffer_points)
-    (50, 100, 5),
+    (0,   50,  3),
+    (50,  100, 5),
     (100, 200, 10),
     (200, 400, 15),
     (400, float("inf"), 20),
 ]
 NIFTY_EXPIRY_DAY_BUFFER = [
-    (50, 100, 15),
+    (0,   50,  10),
+    (50,  100, 15),
     (100, 200, 20),
     (200, 400, 25),
     (400, float("inf"), 35),
 ]
 BANKNIFTY_NORMAL_DAY_BUFFER = [
-    (50, 100, 8),
+    (0,   50,  5),
+    (50,  100, 8),
     (100, 200, 15),
     (200, 400, 22),
     (400, float("inf"), 30),
 ]
 BANKNIFTY_EXPIRY_DAY_BUFFER = [
-    (50, 100, 20),
+    (0,   50,  12),
+    (50,  100, 20),
     (100, 200, 28),
     (200, 400, 35),
     (400, float("inf"), 45),
@@ -391,9 +398,10 @@ def compute_sl_method1(
 ) -> SLResult:
     """
     SL = VWAP - (base_buffer * vix_multiplier if enabled else 1.0)
-    
-    If option price is below 50, raise ValueError (strategy doesn't 
-    cover that range — option too cheap).
+
+    Buffer table covers 0-50 / 50-100 / 100-200 / 200-400 / 400+; any
+    non-negative option_price maps to a band. Sub-₹50 premiums are
+    accepted (alert is flagged downstream via below_min_risk_band).
     """
 
 def compute_sl_method2(
@@ -476,6 +484,7 @@ class LotSizeResult:
     total_risk_rupees: float    # units * risk_per_unit
     capped_by_lot_limit: bool   # True if hit the 5/3 cap
     capped_by_risk_range: bool  # True if total_risk outside 2500-3500
+    below_min_risk_band: bool   # True iff total_risk < min AND lots == hard cap
     reason: str
 
 def compute_lots(
@@ -493,10 +502,19 @@ def compute_lots(
               cap = nifty_max_lots or banknifty_max_lots
               lots = min(lots, cap)
     Step 5: total_risk = lots * lot_size * risk_per_unit
-    Step 6: if total_risk > risk_range_max -> NOT capped further (already 
-            floored by lot logic) but flag capped_by_risk_range = True 
+    Step 6: if total_risk > risk_range_max -> NOT capped further (already
+            floored by lot logic) but flag capped_by_risk_range = True
             for logging.
-    
+    Step 7: If total risk < ₹2,500 but lots == hard cap, proceed with
+            below_min_risk_band=True — do not reject cheap options that
+            are already at max allowed lots. The reason string is set to
+            "Hard cap applied ({lots} lots); total risk ₹{total_risk:.0f}
+            below ₹2,500 band — accepted on cheap option" and the
+            orchestrator stamps the alert with a "⚠️ Cheap option"
+            warning. The ₹2,500 minimum still applies for normal-priced
+            options — this exception is *only* for the hard-cap-already-hit
+            case.
+
     Always round DOWN, never up.
     """
 

@@ -167,13 +167,26 @@ def test_sl_m1_vix_disabled_via_config() -> None:
     assert r.sl_price == pytest.approx(140.0)
 
 
-def test_sl_m1_premium_below_50_raises() -> None:
+def test_sl_m1_premium_below_50_uses_sub_band() -> None:
+    # Sub-₹50 premiums hit the new (0, 50) band — NIFTY normal day = 3 pts.
+    # No raise — the downstream lot-sizer flags the alert as cheap-option.
     info = classify_vix(14.0)
-    with pytest.raises(ValueError, match="below 50"):
-        compute_sl_method1(
-            vwap_at_entry=40, option_price=40, symbol="NIFTY",
-            is_expiry_day=False, vix_info=info, use_vix_multiplier=True,
-        )
+    r = compute_sl_method1(
+        vwap_at_entry=40, option_price=40, symbol="NIFTY",
+        is_expiry_day=False, vix_info=info, use_vix_multiplier=True,
+    )
+    assert r.base_buffer == 3
+    assert r.sl_price == pytest.approx(40 - 3 * info.method1_multiplier)
+
+
+def test_sl_m1_premium_below_50_banknifty_expiry_band() -> None:
+    # BankNifty expiry sub-₹50 band → 12 pts.
+    info = classify_vix(14.0)
+    r = compute_sl_method1(
+        vwap_at_entry=45, option_price=45, symbol="BANKNIFTY",
+        is_expiry_day=True, vix_info=info, use_vix_multiplier=False,
+    )
+    assert r.base_buffer == 12
 
 
 def test_sl_m1_unknown_symbol_raises() -> None:

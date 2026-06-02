@@ -163,6 +163,8 @@ class TelegramAlerter:
         # generated a short remark. Old callers (tests) still work.
         insight = (s.get("telegram_short_remark") or "").strip()
         insight_line = f"\nInsight: {insight}\n" if insight else "\n"
+        cheap_warning = (s.get("cheap_option_warning") or "").strip()
+        cheap_line = f"{cheap_warning}\n" if cheap_warning else ""
         return (
             "🚨 SHORT COVER CASCADE SIGNAL\n"
             "─────────────────────────────\n"
@@ -183,6 +185,7 @@ class TelegramAlerter:
             f"Risk per unit: ₹{s['risk_per_unit']:.2f}\n"
             f"Lots: {s['lots']} → Total Risk: ₹{s['total_risk']:,.2f}\n"
             f"({s['lots']} × {s['lot_size']} × ₹{s['risk_per_unit']:.2f})\n"
+            f"{cheap_line}"
             f"{insight_line}"
             "C0 ✓ C1 ✓ C2 ✓ C3 ✓ C4 ✓\n"
             "─────────────────────────────\n"

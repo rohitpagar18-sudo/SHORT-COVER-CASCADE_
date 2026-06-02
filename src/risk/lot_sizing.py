@@ -27,6 +27,7 @@ class LotSizeResult:
     total_risk_rupees: float    # units × risk_per_unit
     capped_by_lot_limit: bool   # True iff the symbol's hard lot cap clipped lots
     capped_by_risk_range: bool  # True iff total_risk falls outside [min, max]
+    below_min_risk_band: bool   # True iff total_risk < min AND lots == hard cap
     reason: str
 
 
@@ -91,6 +92,14 @@ def compute_lots(
         total_risk < risk_range_min or total_risk > risk_range_max
     )
 
+    # Cheap-option exception: if we're already at the hard lot cap and total
+    # risk is still below the ₹2,500 minimum band, accept the trade rather
+    # than rejecting it — there is no way to raise risk further without
+    # breaching the lot cap. Tag the result so the alert path can flag it.
+    below_min_risk_band = (
+        capped_by_lot_limit and total_risk < risk_range_min
+    )
+
     parts = [
         f"target ₹{target_risk:g} / (R ₹{risk_per_unit:.2f} × lot {lot_size}) "
         f"= raw {raw_lots} lots",
@@ -99,7 +108,12 @@ def compute_lots(
         parts.append("floored to 1 lot")
     if capped_by_lot_limit:
         parts.append(f"capped by hard lot limit ({lots})")
-    if capped_by_risk_range:
+    if below_min_risk_band:
+        parts.append(
+            f"Hard cap applied ({lots} lots); total risk ₹{total_risk:.0f} "
+            f"below ₹{risk_range_min:.0f} band — accepted on cheap option"
+        )
+    elif capped_by_risk_range:
         parts.append(
             f"total risk ₹{total_risk:.2f} outside ₹{risk_range_min:g}-"
             f"₹{risk_range_max:g} target band"
@@ -113,5 +127,6 @@ def compute_lots(
         total_risk_rupees=total_risk,
         capped_by_lot_limit=capped_by_lot_limit,
         capped_by_risk_range=capped_by_risk_range,
+        below_min_risk_band=below_min_risk_band,
         reason=reason,
     )

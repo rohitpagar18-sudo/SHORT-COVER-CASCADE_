@@ -69,8 +69,18 @@ if defined UPSTOX_TOKEN_DATE (
 echo ============================================================
 echo.
 
+REM Disable AC standby while the bot runs. If the laptop sleeps during
+REM a long internet outage, the bot's reconnect loop never gets to
+REM resume and we miss every 5-min candle until someone wakes it.
+REM Restored to 30 min after the bot exits so normal power policy
+REM resumes for the user.
+powercfg /change standby-timeout-ac 0
+
 python -m src.main
 set EXITCODE=%ERRORLEVEL%
+
+powercfg /change standby-timeout-ac 30
+
 endlocal & exit /b %EXITCODE%
 
 :fail

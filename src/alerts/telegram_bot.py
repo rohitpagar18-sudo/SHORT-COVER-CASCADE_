@@ -193,10 +193,19 @@ class TelegramAlerter:
         )
 
     def _format_eod(self, s: dict) -> str:
+        # Session window line — present when the orchestrator populated
+        # session_started_at. Clarifies that counts cover only the
+        # latest src.main run (relevant after a mid-day run.bat restart).
+        started = s.get("session_started_at")
+        if started:
+            session_line = f"Session: since {started[11:16]} IST (this run only)\n"
+        else:
+            session_line = ""
         return (
             "📊 END-OF-DAY SUMMARY\n"
             "─────────────────────────────\n"
             f"Date: {s['date']}\n"
+            f"{session_line}"
             f"Signals scanned: {s['total_scans']}\n"
             f"Alerts fired: {s['alerts_fired']}\n"
             f"Circuit breaker: {s['circuit_breaker']}\n"

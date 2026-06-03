@@ -312,6 +312,12 @@ on this machine. First live alert-only run is on the second laptop.
 - Phase 5: Telegram alerts + main orchestrator (ALERT-ONLY) — code + unit
   tests done on this machine. First live run (alert-only) is on the
   second laptop.
+- Phase 5C addendum: Internet reconnect resilience + session-only EOD
+  — kite_feed waits out long ISP drops via DNS-probe loop, run.bat
+  blocks Windows standby for the duration, and EOD Telegram summary
+  now reports only the latest src.main run's counts (full suite still
+  326/326 passing). Documented as the Phase 5C addendum in
+  docs/phases/PHASE_5C.MD.
 
 ## How Phases Work
 - Each phase has a doc in docs/phases/

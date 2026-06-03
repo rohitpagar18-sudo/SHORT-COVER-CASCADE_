@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import math
 import os
+import socket
 import time
 from datetime import date, datetime, timedelta
 from typing import Any
@@ -20,6 +21,40 @@ from src.config_loader import AppConfig
 from src.data.base_feed import BaseFeed
 
 IST = ZoneInfo("Asia/Kolkata")
+
+# Host probed when we suspect the local internet link is down. Any
+# Kite-API hostname works; we keep this dedicated constant so the probe
+# target is documented and easy to change.
+_KITE_DNS_PROBE_HOST = "api.kite.trade"
+_RECONNECT_SLEEP_SECONDS = 30
+
+
+def _is_network_error(exc: BaseException | None) -> bool:
+    """Heuristic: True if ``exc`` looks like a connectivity outage rather
+    than an auth / API error. We sniff the message because the underlying
+    SDK wraps urllib3 / requests exceptions in plain RuntimeErrors and
+    we don't want to import urllib3 just to isinstance-check.
+    """
+    if exc is None:
+        return False
+    msg = str(exc).lower()
+    needles = (
+        "getaddrinfo failed",
+        "newconnectionerror",
+        "max retries exceeded",
+        "connection aborted",
+        "connection refused",
+        "connection reset",
+        "name or service not known",
+        "temporary failure in name resolution",
+        "no address associated",
+        "network is unreachable",
+        "name resolution",
+        "remote end closed connection",
+        "read timed out",
+        "connectiontimeout",
+    )
+    return any(n in msg for n in needles)
 
 def _drop_in_progress_5min(df: pd.DataFrame) -> pd.DataFrame:
     """Drop any candle whose timestamp is at or after the current 5-min
@@ -201,6 +236,8 @@ class KiteFeed(BaseFeed):
         retries = self._config.bot.api_retry_count
         delay = self._config.bot.api_retry_delay_seconds
         last_err: Exception | None = None
+        data: Any = None
+        succeeded = False
         for attempt in range(retries + 1):
             try:
                 data = self._kite.historical_data(
@@ -210,6 +247,7 @@ class KiteFeed(BaseFeed):
                     interval="5minute",
                     oi=True,
                 )
+                succeeded = True
                 break
             except Exception as e:
                 last_err = e
@@ -221,10 +259,22 @@ class KiteFeed(BaseFeed):
                 )
                 if attempt < retries:
                     time.sleep(delay)
-        else:
-            raise RuntimeError(
-                f"Kite historical_data failed after {retries + 1} attempts: {last_err}"
-            )
+
+        if not succeeded:
+            # Bounded retry budget is exhausted. If the failure smells
+            # like a connectivity outage, wait for the link to come back
+            # and retry indefinitely — the bot must survive multi-hour
+            # ISP drops without exiting. Non-network errors (auth, bad
+            # token, etc.) still surface immediately so we don't loop
+            # forever on something a reconnect can't fix.
+            if _is_network_error(last_err):
+                data = self._wait_for_reconnect_and_refetch(
+                    token, from_date, to_date, last_err
+                )
+            else:
+                raise RuntimeError(
+                    f"Kite historical_data failed after {retries + 1} attempts: {last_err}"
+                )
 
         if not data:
             return pd.DataFrame(
@@ -370,3 +420,79 @@ class KiteFeed(BaseFeed):
             if row.get("tradingsymbol") == sym:
                 return int(row["instrument_token"])
         raise ValueError(f"Instrument symbol not found in Kite NFO dump: {trading_symbol}")
+
+    def _flush_urllib3_pool(self) -> None:
+        """Drop the requests Session that KiteConnect uses internally so
+        the next call performs a fresh DNS lookup and TCP handshake.
+        urllib3's keep-alive pool can otherwise hold stale connections
+        across a long outage.
+        """
+        try:
+            sess = getattr(self._kite, "reqsession", None)
+            if sess is not None and hasattr(sess, "close"):
+                sess.close()
+                logger.debug("Closed Kite requests Session to flush urllib3 pool")
+        except Exception as e:
+            logger.debug(f"reqsession close failed (harmless): {e}")
+
+    def _wait_for_reconnect_and_refetch(
+        self,
+        token: int,
+        from_date: datetime,
+        to_date: datetime,
+        initial_err: Exception | None,
+    ) -> Any:
+        """Block until the link is back and ``historical_data`` succeeds.
+
+        Loop:
+          1. Probe DNS for ``api.kite.trade``. If it fails, sleep 30s
+             and try again (no timeout limit).
+          2. Once DNS resolves, flush the urllib3 pool and re-issue the
+             API call.
+          3. If the API call still raises a network-shaped error, log
+             and go back to step 1 (the link came back briefly and
+             dropped again).
+          4. Any non-network exception from the retried API call
+             propagates so callers see real errors.
+        """
+        logger.error(
+            "Internet down, waiting... (last error: {})", initial_err
+        )
+        while True:
+            try:
+                socket.getaddrinfo(_KITE_DNS_PROBE_HOST, 443)
+            except socket.gaierror as e:
+                logger.warning(
+                    "Internet down, waiting... DNS lookup failed for {}: {}",
+                    _KITE_DNS_PROBE_HOST,
+                    e,
+                )
+                time.sleep(_RECONNECT_SLEEP_SECONDS)
+                continue
+            except OSError as e:
+                logger.warning(
+                    "Internet down, waiting... socket error during DNS probe: {}",
+                    e,
+                )
+                time.sleep(_RECONNECT_SLEEP_SECONDS)
+                continue
+
+            logger.info(
+                "Internet restored, resuming... (DNS for {} resolves)",
+                _KITE_DNS_PROBE_HOST,
+            )
+            self._flush_urllib3_pool()
+            try:
+                return self._kite.historical_data(
+                    token, from_date, to_date, interval="5minute", oi=True,
+                )
+            except Exception as e:
+                if _is_network_error(e):
+                    logger.warning(
+                        "DNS reachable but Kite API still failing, "
+                        "waiting and retrying: {}",
+                        e,
+                    )
+                    time.sleep(_RECONNECT_SLEEP_SECONDS)
+                    continue
+                raise

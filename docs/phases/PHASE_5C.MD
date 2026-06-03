@@ -397,3 +397,224 @@ pytest tests\ -v
 - Pre-09:15 weekday: status starts as PRE_OPEN, run_forever re-checks every
   5 minutes until status is OPEN or HOLIDAY.
 - No `signals.jsonl` rows written on confirmed holidays.
+
+---
+
+## Phase 5C Addendum — Internet Reconnect Resilience + Session-Only EOD
+
+**Goal:** Survive long internet outages (1–3 h ISP drops) without the
+bot exiting, and make the Telegram end-of-day summary reflect *only the
+latest* `src.main` run when `run.bat` is restarted mid-day.
+
+Zero strategy impact — this is a runtime-robustness layer that sits
+underneath the orchestrator (Phase 5A) and the dashboard sync (Phase
+5B). No new conditions, scan logic, or order plumbing.
+
+### What this addendum delivers
+
+1. `src/data/kite_feed.py` — after the existing bounded retry budget in
+   `get_5min_candles()` is exhausted, if the failure looks like a
+   network outage we enter an **uncapped reconnect waiting loop** that
+   probes DNS, sleeps 30 s, flushes the urllib3 keep-alive pool, and
+   retries the API call. Non-network errors (auth, stale token, bad
+   instrument) still surface immediately.
+2. `run.bat` — `powercfg /change standby-timeout-ac 0` before launching
+   the bot, and `30` after exit. Prevents the laptop from sleeping
+   during a long outage and missing every 5-min candle until someone
+   wakes it.
+3. `src/main.py` + `src/alerts/telegram_bot.py` — session counters
+   (`session_scan_count`, `session_alert_count`,
+   `session_nifty_alerts`, `session_bn_alerts`) are explicitly reset in
+   `setup()` with a `Session counters reset ...` log line. The EOD
+   summary now includes `session_started_at` so the Telegram message
+   shows the window the counts cover.
+
+### What this addendum does NOT do
+
+- No retry/reconnect logic in `upstox_feed.py` — Upstox is the inactive
+  feed today. When we revisit Upstox, mirror the Kite changes there.
+- No retry around the broker `connect()` step. Reconnect is only wired
+  through the hot scan path (`get_5min_candles`), which is the only
+  call that happens repeatedly during the trading day.
+- No detection of the *start* of an outage from the bot's side (e.g.
+  ping monitoring). We only kick in when an API call has already failed.
+
+---
+
+### STEP A — `src/data/kite_feed.py`
+
+#### Module-level additions
+
+```python
+import socket
+
+_KITE_DNS_PROBE_HOST = "api.kite.trade"
+_RECONNECT_SLEEP_SECONDS = 30
+
+
+def _is_network_error(exc: BaseException | None) -> bool:
+    """True when the exception message smells like a connectivity
+    outage (getaddrinfo / NewConnectionError / read timeout / etc.).
+    Auth and protocol errors return False so the reconnect loop
+    cannot spin forever on a non-recoverable failure.
+    """
+    ...
+```
+
+The full needle list lives in the source — keep it broad enough to
+cover both Windows (`getaddrinfo failed`) and Linux/Mac (`name or
+service not known`, `temporary failure in name resolution`) wording.
+
+#### `get_5min_candles()` after-retry hook
+
+After the existing bounded `for attempt in range(retries + 1)` loop,
+add:
+
+```python
+if not succeeded:
+    if _is_network_error(last_err):
+        data = self._wait_for_reconnect_and_refetch(
+            token, from_date, to_date, last_err
+        )
+    else:
+        raise RuntimeError(
+            f"Kite historical_data failed after {retries + 1} attempts: {last_err}"
+        )
+```
+
+The rest of the method (DataFrame shaping, `_drop_in_progress_5min`,
+trim-to-lookback) is unchanged.
+
+#### New helpers
+
+`_flush_urllib3_pool()` closes the `KiteConnect.reqsession` so the next
+call performs a fresh DNS lookup and TCP handshake. urllib3 keep-alive
+otherwise holds stale connections from before the outage.
+
+`_wait_for_reconnect_and_refetch(token, from_date, to_date, initial_err)`:
+
+```
+loop:
+  try socket.getaddrinfo("api.kite.trade", 443)
+  except gaierror / OSError:
+    log "Internet down, waiting..."; sleep 30; continue
+  log "Internet restored, resuming..."
+  flush urllib3 pool
+  try historical_data(...)
+    return result
+  except network-shaped error:
+    log "DNS up but API still failing"; sleep 30; continue
+  except other:
+    raise  # not a connectivity problem, don't swallow
+```
+
+There is intentionally **no timeout** on this loop. The bot's job is to
+stay alive across an arbitrary outage, not to give up after N minutes.
+A user-initiated Ctrl+C still works because `time.sleep` is
+interruptible.
+
+#### Log line contract
+
+The reconnect handler must produce these exact phrases so log greps in
+post-mortem analysis are predictable:
+
+- `Internet down, waiting...` (every 30 s while DNS or API is down)
+- `Internet restored, resuming...` (once DNS resolves again)
+
+---
+
+### STEP B — `run.bat`
+
+Wrap the `python -m src.main` line:
+
+```bat
+powercfg /change standby-timeout-ac 0
+python -m src.main
+set EXITCODE=%ERRORLEVEL%
+powercfg /change standby-timeout-ac 30
+endlocal & exit /b %EXITCODE%
+```
+
+`powercfg` requires admin-level rights only when changing the active
+plan, not for `standby-timeout-ac` — it works for any user. The 30-min
+restore on exit matches Windows 11 default so a normal user power
+profile resumes after the bot is done.
+
+The Phase 5A `SetThreadExecutionState` call inside `run_forever()`
+already prevents *system* sleep while Python holds it active, but it
+is released the moment the bot exits or crashes. Belt-and-suspenders:
+disable AC standby through `powercfg` as well, so even if the bot dies
+the laptop stays awake until the wrapper script finishes.
+
+---
+
+### STEP C — Session-only EOD counters
+
+The four `session_*` counters are already zero-initialised in
+`Orchestrator.__init__` and `__init__` is called once per
+`python -m src.main` invocation, so the counts have always been
+session-scoped on paper. This addendum makes the contract explicit and
+auditable:
+
+1. `__init__` adds `self.session_started_at: str | None = None`.
+2. `setup()` re-zeros all four counters and stamps
+   `session_started_at = datetime.now(IST).isoformat()`. A
+   `Session counters reset (scans=0, alerts=0). EOD summary will only
+   count this run, starting <iso>` line lands in `bot.log`.
+3. `_compute_eod_summary()` adds `session_started_at` to its dict.
+4. `TelegramAlerter._format_eod()` renders a `Session: since HH:MM IST
+   (this run only)` line when `session_started_at` is present. The
+   field is optional so the formatter stays backward-compatible with
+   any caller (tests, replay tools) that builds a summary by hand.
+
+#### Why this matters
+
+If the bot crashes or is `Ctrl+C`'d and someone restarts `run.bat` at
+13:00, the new run's EOD message at 15:00 should reflect alerts from
+13:00 onwards — not aggregate the morning's alerts too. The Excel
+dashboard and `alerts.jsonl` are still the source of truth for the
+full trading day; Telegram intentionally shows only what *this* run
+saw.
+
+---
+
+### STEP D — Verification checklist
+
+```cmd
+:: 1. Existing test suite still passes.
+pytest tests\ -q
+:: Expect: 326 passed (no test additions in this addendum).
+
+:: 2. Syntax sanity.
+python -c "import src.data.kite_feed, src.main, src.alerts.telegram_bot; print('OK')"
+
+:: 3. (Optional, on the live machine during market hours) Force a
+::    network outage by disabling Wi-Fi for 90 seconds, observe:
+::      - bot.log shows "Internet down, waiting..." every 30 s
+::      - bot stays running (no exit, no traceback)
+::      - re-enabling Wi-Fi → "Internet restored, resuming..." within 30 s
+::      - the next 5-min candle fetches normally
+```
+
+#### Live signs of health
+
+- A clean trading day has zero `Internet down, waiting...` lines.
+- A short outage (≤5 min) shows one or two of each phrase, no missed
+  alerts after the resume.
+- A long outage (1–3 h) keeps the bot alive; missed candles during the
+  outage are *expected*. The bot does not back-fill — Phase 7's
+  backtest harness reads the JSONL trail and can be re-pointed at the
+  raw candle history if you need to reconstruct the missing window.
+
+---
+
+### Files touched by this addendum
+
+| File                                  | Change                                         |
+|---------------------------------------|------------------------------------------------|
+| `src/data/kite_feed.py`               | reconnect loop + `_is_network_error` + helpers |
+| `src/main.py`                         | explicit counter reset + `session_started_at`  |
+| `src/alerts/telegram_bot.py`          | EOD formatter adds `Session: since ...` line   |
+| `run.bat`                             | `powercfg` wrap around `python -m src.main`    |
+
+No config-schema changes, no new dependencies, no migration required.

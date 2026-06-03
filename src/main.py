@@ -116,10 +116,15 @@ class Orchestrator:
         self.nifty_expiry = None
         self.banknifty_expiry = None
         # In-memory counters — EOD reads these (never re-walks JSONL).
+        # Reset on every fresh start of src.main so the Telegram EOD
+        # summary only ever reflects the latest session run, even when
+        # run.bat is restarted mid-day. setup() re-resets these and
+        # logs the timestamp for auditability.
         self.session_scan_count = 0
         self.session_alert_count = 0
         self.session_nifty_alerts = 0
         self.session_bn_alerts = 0
+        self.session_started_at: str | None = None
         # Phase 5.2: 15:35 auto-trigger guard (set once per session).
         self.dashboard_synced = False
 
@@ -132,6 +137,24 @@ class Orchestrator:
         log_file = PROJECT_ROOT / "logs" / "bot.log"
         log_file.parent.mkdir(parents=True, exist_ok=True)
         logger.add(log_file, rotation="10 MB", level=self.config.logging.log_level)
+
+        # Session counters are in-memory only and SCOPED TO THIS RUN.
+        # If run.bat is restarted mid-day, the EOD Telegram summary must
+        # reflect alerts fired since this restart — never accumulate from
+        # earlier sessions. They're already zero-initialised in __init__;
+        # the explicit reset + log line here makes the contract auditable
+        # from bot.log and survives any future refactor that constructs
+        # the orchestrator differently.
+        self.session_scan_count = 0
+        self.session_alert_count = 0
+        self.session_nifty_alerts = 0
+        self.session_bn_alerts = 0
+        self.session_started_at = datetime.now(IST).isoformat()
+        logger.info(
+            "Session counters reset (scans=0, alerts=0). "
+            "EOD summary will only count this run, starting {}",
+            self.session_started_at,
+        )
 
         # 1. Connect feed.
         self.feed = connect_feed(self.config)
@@ -1179,7 +1202,13 @@ class Orchestrator:
                 pass
 
     def _compute_eod_summary(self) -> dict:
-        """Build EOD summary from in-memory counters (never re-reads JSONL)."""
+        """Build EOD summary from in-memory counters (never re-reads JSONL).
+
+        Counts are scoped to THIS run only. If run.bat was restarted
+        mid-day, earlier sessions' alerts are intentionally not included
+        — the JSONL files remain the source of truth for cross-session
+        analysis.
+        """
         today_str = datetime.now(IST).date().isoformat()
         return {
             "date": today_str,
@@ -1191,6 +1220,7 @@ class Orchestrator:
                 "YES" if self.state._state.circuit_breaker_triggered else "NO"
             ),
             "vix_close": self.session_vix,
+            "session_started_at": getattr(self, "session_started_at", None),
         }
 
     # =====================================================================

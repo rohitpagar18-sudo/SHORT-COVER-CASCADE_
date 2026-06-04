@@ -1298,7 +1298,8 @@ class Orchestrator:
                 candle_minute = (now.minute // 5) * 5
                 candle_key = (now.date(), now.hour, candle_minute)
                 seconds_into_candle = (now.minute % 5) * 60 + now.second
-                in_trigger_window = 5 <= seconds_into_candle <= 30
+                buffer = self.config.bot.scan_buffer_seconds
+                in_trigger_window = buffer <= seconds_into_candle <= buffer + 25
 
                 if (
                     in_trigger_window

@@ -567,28 +567,95 @@ def test_scan_loop_fires_exactly_once_per_candle() -> None:
     assert candle_key(next_candle) != (base_date, 9, 45)
 
 
-def test_scan_loop_trigger_window_5_to_30_seconds() -> None:
-    """The (5,30) trigger window covers all samples 5-30s into a candle.
+def test_scan_loop_trigger_window_uses_scan_buffer_seconds() -> None:
+    """The trigger window is [buffer, buffer+25] driven by config.bot.scan_buffer_seconds.
 
-    Outside that window the loop must NOT fire — this is the gate that
-    keeps long scans from re-triggering inside the same candle.
+    With scan_buffer_seconds=20 the window is 20–45s into a candle, so Kite
+    has time to finalize the just-closed 5-min bar before we fetch it.
     """
     def seconds_into_candle(now: datetime) -> int:
         return (now.minute % 5) * 60 + now.second
 
-    inside = datetime(2026, 5, 26, 9, 45, 10, tzinfo=IST)
-    just_after = datetime(2026, 5, 26, 9, 45, 31, tzinfo=IST)
+    buffer = 20  # mirrors orch fixture and config.yaml default
+
     boundary = datetime(2026, 5, 26, 9, 45, 0, tzinfo=IST)
+    too_early_5 = datetime(2026, 5, 26, 9, 45, 5, tzinfo=IST)
+    too_early_19 = datetime(2026, 5, 26, 9, 45, 19, tzinfo=IST)
+    inside_low = datetime(2026, 5, 26, 9, 45, 20, tzinfo=IST)
+    inside_mid = datetime(2026, 5, 26, 9, 45, 30, tzinfo=IST)
+    inside_high = datetime(2026, 5, 26, 9, 45, 45, tzinfo=IST)
+    just_after = datetime(2026, 5, 26, 9, 45, 46, tzinfo=IST)
     well_past = datetime(2026, 5, 26, 9, 48, 0, tzinfo=IST)
 
     def in_window(now: datetime) -> bool:
         s = seconds_into_candle(now)
-        return 5 <= s <= 30
+        return buffer <= s <= buffer + 25
 
-    assert in_window(inside) is True
+    assert in_window(boundary) is False        # exactly at candle close — too early
+    assert in_window(too_early_5) is False     # old hardcoded lower bound — must NOT fire
+    assert in_window(too_early_19) is False
+    assert in_window(inside_low) is True
+    assert in_window(inside_mid) is True
+    assert in_window(inside_high) is True
     assert in_window(just_after) is False
-    assert in_window(boundary) is False  # exactly at candle close — too early
     assert in_window(well_past) is False
+
+
+def test_scan_loop_trigger_window_respects_buffer_at_10s_and_22s(orch) -> None:
+    """Within the same candle: +10s must NOT trigger, +22s MUST trigger.
+
+    Drives the same predicate the orchestrator uses, parameterized off
+    orch.config.bot.scan_buffer_seconds (=20 in the fixture).
+    """
+    orch.config.bot.scan_buffer_seconds = 20
+
+    def candle_key(now: datetime):
+        return (now.date(), now.hour, (now.minute // 5) * 5)
+
+    def in_window(now: datetime) -> bool:
+        s = (now.minute % 5) * 60 + now.second
+        buffer = orch.config.bot.scan_buffer_seconds
+        return buffer <= s <= buffer + 25
+
+    at_10s = datetime(2026, 5, 26, 10, 5, 10, tzinfo=IST)
+    at_22s = datetime(2026, 5, 26, 10, 5, 22, tzinfo=IST)
+
+    # Same candle on both samples.
+    assert candle_key(at_10s) == candle_key(at_22s)
+    assert in_window(at_10s) is False
+    assert in_window(at_22s) is True
+
+
+def test_scan_buffer_seconds_validation_rejects_out_of_range(tmp_path) -> None:
+    """config_loader must reject scan_buffer_seconds outside [5, 60]."""
+    from src.config_loader import BotConfig
+    from pydantic import ValidationError
+
+    # In-range value accepted.
+    BotConfig(
+        scan_buffer_seconds=20,
+        api_retry_count=3,
+        api_retry_delay_seconds=2,
+        state_persistence_enabled=True,
+    )
+
+    # Below lower bound (would re-introduce the partial-candle bug).
+    with pytest.raises(ValidationError):
+        BotConfig(
+            scan_buffer_seconds=2,
+            api_retry_count=3,
+            api_retry_delay_seconds=2,
+            state_persistence_enabled=True,
+        )
+
+    # Above upper bound (would overrun the 300s candle).
+    with pytest.raises(ValidationError):
+        BotConfig(
+            scan_buffer_seconds=120,
+            api_retry_count=3,
+            api_retry_delay_seconds=2,
+            state_persistence_enabled=True,
+        )
 
 
 # ----------------------------------------------------------------------

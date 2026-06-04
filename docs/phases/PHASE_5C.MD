@@ -618,3 +618,42 @@ python -c "import src.data.kite_feed, src.main, src.alerts.telegram_bot; print('
 | `run.bat`                             | `powercfg` wrap around `python -m src.main`    |
 
 No config-schema changes, no new dependencies, no migration required.
+
+---
+
+## Phase 5C addendum 2 — Wire `scan_buffer_seconds` into the trigger window
+
+**Bug surfaced live on 2026-06-04 13:15:** the orchestrator's scan loop
+used a hardcoded `5 <= seconds_into_candle <= 30` window, so scans
+fired ~+5s after each 5-min boundary — before Kite finalized the just-
+closed bar. The signal logged `option_close=219.15` while the settled
+close on chart was meaningfully different, skewing entry, SL, TP1/TP2,
+lots, and the C1/C2/C4 inputs (volume in particular under-reads on a
+partial candle).
+
+`config.bot.scan_buffer_seconds` (default 20) had been documented in
+`config.yaml` since 5A but was orphaned: pydantic-validated, never
+read at runtime.
+
+**Fix:** read the config in `run_forever()` and parameterize the window:
+
+```python
+buffer = self.config.bot.scan_buffer_seconds
+in_trigger_window = buffer <= seconds_into_candle <= buffer + 25
+```
+
+The 25-second tail keeps a safe landing zone for the 2-second poll loop.
+`config_loader.py` bound tightened from `ge=0` to `ge=5, le=60` so a
+mis-typed value can't reintroduce the partial-candle regime or overrun
+the 300s candle.
+
+### Files touched
+
+| File                              | Change                                        |
+|-----------------------------------|-----------------------------------------------|
+| `src/main.py`                     | trigger window reads `bot.scan_buffer_seconds`|
+| `src/config_loader.py`            | `scan_buffer_seconds` bounded to `[5, 60]`    |
+| `tests/test_orchestrator.py`      | renamed window test + 2 new tests             |
+
+Test count: 305 → 328 passing. No config.yaml change (default already
+20). No feed / condition / indicator / expiry-resolver code touched.

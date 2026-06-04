@@ -427,7 +427,7 @@ class DashboardConfig(_Base):
 
 
 class BotConfig(_Base):
-    scan_buffer_seconds: int = Field(ge=0)
+    scan_buffer_seconds: int = Field(ge=5, le=60)
     api_retry_count: int = Field(ge=0)
     api_retry_delay_seconds: float = Field(ge=0)
     state_persistence_enabled: bool

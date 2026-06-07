@@ -194,12 +194,17 @@ conditions:
   #   enabled:true, gating:true  -> real gating: alert requires C1-C5
   c5_adx:
     enabled: ON                        # Shadow on by default — collect data
+                                       # If ADX turns out useless, kill it completely: enabled: OFF  
     gating: OFF                        # OFF during shadow validation
+                                       # once gating is ON, your alert only fires when C1 + C2 + C3 + C4 + C5 all pass. 
+                                       # One restart, no code change, no re-litigation — exactly the pattern you've followed for every other decision in this project.
     period: 14                         # Matches RSI period
     adx_min: 20                        # 15=earliest/noisiest, 20=emerging (balanced),
                                        # 25=established trend
     require_rising: ON                 # adx > adx_prev (ignition filter)
-    use_di_alignment: OFF              # C5 measures trend STRENGTH (ADX>=min + rising),
+    use_di_alignment: OFF              # If ADX strength alone is enough use_di_alignment: OFF 
+                                       # If Spot DI alignment also matters: use_di_alignment: ON
+                                       # C5 measures trend STRENGTH (ADX>=min + rising),
                                        # not direction. Direction is already covered by
                                        # C0 (spot vs VWAP) and C1 (option vs option VWAP).
                                        # +DI / -DI are still LOGGED every scan for Phase 7

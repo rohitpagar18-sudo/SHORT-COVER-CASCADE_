@@ -311,7 +311,11 @@ that inherits the scan record) so consumers can guard against drift.
 | 1              | Phase 5 GA     | Original signals.jsonl shape                                        |
 | 2              | Phase 5.2      | Added bot_remark / bot_tags / opt_above_vwap_pct / extended-zone    |
 | 3              | Phase 6.1      | Added C5 ADX shadow fields (adx / adx_prev / di_plus / di_minus /   |
-|                |                | di_aligned / c5_passed / c5_reason / session_candle_index).         |
-|                |                | Values are explicit `null` when c5_adx.enabled is OFF so the pandas |
-|                |                | / Parquet pipeline does not choke on schema drift across runs.      |
+|                |                | di_aligned / c5_passed / c5_reason / session_candle_index) AND      |
+|                |                | option-side DI (option_di_plus / option_di_minus /                  |
+|                |                | option_di_aligned — direction-agnostic, +DI>−DI is always desired   |
+|                |                | because we always BUY the option). Option DI is informational only  |
+|                |                | and does NOT affect C5 pass/fail. Values are explicit `null` when   |
+|                |                | c5_adx.enabled is OFF or fewer than 2*period option candles are     |
+|                |                | available, so the Parquet pipeline does not choke on schema drift.  |
 

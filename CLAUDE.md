@@ -253,6 +253,15 @@ revisit without explicit user approval.
   adding a DI-alignment gate would be redundant. +DI / −DI are still
   logged every scan and shown in the Telegram alert line — they're
   visible for Phase 7 analysis but do NOT drive the C5 ✓/❌.
+- **Option DI alongside Spot DI on the alert line.** The Telegram C5
+  suffix carries both: `Spot +DI>−DI ✓` (flips to `−DI>+DI` for PE) AND
+  `Opt +DI>−DI ✓`. The Option DI is **direction-agnostic** because we
+  are always BUYING the option — `+DI > −DI` is always the desired side,
+  regardless of CE/PE. Option DI is computed on the option's own candle
+  series (same `c5_adx.period`, reuses `compute_adx_di`). Insufficient
+  option candles → `Opt N/A`. Logged as `option_di_plus`,
+  `option_di_minus`, `option_di_aligned` in `signals.jsonl`.
+  **Informational only — does NOT affect C5 pass/fail.**
 
 ## Phase 5.2 Decisions (Strategy Dashboard + ML Data)
 

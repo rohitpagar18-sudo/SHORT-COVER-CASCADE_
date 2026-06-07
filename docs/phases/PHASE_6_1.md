@@ -21,10 +21,11 @@ shadow logging, whether ADX should join the C1–C4 trigger set as C5.
   CE/PE/strikes. The full C5 path is crash-isolated: any exception logs
   a `data_issue` row (`issue_type="C5_ADX"`) and the C1–C4 alert still
   fires.
-- Telegram alert appends ` | C5 ✓ (ADX 27.3 ↑, +DI>−DI)` (or `❌`) when
-  `c5_adx.enabled` — no other formatting changes.
+- Telegram alert appends a combined C5 + Spot DI + Opt DI line when
+  `c5_adx.enabled` (see "Combined Telegram line" below).
 - `signals.jsonl` gains the fields: `adx`, `adx_prev`, `di_plus`,
-  `di_minus`, `di_aligned`, `c5_passed`, `c5_reason`,
+  `di_minus`, `di_aligned`, `option_di_plus`, `option_di_minus`,
+  `option_di_aligned`, `c5_passed`, `c5_reason`,
   `session_candle_index`. Rows are written with explicit `null` when C5
   is disabled so Parquet doesn't choke. `schema_version` bumped to `3`.
 
@@ -58,6 +59,29 @@ C5's job is to measure trend **strength**, not direction:
 
 This decision is independent of the C0 toggle and stands on the
 strength-vs-direction split alone.
+
+### Combined Telegram line (Spot DI + Opt DI)
+
+The C5 suffix on the alert line shows ADX state PLUS two directional
+indicators, both informational:
+
+```
+C0 ✓ C1 ✓ C2 ✓ C3 ✓ C4 ✓ | C5 ✓  ADX 24.1 ↑  |  Spot +DI>−DI ✓  Opt +DI>−DI ✓
+C0 ✓ C1 ✓ C2 ✓ C3 ✓ C4 ✓ | C5 ❌  ADX 16.1 ↓  |  Spot +DI<−DI ✗  Opt +DI>−DI ✓
+```
+
+- **Spot DI** uses CE/PE context. CE wants `+DI > −DI` (✓); PE wants
+  `−DI > +DI` (✓). The label flips accordingly: `Spot +DI>−DI` for CE,
+  `Spot −DI>+DI` for PE.
+- **Opt DI** is **direction-agnostic**: we are always BUYING the option
+  and always want the premium trending up, so it's always `Opt +DI>−DI ✓`
+  or `Opt +DI<−DI ✗` regardless of CE/PE. Computed on the option's own
+  5-min candle series, same period as spot (`c5_adx.period`), reusing
+  `compute_adx_di`. Fewer than `2*period` option candles → renders as
+  `Opt N/A`; never blocks the alert, never defaults to aligned.
+- **Option DI is informational only.** It does NOT affect C5 pass/fail.
+  Spot+Opt comparison is what Phase 7 will mine for: does the option-side
+  +DI > −DI signal predict outcome independently of spot ADX strength?
 
 ### Two-switch semantics
 

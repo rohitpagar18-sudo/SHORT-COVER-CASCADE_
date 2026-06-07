@@ -314,6 +314,7 @@ C:\trading\short-cover-cascade\
 │   ├── risk\            — SL, lots, TP (Phase 4)
 │   ├── state\           — Counters, cooldowns, killed strikes (Phase 4)
 │   ├── alerts\          — Telegram (Phase 5)
+│   ├── paper\           — Paper-trade tracking + selection (Phase 5D)
 │   ├── orders\          — Order placement (Phase 8 ONLY)
 │   ├── backtest\        — Forward-data backtest harness (Phase 7)
 │   ├── config_loader.py — Pydantic config validator
@@ -357,6 +358,22 @@ on this machine. First live alert-only run is on the second laptop.
   Shadow defaults (enabled=ON, gating=OFF) keep today's C1-C4 trigger
   set unchanged. Acceptance line: after N days, decide promotion from
   parquet data. Documented in docs/phases/PHASE_6_1.md.
+- Phase 5D (Paper-Trade Tracking & First-Alert Selection): read-only
+  layer over the alert-only bot. Collapses re-fires into one paper
+  trade per episode (default key `[symbol, option_type]`, 20-min
+  window, ITM1 tie-break on same-candle ties). Deterministic selection
+  gate emits TAKEN/SKIPPED per §13/§14 caps. Outcome step REUSES the
+  5B-A kernel (`src.dashboard.outcome_replay.replay_alert`) — no second
+  candle walk. Adds R-multiples, paper_pnl (lots × lot_size), MFE/MAE
+  in R, max_drawdown_R. Auto results in `logs/paper_trades.jsonl`;
+  user-owned `logs/paper_overrides.csv` (manual ALWAYS wins, never
+  overwritten by code). Two new dashboard sheets (Paper Trades + Paper
+  Dashboard) plus a hidden Echoes (diagnostic) sheet, leaving the
+  existing six sheets unchanged. CLI: `python -m src.paper.backfill`.
+  Phase 8's broker callback later replaces the outcome step; the
+  selection layer remains. Suite: 362 → 390 tests passing. Documented
+  in docs/phases/PHASE_5D.md; locked decisions in
+  config.yaml/`paper_trading:`.
 
 ## How Phases Work
 - Each phase has a doc in docs/phases/

@@ -166,6 +166,11 @@ _EXPECTED_SHEETS = [
     "Order Place",
     "All Signals",
     "Gap History",
+    # Phase 5D — paper layer sheets sit between Gap History and the
+    # config snapshot so Strategy Dashboard stays the default-open tab.
+    "Paper Trades",
+    "Paper Dashboard",
+    "Echoes (diagnostic)",
     "Config Snapshot",
 ]
 

@@ -258,6 +258,65 @@ dashboard:
     - WOULD_SKIP
 
 
+# ---------- PAPER TRADING (Phase 5D) ----------
+# Lite reconstruction of TP/SL outcomes for alert-only mode.
+# Sits ON TOP of the alert-firing pipeline (read-only over alerts.jsonl
+# + the 5B-A replay_cache). Does NOT modify scan/condition/alert logic.
+# Replaced by broker callbacks when Phase 8 (live orders) lands.
+paper_trading:
+  enabled: ON                            # ON = run the paper layer at EOD sync.
+                                         # OFF = skip everything below.
+
+  # ----- D1: first-alert-only episode collapse -----
+  # All alerts sharing the episode key whose candle timestamps fall
+  # within dedup_window_minutes of the episode's first alert (OR while
+  # that episode's paper position is still open) belong to the same
+  # episode. Re-fires are flagged as "echo" — only the first alert
+  # becomes the paper trade.
+  episode_key:                           # Fields whose tuple defines an episode
+    - symbol
+    - option_type
+  dedup_window_minutes: 20               # 20 = strategy default
+
+  # Tie-break when multiple strikes fire on the same candle_timestamp.
+  # ITM1 is preferred per the locked-in strike-selection decision.
+  relation_priority:
+    - ITM1
+    - ATM
+    - ITM2
+    - ITM3
+    - OTM1
+    - OTM2
+    - OTM3
+
+  # ----- D2: selection caps -----
+  # Replayed in time order over the day's episode representatives,
+  # reusing §13/§14 risk semantics. selection_mode "conviction" ranks
+  # by Bot Remark "clean"/"strong" first, then time (look-ahead OK
+  # for the selection gate — it's a "should-I-have-taken-it" study).
+  selection_mode: time_order             # time_order (default) | conviction
+  max_trades_per_day: 3
+  circuit_breaker_sl_count: 2            # 2-SL day-stopper (§14)
+  cooldown_minutes_after_sl: 15          # §13 — usually equal to re_entry above
+  same_strike_kill_after_2_sl: ON        # §13 — same strike SL'd twice = dead
+
+  # ----- D3: outcome / R-multiples (defaults match risk_reward block) -----
+  # The kernel returns the status; these knobs control the paper-side
+  # R-mapping per §9. Kept independent so future expiry-tuning doesn't
+  # require touching the trigger-side risk_reward block.
+  tp1_R_normal: 1.5
+  tp2_R_normal: 2.5
+  tp1_R_expiry: 2.0
+  tp2_R_expiry: 3.0
+  tp1_then_be_R_normal: 0.75             # TP1 then breakeven → 0.5×1.5 normal
+  tp1_then_be_R_expiry: 1.0              # TP1 then breakeven → 0.5×2.0 expiry
+  sl_R: -1.0                             # Full SL = -1R by definition
+
+  # ----- D4: persistence -----
+  paper_trades_path: logs/paper_trades.jsonl
+  paper_overrides_path: logs/paper_overrides.csv
+
+
 # ---------- BOT BEHAVIOR ----------
 # Internal bot tuning. Usually don't change.
 bot:

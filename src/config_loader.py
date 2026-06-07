@@ -454,6 +454,61 @@ class DashboardConfig(_Base):
         return _onoff_to_bool(v)
 
 
+# ---------- PAPER TRADING (Phase 5D) ----------
+
+
+class PaperTradingConfig(_Base):
+    """Phase 5D — paper-trade tracking & first-alert selection.
+
+    Read-only layer over the alert-only bot. Episode-collapses re-fires,
+    runs a deterministic selection gate (§13/§14 caps), then calls the
+    Phase 5B-A exit kernel on each TAKEN representative. No order
+    placement, no live-scan side effects.
+    """
+
+    enabled: bool = Field(default=True)
+    episode_key: list[str] = Field(
+        default_factory=lambda: ["symbol", "option_type"]
+    )
+    dedup_window_minutes: int = Field(default=20, gt=0)
+    relation_priority: list[str] = Field(
+        default_factory=lambda: ["ITM1", "ATM", "ITM2", "ITM3", "OTM1", "OTM2", "OTM3"]
+    )
+    selection_mode: Literal["time_order", "conviction"] = Field(default="time_order")
+    max_trades_per_day: int = Field(default=3, gt=0)
+    circuit_breaker_sl_count: int = Field(default=2, gt=0)
+    cooldown_minutes_after_sl: int = Field(default=15, ge=0)
+    same_strike_kill_after_2_sl: bool = Field(default=True)
+    tp1_R_normal: float = Field(default=1.5, gt=0)
+    tp2_R_normal: float = Field(default=2.5, gt=0)
+    tp1_R_expiry: float = Field(default=2.0, gt=0)
+    tp2_R_expiry: float = Field(default=3.0, gt=0)
+    tp1_then_be_R_normal: float = Field(default=0.75)
+    tp1_then_be_R_expiry: float = Field(default=1.0)
+    sl_R: float = Field(default=-1.0)
+    paper_trades_path: str = Field(default="logs/paper_trades.jsonl")
+    paper_overrides_path: str = Field(default="logs/paper_overrides.csv")
+
+    @field_validator(
+        "enabled", "same_strike_kill_after_2_sl", mode="before",
+    )
+    @classmethod
+    def _onoff(cls, v: Any) -> Any:
+        return _onoff_to_bool(v)
+
+    @model_validator(mode="after")
+    def _sane_ladders(self) -> "PaperTradingConfig":
+        if self.tp2_R_normal <= self.tp1_R_normal:
+            raise ValueError("paper_trading.tp2_R_normal must be > tp1_R_normal")
+        if self.tp2_R_expiry <= self.tp1_R_expiry:
+            raise ValueError("paper_trading.tp2_R_expiry must be > tp1_R_expiry")
+        if not self.episode_key:
+            raise ValueError("paper_trading.episode_key cannot be empty")
+        if not self.relation_priority:
+            raise ValueError("paper_trading.relation_priority cannot be empty")
+        return self
+
+
 # ---------- BOT ----------
 
 
@@ -489,6 +544,7 @@ class AppConfig(_Base):
     logging: LoggingConfig
     bot: BotConfig
     dashboard: DashboardConfig = Field(default_factory=DashboardConfig)
+    paper_trading: PaperTradingConfig = Field(default_factory=PaperTradingConfig)
 
     @model_validator(mode="after")
     def _order_strikes_require_when_order_place_on(self) -> "AppConfig":

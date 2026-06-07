@@ -867,6 +867,12 @@ def _build_workbook(year: int, quarter: int, df: pd.DataFrame) -> Path:
     gaps = wb.create_sheet("Gap History")
     _build_gap_history(gaps, df)
 
+    # Phase 5D — paper-trade sheets. Best-effort: if the engine fails
+    # (no alerts file, mid-day run, etc.) the rest of the workbook is
+    # untouched. Sheets are appended AFTER the existing ones so the
+    # default-open sheet stays Strategy Dashboard.
+    _append_paper_sheets(wb)
+
     cfg_sheet = wb.create_sheet("Config Snapshot")
     _build_config_snapshot(cfg_sheet)
 
@@ -874,3 +880,58 @@ def _build_workbook(year: int, quarter: int, df: pd.DataFrame) -> Path:
     wb.save(path)
     logger.info(f"Dashboard written: {path}")
     return path
+
+
+def _append_paper_sheets(wb: "Workbook") -> None:
+    """Append the Phase 5D Paper Trades / Dashboard / Echoes sheets.
+
+    Best-effort: any failure inside the paper layer is logged at
+    warning and the workbook continues. Existing sheets are never
+    touched here.
+    """
+    try:
+        from src.config_loader import load_config
+        from src.paper.engine import run_paper_engine
+        from src.paper.persistence import (
+            ensure_overrides_file,
+            merge_overrides,
+            read_overrides,
+            read_paper_trades,
+        )
+        from src.dashboard.paper_sheets import (
+            build_echoes_sheet,
+            build_paper_dashboard_sheet,
+            build_paper_trades_sheet,
+        )
+
+        project_root = Path(__file__).resolve().parents[2]
+        cfg = load_config(project_root / "config" / "config.yaml")
+        if not cfg.paper_trading.enabled:
+            return
+
+        alerts_path = project_root / "logs" / "alerts.jsonl"
+        result = run_paper_engine(
+            alerts_path=str(alerts_path),
+            app_config=cfg,
+            candle_source=None,  # dashboard uses on-disk paper_trades.jsonl
+            write=True,
+            compute_all_alerts=False,
+        )
+
+        ensure_overrides_file(result.overrides_path)
+        trades_df = read_paper_trades(result.paper_trades_path)
+        overrides_df = read_overrides(result.overrides_path)
+        merged = merge_overrides(trades_df, overrides_df)
+
+        paper_ws = wb.create_sheet("Paper Trades")
+        build_paper_trades_sheet(paper_ws, merged)
+
+        dash_ws = wb.create_sheet("Paper Dashboard")
+        build_paper_dashboard_sheet(
+            dash_ws, merged, collapse_summary=result.collapse_summary
+        )
+
+        echo_ws = wb.create_sheet("Echoes (diagnostic)")
+        build_echoes_sheet(echo_ws, result.annotated_alerts)
+    except Exception as e:
+        logger.warning(f"paper sheets: skipped — {e}")

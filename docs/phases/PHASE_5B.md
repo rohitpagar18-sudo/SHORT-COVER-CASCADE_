@@ -2441,6 +2441,8 @@ Total suite after this addendum: **312 passed**.
 
 ## Addendum — Phase 5B-A: Automatic Outcome Tracking (virtual, alert-only)
 
+> NOTE: First-alert collapse, the TAKEN/SKIPPED selection gate, and paper P&L live in Phase 5D (docs/phases/PHASE_5D.md). 5D *calls* this kernel; it does not duplicate it.
+
 This addendum supersedes the original "outcomes are manual" decision.
 The bot still does not place orders and still does not run live during
 the day. After EOD it replays each 5/5 alert against the day's 5-min

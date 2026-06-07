@@ -679,13 +679,31 @@ class Orchestrator:
         self, symbol: str, expiry: Any, lot_size: int, now: datetime
     ) -> None:
         """Scan one symbol — both CE and PE direction."""
+        # Phase 6.1: when C5 ADX is enabled we need a deeper multi-day
+        # window than the 100 candles VWAP normally takes. Take the max
+        # of the two so the same fetch serves both.
+        c5_cfg = getattr(self.config.conditions, "c5_adx", None)
+        c5_enabled = bool(getattr(c5_cfg, "enabled", False))
+        c5_lookback = int(getattr(c5_cfg, "lookback_candles", 150)) if c5_enabled else 100
+        spot_lookback = max(100, c5_lookback)
+
         try:
-            spot_candles = self._get_spot_candles(symbol)
+            spot_candles = self._get_spot_candles(symbol, lookback_candles=spot_lookback)
             spot_vwap = float(compute_session_vwap(spot_candles).iloc[-1])
             spot_close = float(spot_candles["close"].iloc[-1])
         except Exception as e:
             logger.error(f"Failed to fetch spot data for {symbol}: {e}")
             return
+
+        # Session candle index — 0-based count of closed candles since
+        # 09:15 today. Phase 7 backtests can use this to filter out
+        # early-session ADX noise.
+        session_candle_index = self._compute_session_candle_index(spot_candles, now)
+
+        # Phase 6.1: compute ADX ONCE per symbol per scan. Reused across
+        # all CE/PE strikes — the spot series is identical, only the DI
+        # alignment check flips by option_type inside check_c5_adx.
+        c5_inputs = self._compute_c5_inputs(symbol, spot_candles, now)
 
         c0_enabled = bool(
             getattr(self.config.conditions, "c0_spot_trend_filter_enabled", False)
@@ -727,6 +745,8 @@ class Orchestrator:
                 self._scan_strike(
                     symbol, strike_choice, option_type, expiry,
                     lot_size, spot_close, spot_vwap, now,
+                    c5_inputs=c5_inputs,
+                    session_candle_index=session_candle_index,
                 )
 
         logger.info(
@@ -734,6 +754,71 @@ class Orchestrator:
             "(c0_filter={})",
             symbol, per_symbol_count, "ON" if c0_enabled else "OFF",
         )
+
+    def _compute_session_candle_index(
+        self, spot_candles: pd.DataFrame, now: datetime,
+    ) -> int:
+        """0-based count of closed 5-min candles since 09:15 IST today.
+
+        Returns -1 if the count can't be derived (used in logs as a
+        sentinel — Phase 7 should treat -1 as "unknown").
+        """
+        try:
+            today_d = now.date()
+            ts_dates = pd.to_datetime(spot_candles["timestamp"]).dt.date
+            today_count = int((ts_dates == today_d).sum())
+            return max(today_count - 1, 0)
+        except Exception:
+            return -1
+
+    def _compute_c5_inputs(
+        self, symbol: str, spot_candles: pd.DataFrame, now: datetime,
+    ) -> dict | None:
+        """Compute ADX(+DI/-DI) on the spot index, crash-isolated.
+
+        Phase 6.1 CRASH ISOLATION INVARIANT: this function NEVER raises.
+        On any exception it logs a ``data_issue`` row and returns a dict
+        with ``ok=False``. The orchestrator then routes that into
+        ``check_all_conditions`` which turns it into a clean C5 ❌
+        ("insufficient data"). C5 cannot block or crash the C1–C4 alert.
+
+        Returns None if C5 is disabled entirely in config (caller treats
+        None as "C5 absent — do not log fields, do not show alert line").
+        """
+        c5_cfg = getattr(self.config.conditions, "c5_adx", None)
+        if not getattr(c5_cfg, "enabled", False):
+            return None
+
+        try:
+            from src.indicators.adx import get_latest_adx_snapshot
+            snap = get_latest_adx_snapshot(
+                spot_candles,
+                period=int(c5_cfg.period),
+                lookback_candles=int(c5_cfg.lookback_candles),
+            )
+        except Exception as e:
+            logger.warning(f"C5 ADX compute failed for {symbol}: {e}")
+            self._log_data_issue(
+                symbol, None, None, "C5_ADX",
+                f"ADX compute exception: {e}", now,
+            )
+            return {"ok": False, "reason": f"compute error: {e}"}
+
+        if not snap.ok:
+            self._log_data_issue(
+                symbol, None, None, "C5_ADX",
+                f"insufficient data: {snap.reason}", now,
+            )
+            return {"ok": False, "reason": snap.reason}
+
+        return {
+            "ok": True,
+            "adx": snap.adx,
+            "adx_prev": snap.adx_prev,
+            "di_plus": snap.di_plus,
+            "di_minus": snap.di_minus,
+            "rows_used": snap.rows_used,
+        }
 
     def _fetch_closed_candles_with_retry(
         self,
@@ -810,8 +895,18 @@ class Orchestrator:
         spot_close: float,
         spot_vwap: float,
         now: datetime,
+        c5_inputs: dict | None = None,
+        session_candle_index: int = -1,
     ) -> None:
-        """Run all 5 conditions on one strike. If 5/5, fire alert."""
+        """Run all conditions on one strike. If the gating set passes, fire alert.
+
+        ``c5_inputs`` is the precomputed ADX snapshot for this symbol's
+        SPOT series (see ``_compute_c5_inputs``). When C5 is enabled it is
+        a dict with either ``ok=True`` plus ``adx/adx_prev/di_plus/di_minus``
+        or ``ok=False`` with a ``reason``. When C5 is disabled in config the
+        caller passes ``None`` and C5 is absent from the result entirely.
+        ``session_candle_index`` is the 0-based count of closed candles
+        since 09:15 IST today (-1 if unknown)."""
         allowed, reason = self.state.can_re_enter(
             self.config, symbol, strike_choice.strike, option_type
         )
@@ -872,19 +967,52 @@ class Orchestrator:
             )
             return
 
-        result = check_all_conditions(
-            option_snapshot=snapshot,
-            spot_close=spot_close,
-            spot_vwap=spot_vwap,
-            option_type=option_type,
-            config=self.config,
-        )
+        try:
+            result = check_all_conditions(
+                option_snapshot=snapshot,
+                spot_close=spot_close,
+                spot_vwap=spot_vwap,
+                option_type=option_type,
+                config=self.config,
+                c5_inputs=c5_inputs,
+            )
+        except Exception as e:
+            # Phase 6.1 crash isolation: C5 evaluation must never crash
+            # the scan loop. If anything inside check_all_conditions raises
+            # because of a C5 edge case, fall back to a C5-less evaluation
+            # so the C1–C4 alert still fires.
+            logger.warning(
+                f"check_all_conditions raised — retrying without C5: {e}"
+            )
+            self._log_data_issue(
+                symbol, strike_choice.strike, option_type,
+                "C5_ADX", f"check_all_conditions exception: {e}", now,
+            )
+            result = check_all_conditions(
+                option_snapshot=snapshot,
+                spot_close=spot_close,
+                spot_vwap=spot_vwap,
+                option_type=option_type,
+                config=self.config,
+                c5_inputs={"ok": False, "reason": f"crash: {e}"},
+            )
 
         self.session_scan_count += 1
+
+        # Phase 6.1: extract C5 fields and ✓/❌ short label for logging.
+        c5_result = result.by_name("C5")
+        c5_passed = c5_result.passed if c5_result is not None else None
+        c5_reason = c5_result.reason if c5_result is not None else None
+        c5_fields = result.c5_fields if result.c5_fields is not None else {
+            "adx": None, "adx_prev": None,
+            "di_plus": None, "di_minus": None,
+            "di_aligned": None,
+        }
 
         signal_record = {
             "timestamp_ist": now.isoformat(),
             "event_type": "scan",
+            "schema_version": 3,
             "symbol": symbol,
             "strike": strike_choice.strike,
             "relation": strike_choice.relation,
@@ -908,6 +1036,17 @@ class Orchestrator:
             "conditions_failed": result.failed_conditions(),
             "all_passed": result.all_passed,
             "summary": result.short_summary(),
+            # Phase 6.1: C5 ADX shadow fields. Always written (null when
+            # C5 is disabled in config) so Parquet/pandas pipelines don't
+            # choke on schema drift.
+            "adx": c5_fields.get("adx"),
+            "adx_prev": c5_fields.get("adx_prev"),
+            "di_plus": c5_fields.get("di_plus"),
+            "di_minus": c5_fields.get("di_minus"),
+            "di_aligned": c5_fields.get("di_aligned"),
+            "c5_passed": c5_passed,
+            "c5_reason": c5_reason,
+            "session_candle_index": session_candle_index,
             "reasons": {r.name: r.reason for r in result.results},
             # Phase 5.2: option distance above its own VWAP at this candle.
             "opt_above_vwap_pct": float(result.opt_above_vwap_pct),
@@ -927,6 +1066,42 @@ class Orchestrator:
             symbol, strike_choice, option_type, expiry,
             lot_size, snapshot, signal_record, now,
         )
+
+    def _format_c5_telegram_line(
+        self, signal_record: dict, option_type: str,
+    ) -> str:
+        """Phase 6.1: render the appended C5 Telegram line.
+
+        Returns ``""`` when C5 is disabled in config so the formatter can
+        skip the line entirely.
+        """
+        c5_cfg = getattr(self.config.conditions, "c5_adx", None)
+        if not getattr(c5_cfg, "enabled", False):
+            return ""
+
+        c5_passed = signal_record.get("c5_passed")
+        adx = signal_record.get("adx")
+        adx_prev = signal_record.get("adx_prev")
+        di_plus = signal_record.get("di_plus")
+        di_minus = signal_record.get("di_minus")
+        c5_reason = signal_record.get("c5_reason") or ""
+
+        if adx is None or adx_prev is None or di_plus is None or di_minus is None:
+            return "C5 ❌ (insufficient data)"
+
+        arrow = "↑" if adx > adx_prev else "↓"
+        if c5_passed:
+            di_side = "+DI>−DI" if option_type == "CE" else "−DI>+DI"
+            return f"C5 ✓ (ADX {adx:.1f} {arrow}, {di_side})"
+        # Failure: surface the most diagnostic snippet from the reason.
+        adx_min = float(getattr(c5_cfg, "adx_min", 20))
+        if adx < adx_min:
+            return f"C5 ❌ (ADX {adx:.1f} {arrow} below {adx_min:.0f})"
+        if adx <= adx_prev and getattr(c5_cfg, "require_rising", True):
+            return f"C5 ❌ (ADX {adx:.1f} flat/falling vs prev {adx_prev:.1f})"
+        if getattr(c5_cfg, "use_di_alignment", True):
+            return f"C5 ❌ (DI misaligned: +DI {di_plus:.1f}, −DI {di_minus:.1f})"
+        return f"C5 ❌ (ADX {adx:.1f})"
 
     def _maybe_log_extended_zone(self, signal_record: dict, result) -> None:
         """Phase 5.2: capture 4/5 scans where C1's late-entry filter is the
@@ -1029,6 +1204,12 @@ class Orchestrator:
                 "time": now.strftime("%H:%M"),
                 "strike": strike_choice.strike,
                 "relation": strike_choice.relation,
+                # Phase 6.1: C5 shadow status line, e.g.
+                # "C5 ✓ (ADX 27.3 ↑, +DI>−DI)" or "C5 ❌ (ADX 16.1 ↓ below 20)".
+                # Empty string when C5 is disabled — formatter skips the line.
+                "c5_telegram_line": self._format_c5_telegram_line(
+                    signal_record, option_type
+                ),
             }
 
             # Phase 5.2: generate the human-readable remark and structured

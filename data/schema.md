@@ -298,3 +298,20 @@ tags = df[df["event_type"] == "alert"]["bot_tags"].dropna()
 counter = Counter(t for row in tags for t in row.split(","))
 print(counter.most_common(20))
 ```
+
+---
+
+## Schema versioning
+
+`schema_version` is written on every `scan` (and on every later event
+that inherits the scan record) so consumers can guard against drift.
+
+| schema_version | Effective from | What changed                                                        |
+|----------------|----------------|---------------------------------------------------------------------|
+| 1              | Phase 5 GA     | Original signals.jsonl shape                                        |
+| 2              | Phase 5.2      | Added bot_remark / bot_tags / opt_above_vwap_pct / extended-zone    |
+| 3              | Phase 6.1      | Added C5 ADX shadow fields (adx / adx_prev / di_plus / di_minus /   |
+|                |                | di_aligned / c5_passed / c5_reason / session_candle_index).         |
+|                |                | Values are explicit `null` when c5_adx.enabled is OFF so the pandas |
+|                |                | / Parquet pipeline does not choke on schema drift across runs.      |
+

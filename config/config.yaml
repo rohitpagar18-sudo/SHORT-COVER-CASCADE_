@@ -183,6 +183,31 @@ conditions:
   c1_extended_zone_enabled: ON         # Log "would_alert_extended" scans
   c1_extended_zone_max_pct: 50         # Upper bound for extended zone logging
 
+  # C5 = ADX(14) trend filter — Phase 6.1 SHADOW MODE addition.
+  # `enabled` controls compute + log + alert-line display.
+  # `gating`  controls whether C5 BLOCKS the alert (joins the C1-C4
+  #           gating set). Keep gating OFF during shadow validation;
+  #           flip ON later once the data justifies it.
+  # Semantics:
+  #   enabled:false              -> C5 absent (not computed, not logged, not shown)
+  #   enabled:true, gating:false -> shadow: computed/logged/shown but NEVER blocks
+  #   enabled:true, gating:true  -> real gating: alert requires C1-C5
+  c5_adx:
+    enabled: ON                        # Shadow on by default — collect data
+    gating: OFF                        # OFF during shadow validation
+    period: 14                         # Matches RSI period
+    adx_min: 20                        # 15=earliest/noisiest, 20=emerging (balanced),
+                                       # 25=established trend
+    require_rising: ON                 # adx > adx_prev (ignition filter)
+    use_di_alignment: OFF              # C5 measures trend STRENGTH (ADX>=min + rising),
+                                       # not direction. Direction is already covered by
+                                       # C0 (spot vs VWAP) and C1 (option vs option VWAP).
+                                       # +DI / -DI are still LOGGED every scan for Phase 7
+                                       # analysis — they just don't drive the C5 ✓/❌.
+    lookback_candles: 150              # Rolling multi-day window (~2 sessions).
+                                       # NOT session-anchored — ADX needs stable
+                                       # history at session open.
+
 
 # ---------- TELEGRAM ALERTS (Phase 5) ----------
 # Configure which alerts the bot sends to your Telegram chat.

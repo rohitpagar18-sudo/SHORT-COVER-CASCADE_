@@ -232,6 +232,28 @@ revisit without explicit user approval.
 - Toggle: config.time_rules.gap_day_enabled (default ON)
 - Reason: VWAP gets dominated by opening candles on gap days
 
+### C5 ADX Shadow Mode (Phase 6.1, two-flag design)
+- C5 ADX trend filter has TWO independent switches, by design:
+  - `c5_adx.enabled`  → compute + log + display the C5 result
+  - `c5_adx.gating`   → include C5 in all_passed (trigger) computation
+- Trigger set is C1–C4 by default. C5 in shadow mode (enabled=ON, gating=OFF)
+  is computed/logged/shown but NEVER blocks an alert.
+- `ConditionResult` carries a `gating` field; `all_passed` only iterates
+  results whose `gating=True`. Naively appending a C5 ConditionResult to
+  the results list WOULD silently make it gating — the `gating` field is
+  what prevents that.
+- ADX is computed ONCE per `_scan_symbol` on the SPOT 5-min series (multi-day,
+  rolling — NOT session-anchored) and reused across CE/PE and all strikes.
+- C5 is crash-isolated: any exception in fetch/compute/evaluate logs a
+  `data_issue` (`issue_type="C5_ADX"`) and the C1–C4 alert still fires.
+  C5 NEVER defaults to pass on error — it shows as ❌ "insufficient data".
+- **`use_di_alignment: OFF` on its own merits.** C5 measures trend STRENGTH
+  (`adx >= adx_min` AND `adx > adx_prev`), not direction. Direction is
+  already pinned by C0 (spot vs VWAP) and C1 (option vs option VWAP), so
+  adding a DI-alignment gate would be redundant. +DI / −DI are still
+  logged every scan and shown in the Telegram alert line — they're
+  visible for Phase 7 analysis but do NOT drive the C5 ✓/❌.
+
 ## Phase 5.2 Decisions (Strategy Dashboard + ML Data)
 
 ### File Organization
@@ -318,6 +340,14 @@ on this machine. First live alert-only run is on the second laptop.
   now reports only the latest src.main run's counts (full suite still
   326/326 passing). Documented as the Phase 5C addendum in
   docs/phases/PHASE_5C.MD.
+- Phase 6.1 (shadow C5 ADX): additive non-gating data-collection layer
+  during the Phase 6 live alert-only validation window. ADX(14) +DI/-DI
+  computed once per scan on the SPOT 5-min multi-day series, logged on
+  every scan, and shown in Telegram. Two-flag design: c5_adx.enabled
+  (compute/log/display) is independent of c5_adx.gating (block alerts).
+  Shadow defaults (enabled=ON, gating=OFF) keep today's C1-C4 trigger
+  set unchanged. Acceptance line: after N days, decide promotion from
+  parquet data. Documented in docs/phases/PHASE_6_1.md.
 
 ## How Phases Work
 - Each phase has a doc in docs/phases/

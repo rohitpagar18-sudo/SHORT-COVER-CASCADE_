@@ -245,3 +245,136 @@ def test_vwap_value_unchanged_whether_input_is_today_only_or_multi_day():
         f"multi-day={multi_day_vwap:.4f}. Multi-day input must produce "
         "the same VWAP value as today-only input."
     )
+
+
+# ---------------------------------------------------------------------------
+# Phase 6.1 — ADX(14) tests (shadow-mode C5 backend)
+# ---------------------------------------------------------------------------
+
+
+def _synthetic_uptrend_ohlc(n: int = 200) -> pd.DataFrame:
+    """Build a clean uptrending OHLC frame.
+
+    Each candle's high/low/close drift up by a small amount. ADX should
+    rise meaningfully and +DI should dominate −DI by the end.
+    """
+    ts = pd.date_range(
+        "2026-05-25 09:15", periods=n, freq="5min", tz="Asia/Kolkata"
+    )
+    opens = [100.0 + i * 0.5 for i in range(n)]
+    highs = [o + 1.5 for o in opens]
+    lows = [o - 0.2 for o in opens]
+    closes = [o + 1.0 for o in opens]
+    return pd.DataFrame({
+        "timestamp": ts,
+        "open": opens,
+        "high": highs,
+        "low": lows,
+        "close": closes,
+        "volume": [10_000.0] * n,
+    })
+
+
+def _synthetic_downtrend_ohlc(n: int = 200) -> pd.DataFrame:
+    ts = pd.date_range(
+        "2026-05-25 09:15", periods=n, freq="5min", tz="Asia/Kolkata"
+    )
+    opens = [200.0 - i * 0.5 for i in range(n)]
+    highs = [o + 0.2 for o in opens]
+    lows = [o - 1.5 for o in opens]
+    closes = [o - 1.0 for o in opens]
+    return pd.DataFrame({
+        "timestamp": ts,
+        "open": opens,
+        "high": highs,
+        "low": lows,
+        "close": closes,
+        "volume": [10_000.0] * n,
+    })
+
+
+def _synthetic_flat_ohlc(n: int = 200) -> pd.DataFrame:
+    ts = pd.date_range(
+        "2026-05-25 09:15", periods=n, freq="5min", tz="Asia/Kolkata"
+    )
+    return pd.DataFrame({
+        "timestamp": ts,
+        "open": [100.0] * n,
+        "high": [100.1] * n,
+        "low": [99.9] * n,
+        "close": [100.0] * n,
+        "volume": [10_000.0] * n,
+    })
+
+
+def test_adx_uptrend_passes_min():
+    """Calibration/sanity test on a synthetic uptrend.
+
+    Real Kite-chart calibration is documented in docs/known_indicator_values.md
+    and will be added once a screenshot is captured on the second laptop.
+    For now this proves the math: a 200-candle uptrend produces ADX well
+    above the default 20 threshold, with +DI > -DI.
+    """
+    from src.indicators.adx import get_latest_adx_snapshot
+
+    df = _synthetic_uptrend_ohlc()
+    snap = get_latest_adx_snapshot(df, period=14, lookback_candles=150)
+    assert snap.ok is True
+    assert snap.adx >= 20, f"ADX {snap.adx:.1f} should clear 20 on a clean uptrend"
+    assert snap.di_plus > snap.di_minus, (
+        f"+DI {snap.di_plus:.1f} should exceed -DI {snap.di_minus:.1f} on uptrend"
+    )
+
+
+def test_adx_downtrend_di_minus_dominates():
+    from src.indicators.adx import get_latest_adx_snapshot
+
+    df = _synthetic_downtrend_ohlc()
+    snap = get_latest_adx_snapshot(df, period=14, lookback_candles=150)
+    assert snap.ok is True
+    assert snap.di_minus > snap.di_plus
+
+
+def test_adx_flat_series_low_adx():
+    """Flat series → ADX near zero, +DI ≈ -DI."""
+    from src.indicators.adx import get_latest_adx_snapshot
+
+    df = _synthetic_flat_ohlc()
+    snap = get_latest_adx_snapshot(df, period=14, lookback_candles=150)
+    assert snap.ok is True
+    assert snap.adx < 20, f"ADX {snap.adx:.1f} should be low on flat series"
+
+
+def test_adx_insufficient_data():
+    """Too few rows → ok=False, never raises, never defaults to pass."""
+    from src.indicators.adx import get_latest_adx_snapshot
+
+    df = _synthetic_uptrend_ohlc(n=10)  # less than 2*period=28
+    snap = get_latest_adx_snapshot(df, period=14, lookback_candles=150)
+    assert snap.ok is False
+    assert "need" in snap.reason.lower() or "row" in snap.reason.lower()
+
+
+def test_adx_lookback_slice_is_applied():
+    """ADX of trailing 150 should reflect recent regime, not ancient history."""
+    from src.indicators.adx import get_latest_adx_snapshot
+
+    up = _synthetic_uptrend_ohlc(n=120)
+    flat_ts = pd.date_range(
+        up["timestamp"].iloc[-1] + pd.Timedelta(minutes=5),
+        periods=160, freq="5min",
+    )
+    last_close = up["close"].iloc[-1]
+    flat = pd.DataFrame({
+        "timestamp": flat_ts,
+        "open": [last_close] * 160,
+        "high": [last_close + 0.1] * 160,
+        "low": [last_close - 0.1] * 160,
+        "close": [last_close] * 160,
+        "volume": [10_000.0] * 160,
+    })
+    df = pd.concat([up, flat], ignore_index=True)
+    snap = get_latest_adx_snapshot(df, period=14, lookback_candles=150)
+    # Only the trailing flat window should drive the latest ADX.
+    assert snap.ok is True
+    assert snap.adx < 20

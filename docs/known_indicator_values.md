@@ -94,6 +94,29 @@ Upstox screenshots explicitly label: "VWAP hlc3 Session"
 | VWAP formula | Candle 3 | hlc3 VWAP should ≈ 177.81 |
 | Gap day | Candle 5 | Very low VWAP confirms gap day detection |
 
+## ADX Acceptance Threshold (Phase 6.1)
+ADX is noisier than RSI; allow a wider tolerance:
+- ADX(14): ±3-4 points vs TradingView/Kite chart
+- +DI / -DI: ±3 points
+If the ewm-smoothed implementation drifts beyond ±4, swap in true Wilder
+seeding (same recursion as `src/indicators/rsi.py`).
+
+## ADX Calibration Fixture — TO BE REPLACED WITH KITE SCREENSHOT
+The repo currently uses a synthetic 200-candle uptrending series for the
+calibration test (`tests/test_indicators.py::test_adx_uptrend_passes_min`)
+because we don't yet have a Kite ADX(14) screenshot.
+
+Action on second laptop during market hours: capture an ADX(14) reading
+off the Kite chart on NIFTY 5-min candles and add the fixture here as:
+- Platform: Zerodha Kite
+- Instrument: NIFTY 5-min spot
+- Date/Time IST: YYYY-MM-DD HH:MM
+- ADX(14): xx.x
+- +DI:    xx.x
+- -DI:    xx.x
+Then add a test using the same 5-min series (~200 candles back) and
+assert `abs(bot_adx - chart_adx) <= 4`.
+
 ## Missing Data (acknowledged gaps)
 - Spot NIFTY at each candle: not in screenshots (need separate chart)
 - Individual candle OHLC mid-chart: only day OHLC available

@@ -321,6 +321,33 @@ class StrikeConfig(_Base):
 # ---------- CONDITIONS ----------
 
 
+class C5AdxConfig(_Base):
+    """C5 ADX trend filter — Phase 6.1 shadow-mode addition.
+
+    The two booleans are deliberately independent:
+        enabled  -> compute + log + display the C5 result
+        gating   -> include C5 in the all_passed (trigger) computation
+    Shadow mode is (enabled=True, gating=False): C5 runs and is logged,
+    but never blocks an alert.
+    """
+
+    enabled: bool = Field(default=True)
+    gating: bool = Field(default=False)
+    period: int = Field(default=14, gt=0)
+    adx_min: float = Field(default=20.0, ge=0)
+    require_rising: bool = Field(default=True)
+    use_di_alignment: bool = Field(default=True)
+    lookback_candles: int = Field(default=150, gt=0)
+
+    @field_validator(
+        "enabled", "gating", "require_rising", "use_di_alignment",
+        mode="before",
+    )
+    @classmethod
+    def _onoff(cls, v: Any) -> Any:
+        return _onoff_to_bool(v)
+
+
 class ConditionsConfig(_Base):
     c3_rsi_min: float = Field(ge=0, le=100)
     c3_rsi_max: float = Field(ge=0, le=100)
@@ -334,6 +361,10 @@ class ConditionsConfig(_Base):
     c1_max_distance_pct: float = Field(default=30.0, gt=0)
     c1_extended_zone_enabled: bool = Field(default=True)
     c1_extended_zone_max_pct: float = Field(default=50.0, gt=0)
+
+    # Phase 6.1: C5 ADX trend filter. Default factory keeps older configs
+    # (which lack the c5_adx block) loadable without complaint.
+    c5_adx: C5AdxConfig = Field(default_factory=C5AdxConfig)
 
     @field_validator(
         "c0_spot_trend_filter_enabled",

@@ -165,6 +165,13 @@ class TelegramAlerter:
         insight_line = f"\nInsight: {insight}\n" if insight else "\n"
         cheap_warning = (s.get("cheap_option_warning") or "").strip()
         cheap_line = f"{cheap_warning}\n" if cheap_warning else ""
+        # Phase 6.1: existing C0-C4 line, with an optional " | C5 ..."
+        # suffix when c5_adx.enabled. The orchestrator passes the C5
+        # snippet pre-rendered ("" when disabled).
+        c5_line = (s.get("c5_telegram_line") or "").strip()
+        conditions_line = "C0 ✓ C1 ✓ C2 ✓ C3 ✓ C4 ✓"
+        if c5_line:
+            conditions_line = f"{conditions_line} | {c5_line}"
         return (
             "🚨 SHORT COVER CASCADE SIGNAL\n"
             "─────────────────────────────\n"
@@ -187,7 +194,7 @@ class TelegramAlerter:
             f"({s['lots']} × {s['lot_size']} × ₹{s['risk_per_unit']:.2f})\n"
             f"{cheap_line}"
             f"{insight_line}"
-            "C0 ✓ C1 ✓ C2 ✓ C3 ✓ C4 ✓\n"
+            f"{conditions_line}\n"
             "─────────────────────────────\n"
             "ALERT ONLY — no order placed"
         )

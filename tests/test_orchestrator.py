@@ -110,6 +110,15 @@ def _make_config(
             c1_max_distance_pct=30,
             c1_extended_zone_enabled=True,
             c1_extended_zone_max_pct=50,
+            c5_adx=_NS(
+                enabled=False,
+                gating=False,
+                period=14,
+                adx_min=20.0,
+                require_rising=True,
+                use_di_alignment=True,
+                lookback_candles=150,
+            ),
         ),
     )
 
@@ -1292,3 +1301,110 @@ def test_mark_holiday_scans_handles_no_holiday_dates(tmp_path):
 
     row = json.loads(sig.read_text().strip())
     assert "is_holiday_scan" not in row
+
+
+# ----------------------------------------------------------------------
+# Phase 6.1 — C5 ADX shadow-mode orchestration
+# ----------------------------------------------------------------------
+
+
+def test_compute_c5_inputs_returns_none_when_disabled(orch) -> None:
+    """When c5_adx.enabled is False, no ADX work is done at all."""
+    orch.config.conditions.c5_adx.enabled = False
+    # Pass garbage spot_candles — function must short-circuit before touching them.
+    result = orch._compute_c5_inputs("NIFTY", pd.DataFrame(), _dt(11, 0))
+    assert result is None
+
+
+def test_compute_c5_inputs_handles_insufficient_data(orch) -> None:
+    """Too few candles → ok=False, no crash, data_issue is logged."""
+    orch.config.conditions.c5_adx.enabled = True
+    df = pd.DataFrame({
+        "timestamp": pd.date_range("2026-05-26 09:15", periods=5, freq="5min", tz=IST),
+        "open": [100] * 5, "high": [101] * 5, "low": [99] * 5,
+        "close": [100] * 5, "volume": [1000] * 5,
+    })
+    result = orch._compute_c5_inputs("NIFTY", df, _dt(11, 0))
+    assert result["ok"] is False
+    orch.signal_logger.log_signal.assert_called()
+
+
+def test_compute_c5_inputs_crash_isolation(orch, monkeypatch) -> None:
+    """Forced exception inside ADX compute → returns ok=False, never raises.
+
+    This is the key Phase 6.1 invariant: C5 cannot crash the scan loop.
+    """
+    orch.config.conditions.c5_adx.enabled = True
+
+    import src.indicators.adx as adx_mod
+    def boom(*a, **kw):
+        raise RuntimeError("forced ADX explosion")
+    monkeypatch.setattr(adx_mod, "get_latest_adx_snapshot", boom)
+
+    df = pd.DataFrame({
+        "timestamp": pd.date_range("2026-05-26 09:15", periods=200, freq="5min", tz=IST),
+        "open": [100] * 200, "high": [101] * 200, "low": [99] * 200,
+        "close": [100] * 200, "volume": [1000] * 200,
+    })
+    result = orch._compute_c5_inputs("NIFTY", df, _dt(11, 0))
+    assert result["ok"] is False
+    assert "forced" in result["reason"].lower()
+
+
+def test_compute_session_candle_index_today_only(orch) -> None:
+    """Counts today's candles in a multi-day frame, 0-based."""
+    yest = pd.date_range("2026-05-25 09:15", periods=75, freq="5min", tz=IST)
+    today = pd.date_range("2026-05-26 09:15", periods=10, freq="5min", tz=IST)
+    df = pd.DataFrame({"timestamp": list(yest) + list(today)})
+    idx = orch._compute_session_candle_index(df, _dt(10, 0))
+    assert idx == 9  # 10 candles -> last index is 9
+
+
+def test_adx_computed_once_per_symbol_scan(orch, monkeypatch) -> None:
+    """ADX must be computed exactly ONCE per _scan_symbol — reused across
+    CE/PE and across multiple strikes. Cost optimisation invariant.
+    """
+    orch.config.conditions.c5_adx.enabled = True
+
+    # Synthetic spot data — enough for ADX.
+    spot_df = pd.DataFrame({
+        "timestamp": pd.date_range("2026-05-26 09:15", periods=200, freq="5min", tz=IST),
+        "open": [100 + i * 0.1 for i in range(200)],
+        "high": [101 + i * 0.1 for i in range(200)],
+        "low": [99 + i * 0.1 for i in range(200)],
+        "close": [100.5 + i * 0.1 for i in range(200)],
+        "volume": [1000.0] * 200,
+    })
+    monkeypatch.setattr(orch, "_get_spot_candles", lambda *a, **kw: spot_df)
+
+    call_count = {"n": 0}
+    real_compute = orch._compute_c5_inputs
+
+    def counting(*a, **kw):
+        call_count["n"] += 1
+        return real_compute(*a, **kw)
+
+    monkeypatch.setattr(orch, "_compute_c5_inputs", counting)
+
+    # Stub strike selection: pretend NIFTY has 3 ATM-area strikes per side.
+    fake_strikes = [
+        _NS(strike=24500, relation="ATM",  instrument_key="X1", trading_symbol="S1"),
+        _NS(strike=24550, relation="OTM1", instrument_key="X2", trading_symbol="S2"),
+        _NS(strike=24450, relation="ITM1", instrument_key="X3", trading_symbol="S3"),
+    ]
+    import src.main as main_mod
+    monkeypatch.setattr(
+        main_mod, "get_alert_strikes",
+        lambda *a, **kw: fake_strikes,
+    )
+    # Skip the heavy per-strike work — we only care about the ADX call count.
+    orch._scan_strike = MagicMock()
+
+    orch._scan_symbol("NIFTY", "2026-05-29", 65, _dt(11, 0))
+
+    assert call_count["n"] == 1, (
+        f"_compute_c5_inputs called {call_count['n']} times — "
+        "must be exactly 1 per _scan_symbol (reused across CE/PE/strikes)"
+    )
+    # Sanity: _scan_strike got called for each (option_type x strike) combo.
+    assert orch._scan_strike.call_count == 6  # 2 sides x 3 strikes

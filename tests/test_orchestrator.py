@@ -1360,6 +1360,47 @@ def test_compute_session_candle_index_today_only(orch) -> None:
     assert idx == 9  # 10 candles -> last index is 9
 
 
+def test_compute_option_di_pass_case(orch) -> None:
+    """Clean uptrending option series → option_di_aligned=True."""
+    orch.config.conditions.c5_adx.enabled = True
+    n = 200
+    df = pd.DataFrame({
+        "timestamp": pd.date_range("2026-05-26 09:15", periods=n, freq="5min", tz=IST),
+        "open":   [100 + i * 0.5 for i in range(n)],
+        "high":   [101 + i * 0.5 for i in range(n)],
+        "low":    [ 99 + i * 0.5 for i in range(n)],
+        "close":  [100.5 + i * 0.5 for i in range(n)],
+        "volume": [10_000.0] * n,
+    })
+    res = orch._compute_option_di(df)
+    assert res["option_di_aligned"] is True
+    assert res["option_di_plus"] > res["option_di_minus"]
+
+
+def test_compute_option_di_insufficient_returns_none(orch) -> None:
+    """Fewer than 2*period option candles → all three None, never raises."""
+    orch.config.conditions.c5_adx.enabled = True
+    df = pd.DataFrame({
+        "timestamp": pd.date_range("2026-05-26 09:15", periods=10, freq="5min", tz=IST),
+        "open": [100] * 10, "high": [101] * 10, "low": [99] * 10,
+        "close": [100] * 10, "volume": [1000] * 10,
+    })
+    res = orch._compute_option_di(df)
+    assert res == {
+        "option_di_plus": None,
+        "option_di_minus": None,
+        "option_di_aligned": None,
+    }
+
+
+def test_compute_option_di_disabled_returns_none(orch) -> None:
+    """When c5_adx.enabled is OFF the helper short-circuits — no compute."""
+    orch.config.conditions.c5_adx.enabled = False
+    # Pass garbage — must not be touched.
+    res = orch._compute_option_di(pd.DataFrame())
+    assert res["option_di_aligned"] is None
+
+
 def test_adx_computed_once_per_symbol_scan(orch, monkeypatch) -> None:
     """ADX must be computed exactly ONCE per _scan_symbol — reused across
     CE/PE and across multiple strikes. Cost optimisation invariant.

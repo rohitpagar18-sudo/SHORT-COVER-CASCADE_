@@ -1008,6 +1008,11 @@ class Orchestrator:
             "di_plus": None, "di_minus": None,
             "di_aligned": None,
         }
+        # Phase 6.1 follow-up: also compute +DI/-DI on the OPTION series.
+        # Purely informational — does NOT affect C5 pass/fail or any
+        # gating. Insufficient data or compute error → all None (alert
+        # shows "Opt N/A").
+        option_di = self._compute_option_di(df)
 
         signal_record = {
             "timestamp_ist": now.isoformat(),
@@ -1044,6 +1049,10 @@ class Orchestrator:
             "di_plus": c5_fields.get("di_plus"),
             "di_minus": c5_fields.get("di_minus"),
             "di_aligned": c5_fields.get("di_aligned"),
+            # Phase 6.1 follow-up: option-side DI (informational).
+            "option_di_plus": option_di["option_di_plus"],
+            "option_di_minus": option_di["option_di_minus"],
+            "option_di_aligned": option_di["option_di_aligned"],
             "c5_passed": c5_passed,
             "c5_reason": c5_reason,
             "session_candle_index": session_candle_index,
@@ -1067,41 +1076,48 @@ class Orchestrator:
             lot_size, snapshot, signal_record, now,
         )
 
-    def _format_c5_telegram_line(
-        self, signal_record: dict, option_type: str,
-    ) -> str:
-        """Phase 6.1: render the appended C5 Telegram line.
+    def _compute_option_di(self, option_df: pd.DataFrame) -> dict:
+        """Compute +DI / -DI on the option candle series — informational.
 
-        Returns ``""`` when C5 is disabled in config so the formatter can
-        skip the line entirely.
+        Always returns a dict shape so callers can spread the result into
+        signal_record without missing-key checks. Insufficient data or
+        any exception → all three values ``None`` (alert renders as N/A).
+
+        Reuses ``compute_adx_di`` from src/indicators/adx.py so the
+        ewm-Wilder smoothing matches the spot-side computation. Uses the
+        same period as the spot C5 (c5_adx.period).
+
+        NOTE: option DI is purely informational. It does NOT affect C5
+        pass/fail. CE/PE direction is NOT applied here either — the alert
+        always reports the raw +DI vs -DI relationship; the trader is
+        always BUYING the option and wants premium trending up.
         """
+        empty = {"option_di_plus": None, "option_di_minus": None,
+                 "option_di_aligned": None}
+
         c5_cfg = getattr(self.config.conditions, "c5_adx", None)
         if not getattr(c5_cfg, "enabled", False):
-            return ""
+            return empty
 
-        c5_passed = signal_record.get("c5_passed")
-        adx = signal_record.get("adx")
-        adx_prev = signal_record.get("adx_prev")
-        di_plus = signal_record.get("di_plus")
-        di_minus = signal_record.get("di_minus")
-        c5_reason = signal_record.get("c5_reason") or ""
+        period = int(getattr(c5_cfg, "period", 14))
+        if option_df is None or len(option_df) < 2 * period:
+            return empty
 
-        if adx is None or adx_prev is None or di_plus is None or di_minus is None:
-            return "C5 ❌ (insufficient data)"
-
-        arrow = "↑" if adx > adx_prev else "↓"
-        if c5_passed:
-            di_side = "+DI>−DI" if option_type == "CE" else "−DI>+DI"
-            return f"C5 ✓ (ADX {adx:.1f} {arrow}, {di_side})"
-        # Failure: surface the most diagnostic snippet from the reason.
-        adx_min = float(getattr(c5_cfg, "adx_min", 20))
-        if adx < adx_min:
-            return f"C5 ❌ (ADX {adx:.1f} {arrow} below {adx_min:.0f})"
-        if adx <= adx_prev and getattr(c5_cfg, "require_rising", True):
-            return f"C5 ❌ (ADX {adx:.1f} flat/falling vs prev {adx_prev:.1f})"
-        if getattr(c5_cfg, "use_di_alignment", True):
-            return f"C5 ❌ (DI misaligned: +DI {di_plus:.1f}, −DI {di_minus:.1f})"
-        return f"C5 ❌ (ADX {adx:.1f})"
+        try:
+            from src.indicators.adx import compute_adx_di
+            _adx, di_plus, di_minus = compute_adx_di(option_df, period=period)
+            dip = di_plus.iloc[-1]
+            dim = di_minus.iloc[-1]
+            if pd.isna(dip) or pd.isna(dim):
+                return empty
+            return {
+                "option_di_plus": float(dip),
+                "option_di_minus": float(dim),
+                "option_di_aligned": bool(dip > dim),
+            }
+        except Exception as e:
+            logger.warning(f"Option DI compute failed: {e}")
+            return empty
 
     def _maybe_log_extended_zone(self, signal_record: dict, result) -> None:
         """Phase 5.2: capture 4/5 scans where C1's late-entry filter is the
@@ -1204,12 +1220,6 @@ class Orchestrator:
                 "time": now.strftime("%H:%M"),
                 "strike": strike_choice.strike,
                 "relation": strike_choice.relation,
-                # Phase 6.1: C5 shadow status line, e.g.
-                # "C5 ✓ (ADX 27.3 ↑, +DI>−DI)" or "C5 ❌ (ADX 16.1 ↓ below 20)".
-                # Empty string when C5 is disabled — formatter skips the line.
-                "c5_telegram_line": self._format_c5_telegram_line(
-                    signal_record, option_type
-                ),
             }
 
             # Phase 5.2: generate the human-readable remark and structured

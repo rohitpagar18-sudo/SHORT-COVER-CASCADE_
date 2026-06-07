@@ -329,3 +329,115 @@ def test_send_exception_truncates_long_trace(telegram_env) -> None:
         assert len(sent) < 3500
     finally:
         alerter._patcher.stop()
+
+
+# ---------------------------------------------------------------------------
+# Phase 6.1 follow-up — combined Spot DI + Opt DI in C5 alert line
+# ---------------------------------------------------------------------------
+
+
+def _signal_dict_with_di(**overrides) -> dict:
+    """Build a signal dict containing the full set of fields _format_signal
+    consumes. Tests override only the C5/DI bits.
+    """
+    base = {
+        "symbol": "NIFTY", "strike": 24050, "option_type": "CE",
+        "relation": "ATM", "expiry": "2026-06-02",
+        "date": "2026-05-28", "time": "10:35", "day_type": "Normal",
+        "vix": 14.2, "vix_regime": "Normal", "vix_multiplier": 1.0,
+        "spot": 24030.0, "spot_position": "Above VWAP ✓",
+        "lot_size": 65,
+        "entry": 152.50, "sl": 140.00, "sl_method": 1,
+        "tp1": 171.25, "tp1_r": 1.5,
+        "tp2": 183.75, "tp2_r": 2.5,
+        "risk_per_unit": 12.50, "lots": 3, "total_risk": 2437.50,
+        "telegram_short_remark": "",
+        # C5 / DI fields default to the "passing CE" case from the report.
+        "adx": 24.1, "adx_prev": 22.3,
+        "di_plus": 22.3, "di_minus": 18.7,
+        "c5_passed": True, "c5_reason": "C5 PASS",
+        "option_di_plus": 31.2, "option_di_minus": 14.1,
+        "option_di_aligned": True,
+    }
+    base.update(overrides)
+    return base
+
+
+def test_c5_alert_line_combined_spot_and_option_di_ce_pass(telegram_env) -> None:
+    """The exact-report example: CE signal, ADX 24.1 ↑, Spot +DI>−DI ✓,
+    Opt +DI>−DI ✓ — combined line must appear in the formatted alert.
+    """
+    from src.alerts.telegram_bot import TelegramAlerter
+    alerter = TelegramAlerter()
+    msg = alerter._format_signal(_signal_dict_with_di())
+    assert "C0 ✓ C1 ✓ C2 ✓ C3 ✓ C4 ✓ | C5 ✓  ADX 24.1 ↑  |  Spot +DI>−DI ✓  Opt +DI>−DI ✓" in msg
+
+
+def test_c5_alert_line_opt_di_misaligned_shows_cross(telegram_env) -> None:
+    """Same CE/Spot setup, but Option +DI < −DI → 'Opt +DI<−DI ✗'."""
+    from src.alerts.telegram_bot import TelegramAlerter
+    alerter = TelegramAlerter()
+    msg = alerter._format_signal(_signal_dict_with_di(
+        option_di_plus=14.1, option_di_minus=31.2,
+        option_di_aligned=False,
+    ))
+    assert "Opt +DI<−DI ✗" in msg
+    # Spot side unchanged — still aligned for CE.
+    assert "Spot +DI>−DI ✓" in msg
+
+
+def test_c5_alert_line_opt_di_na_when_insufficient_candles(telegram_env) -> None:
+    """option_di_aligned=None → 'Opt N/A'; no crash, no missing fields."""
+    from src.alerts.telegram_bot import TelegramAlerter
+    alerter = TelegramAlerter()
+    msg = alerter._format_signal(_signal_dict_with_di(
+        option_di_plus=None, option_di_minus=None,
+        option_di_aligned=None,
+    ))
+    assert "Opt N/A" in msg
+    # C5 + Spot still render with the available ADX data.
+    assert "C5 ✓  ADX 24.1 ↑" in msg
+    assert "Spot +DI>−DI ✓" in msg
+
+
+def test_c5_alert_line_pe_uses_minus_di_label(telegram_env) -> None:
+    """PE alignment is −DI > +DI. Label must flip accordingly."""
+    from src.alerts.telegram_bot import TelegramAlerter
+    alerter = TelegramAlerter()
+    msg = alerter._format_signal(_signal_dict_with_di(
+        option_type="PE",
+        di_plus=18.7, di_minus=22.3,  # -DI > +DI -> aligned for PE
+    ))
+    assert "Spot −DI>+DI ✓" in msg
+
+
+def test_c5_alert_line_failing_c5_shows_cross_mark(telegram_env) -> None:
+    """C5 fails (ADX below min, falling): line begins 'C5 ❌'."""
+    from src.alerts.telegram_bot import TelegramAlerter
+    alerter = TelegramAlerter()
+    msg = alerter._format_signal(_signal_dict_with_di(
+        adx=16.1, adx_prev=17.0,
+        di_plus=18.0, di_minus=22.0,
+        c5_passed=False,
+    ))
+    assert "C5 ❌  ADX 16.1 ↓" in msg
+    # CE but +DI < -DI → 'Spot +DI<−DI ✗'.
+    assert "Spot +DI<−DI ✗" in msg
+
+
+def test_c5_alert_line_absent_when_adx_inputs_missing(telegram_env) -> None:
+    """When ADX inputs are None (c5_adx disabled in config), no C5 suffix
+    is appended — the alert line is exactly the pre-Phase-6.1 form.
+    """
+    from src.alerts.telegram_bot import TelegramAlerter
+    alerter = TelegramAlerter()
+    msg = alerter._format_signal(_signal_dict_with_di(
+        adx=None, adx_prev=None,
+        di_plus=None, di_minus=None,
+        option_di_plus=None, option_di_minus=None,
+        option_di_aligned=None,
+        c5_passed=None,
+    ))
+    assert "C0 ✓ C1 ✓ C2 ✓ C3 ✓ C4 ✓\n" in msg
+    # No "| C5" suffix.
+    assert "| C5" not in msg

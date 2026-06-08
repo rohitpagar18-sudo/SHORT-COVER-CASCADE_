@@ -785,8 +785,15 @@ def _build_config_snapshot(ws: Worksheet) -> None:
 # ---------------------------------------------------------------------------
 
 
-def update_dashboard() -> dict:
+def update_dashboard(feed: "Any | None" = None) -> dict:
     """Refresh every quarter touched by the data files.
+
+    Args:
+        feed: Optional active ``BaseFeed`` instance. When provided (and
+            the trading day is complete), ``_append_paper_sheets`` will
+            fetch candles via the feed for any replay-cache miss so that
+            paper-trade outcomes are computed instead of NO_DATA.
+            Pass ``None`` for cache-only mode (manual mid-day runs).
 
     Returns a dict with status info. The latest-quarter path is in
     ``output_path``. Idempotent.
@@ -827,7 +834,7 @@ def update_dashboard() -> dict:
 
     for year, quarter in sorted(quarters):
         df = load_parquet_for_quarter(year, quarter)
-        path = _build_workbook(year, quarter, df)
+        path = _build_workbook(year, quarter, df, feed=feed)
         latest_written = path
         counts["quarters_touched"] += 1
         if not df.empty and "event_type" in df.columns:
@@ -845,7 +852,7 @@ def update_dashboard() -> dict:
     }
 
 
-def _build_workbook(year: int, quarter: int, df: pd.DataFrame) -> Path:
+def _build_workbook(year: int, quarter: int, df: pd.DataFrame, feed: "Any | None" = None) -> Path:
     wb = Workbook()
     # Default sheet → Strategy Dashboard.
     dash = wb.active
@@ -871,7 +878,7 @@ def _build_workbook(year: int, quarter: int, df: pd.DataFrame) -> Path:
     # (no alerts file, mid-day run, etc.) the rest of the workbook is
     # untouched. Sheets are appended AFTER the existing ones so the
     # default-open sheet stays Strategy Dashboard.
-    _append_paper_sheets(wb)
+    _append_paper_sheets(wb, feed=feed)
 
     cfg_sheet = wb.create_sheet("Config Snapshot")
     _build_config_snapshot(cfg_sheet)
@@ -882,12 +889,19 @@ def _build_workbook(year: int, quarter: int, df: pd.DataFrame) -> Path:
     return path
 
 
-def _append_paper_sheets(wb: "Workbook") -> None:
+def _append_paper_sheets(wb: "Workbook", feed: "Any | None" = None) -> None:
     """Append the Phase 5D Paper Trades / Dashboard / Echoes sheets.
 
     Best-effort: any failure inside the paper layer is logged at
     warning and the workbook continues. Existing sheets are never
     touched here.
+
+    Args:
+        feed: Optional live ``BaseFeed``. When provided the candle cache
+            is populated for any completed trading day that is missing
+            cached candles, enabling outcome replay. ``None`` → cache-only
+            (outcomes already in cache replay fine; uncached days stay
+            NO_DATA until the next feed-connected sync).
     """
     try:
         from src.config_loader import load_config
@@ -903,17 +917,28 @@ def _append_paper_sheets(wb: "Workbook") -> None:
             build_paper_dashboard_sheet,
             build_paper_trades_sheet,
         )
+        from src.dashboard.candle_cache import get_or_fetch_candles
 
         project_root = Path(__file__).resolve().parents[2]
         cfg = load_config(project_root / "config" / "config.yaml")
         if not cfg.paper_trading.enabled:
             return
 
+        def _candle_source(symbol, strike, option_type, expiry, trading_date):
+            return get_or_fetch_candles(
+                feed=feed,
+                symbol=symbol,
+                strike=strike,
+                option_type=option_type,
+                expiry=expiry,
+                trading_date=trading_date,
+            )
+
         alerts_path = project_root / "logs" / "alerts.jsonl"
         result = run_paper_engine(
             alerts_path=str(alerts_path),
             app_config=cfg,
-            candle_source=None,  # dashboard uses on-disk paper_trades.jsonl
+            candle_source=_candle_source,
             write=True,
             compute_all_alerts=False,
         )

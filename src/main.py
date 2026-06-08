@@ -1379,7 +1379,7 @@ class Orchestrator:
                 )
             except Exception as e:  # never block the rest of the sync
                 logger.warning(f"auto_outcomes step failed (continuing): {e}")
-            update_dashboard()
+            update_dashboard(feed=self.feed)
             sync_excel_notes_to_parquet()
             self.dashboard_synced = True
             logger.info("Dashboard auto-sync complete on bot exit")

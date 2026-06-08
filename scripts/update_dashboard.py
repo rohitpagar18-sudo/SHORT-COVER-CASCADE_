@@ -96,7 +96,7 @@ def main() -> None:
                 print(f"  Reason: {ao['skipped_reason']}")
 
     print("\n[3/4] Updating dashboard.xlsx (quarterly file)...")
-    xl = update_dashboard()
+    xl = update_dashboard(feed=feed)
     if xl.get("status") == "no_data":
         print("  No data yet — skipped.")
     else:

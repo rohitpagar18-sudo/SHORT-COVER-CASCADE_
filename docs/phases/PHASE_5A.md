@@ -23,13 +23,12 @@ confirmation). **The dashboard / ML data layer is in `PHASE_5B.md`** — rebuild
   hardcoded calendar. VIX timestamp used as second-source confirmation.
 - Gap-day detection with directional labels (`GAP_UP` / `GAP_DOWN` / `_DISABLED`)
   and multi-day lookback so mid-session restarts work
-- VWAP filters multi-day input to today's session only before computing
+- VWAP filters multi-day inpu to today's session only before computing
 - `data_issue` event_type for `INSUFFICIENT_LOOKBACK` errors (keeps rejection
   analytics clean on mid-session bot starts)
 - Token-date staleness check at startup
 - `check_risk.py` entry > ₹2,000 guard
 - Lot-size verification at startup
-- Windows sleep prevention: SetThreadExecutionState called at bot start, released on exit (no-op on Linux/Mac)
 
 ## What Phase 5A does NOT do
 
@@ -1670,36 +1669,3 @@ next layer — Excel dashboards, Parquet ML store, bot remarks, C1 tuning — is
 **`PHASE_5B.md`**. See **`PHASE_5C.md`** for the retroactive holiday-scan
 cleanup script (`mark_holiday_scans.py`) and the `is_holiday_scan` schema
 column.
-
----
-
-## Post-first-live-run patches (see PHASE_5B Addendum for full detail)
-
-After the first live runs, three orchestrator-side patches were folded
-in. They live in `src/main.py`, both feeds, and `config.yaml`:
-
-1. **In-progress candle drop** — `kite_feed.py` / `upstox_feed.py`
-   `get_5min_candles()` now drop any candle whose timestamp is at or
-   after the current 5-min boundary (IST). `.iloc[-1]` is therefore
-   always the last fully closed bar.
-2. **Stale-candle guard with retry** — `_scan_strike()` calls
-   `_fetch_closed_candles_with_retry()` which retries up to
-   `config.bot.api_retry_count` times and routes a still-stale fetch
-   to `_log_data_issue(... issue_type="STALE_CANDLE", ...)` (NOT a
-   rejection). `config.bot.scan_buffer_seconds` raised from 5 → 20.
-3. **C0 toggleable, default OFF** — new
-   `config.conditions.c0_spot_trend_filter_enabled` flag. When OFF,
-   `check_all_conditions()` appends a SKIPPED C0 result and
-   `_scan_symbol()` scans both CE and PE on every selected strike. The
-   original `check_c0()` is retained and runs only when the toggle is
-   ON.
-4. **Windows sleep prevention** — `run_forever()` calls
-   `ctypes.windll.kernel32.SetThreadExecutionState(0x80000002)`
-   (`ES_CONTINUOUS | ES_SYSTEM_REQUIRED`) at start and releases with
-   `0x80000000` (`ES_CONTINUOUS`) in the `finally` block. Prevents
-   missed 5-min candles caused by the host OS sleeping mid-session.
-   Guarded by `sys.platform == "win32"` so it's a no-op on Linux/Mac
-   (important for future VPS migration).
-
-Full text in **`PHASE_5B.md` → Phase 5B Addendum`**. New test file:
-`tests/test_phase5b_fixes.py` (12 tests). Total suite: 305 passing.

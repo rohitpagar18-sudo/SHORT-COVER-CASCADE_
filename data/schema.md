@@ -179,10 +179,13 @@ Manual values remain authoritative on conflict.
 | `mae`                 | float  | Max adverse excursion = `entry − min(low)` across the walked candles. |
 | `intrabar_ambiguous`  | bool   | True if at least one candle range covered both a stop and a target. The replay assumes the stop fires first. |
 
-**Refusal:** if `risk_reward.trail_sl_after_tp1` is ON in config, the
-replay refuses to stamp (it would otherwise silently model static
-breakeven, which misrepresents a trailing strategy). The skipped
-alerts log a `WARNING` and keep null `auto_*` columns.
+**SL method:** the replay kernel honors whichever
+`stop_loss.method` (1/2/3) is configured live when the sync runs.
+Method 1/2 use static SL with optional breakeven after TP1; Method 3
+trails the 19-SMA of the option close per `stop_loss.sma_trail`
+(continues post-TP1, no breakeven). The legacy
+`risk_reward.trail_sl_after_tp1` refusal is removed — alerts with
+that flag on now produce a real outcome instead of null `auto_*`.
 
 ---
 

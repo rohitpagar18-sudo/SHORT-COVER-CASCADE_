@@ -98,7 +98,8 @@ def test_engine_output_matches_kernel_for_tp2(tmp_path: Path, config):
     rec = result.records[0]
     assert rec.outcome == OUTCOME_TP2
     assert rec.decision == "TAKEN"
-    assert rec.realized_R == pytest.approx(config.paper_trading.tp2_R_normal)
+    # Paper R-ladder reads straight from risk_reward (SSOT).
+    assert rec.realized_R == pytest.approx(config.risk_reward.normal_day_tp2_r)
 
 
 def test_engine_reuses_kernel_no_second_walk():

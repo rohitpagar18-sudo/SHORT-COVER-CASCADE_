@@ -11,15 +11,29 @@ hand it a `pd.DataFrame` of 5-min option candles and the trade levels,
 and get back a ``ReplayResult``. The wrappers in
 ``data_writer.sync_auto_outcomes_to_parquet`` and Phase 7 own the I/O.
 
-Exit model follows Section 9 of ``ShortCoverCascade_v3.1_FINAL.md``:
+Exit model follows Sections 7/8/9 of ``ShortCoverCascade_v3.1_FINAL.md``.
+The kernel honors whichever ``stop_loss.method`` is active:
+
+  - Method 1 (point buffer) / Method 2 (percentage): SL is static
+    until TP1, then optionally moved to breakeven when
+    ``risk_reward.move_sl_to_breakeven_after_tp1`` is ON.
+  - Method 3 (Method-1 initial then N-SMA trail): SL is the logged
+    Method-1 price until ``sma_trail.activate_after_minutes`` after
+    entry. After that, it is updated every
+    ``sma_trail.update_interval_minutes`` to the N-SMA of the option
+    close (``follow_direction = both | ratchet``). Trailing continues
+    through and after TP1 — there is no breakeven step under Method 3.
+    Early-entry fallback: hold the Method-1 SL until N candles are
+    available; never trail on a partial SMA.
+
+Common rules across all methods:
 
   - SL hit (low <= current SL) before TP1 -> SL_HIT (full position).
   - Hard exit (complete red candle entirely below option session VWAP)
     before TP1 -> HARD_EXIT (full position).
-  - TP1 touch -> exit 50%. If config.move_sl_to_breakeven_after_tp1 is
-    ON, move SL of remainder to entry.
+  - TP1 touch -> exit 50%. Targets do NOT move with the trail.
   - TP2 touch on remainder -> TP2_HIT.
-  - SL/breakeven touch on remainder -> PARTIAL.
+  - SL/breakeven/trailed-SL touch on remainder -> PARTIAL.
   - Hard exit on remainder -> PARTIAL.
   - Nothing hit by 3:00 PM -> EOD_FLAT (or TP1_HIT if TP1 was hit).
   - Intrabar ambiguity (one candle covers both stop and target):
@@ -29,24 +43,19 @@ Exit model follows Section 9 of ``ShortCoverCascade_v3.1_FINAL.md``:
 Session VWAP for the hard-exit check is computed via
 ``src.indicators.vwap.compute_session_vwap`` — there is exactly one
 VWAP implementation in this codebase.
-
-Refusal: if ``config.risk_reward.trail_sl_after_tp1`` is ON the kernel
-returns ``None`` from ``replay_alert`` with a loud warning. Silently
-modelling breakeven would misrepresent a trailing strategy. v1
-implements static breakeven-after-TP1 only.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, time
+from datetime import datetime, time, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo
 
 import pandas as pd
-from loguru import logger
 
 from src.indicators.vwap import compute_session_vwap
+from src.risk.stop_loss import SmaTrailParams, compute_sma_trail_sl
 
 IST = ZoneInfo("Asia/Kolkata")
 
@@ -75,6 +84,10 @@ class ExitConfig:
     trail_sl_after_tp1: bool
     hard_exit_red_candle_below_vwap: bool
     hard_squareoff_time: time  # 15:00 IST in production
+    # Method 3 fields. ``sl_method`` defaults to 1 so Phase 7 and existing
+    # callers building an ExitConfig keep working without changes.
+    sl_method: int = 1
+    sma_trail: SmaTrailParams | None = None
 
 
 @dataclass(frozen=True)
@@ -172,6 +185,20 @@ def replay_exits(
     exit_reason: str | None = None
     outcome: str | None = None
 
+    # Method 3 (SMA-trail) state. Only used when sl_method == 3 AND a
+    # trail config was provided. Tracks the next scheduled trail tick
+    # (entry + activate_after_minutes, then every update_interval thereafter).
+    trail_cfg = exit_cfg.sma_trail if exit_cfg.sl_method == 3 else None
+    next_trail_due: datetime | None = None
+    if trail_cfg is not None:
+        activate_td = timedelta(minutes=int(trail_cfg.activate_after_minutes))
+        update_td = timedelta(minutes=int(trail_cfg.update_interval_minutes))
+        next_trail_due = pd.Timestamp(alert_timestamp).to_pydatetime() + activate_td
+    else:
+        activate_td = timedelta()
+        update_td = timedelta()
+    trail_reason_parts: list[str] = []
+
     for _, c in walk.iterrows():
         ts: pd.Timestamp = c["timestamp"]
         o = float(c["open"])
@@ -183,6 +210,33 @@ def replay_exits(
         # MFE/MAE tracked across the full walked window.
         mfe = max(mfe, h - entry)
         mae = max(mae, entry - low)
+
+        # ---------- Method 3 — SMA trail tick ----------
+        # Re-evaluate the SL when this candle's close-time has reached
+        # the next scheduled trail tick. The SL update uses the SMA of
+        # the last N closes including this candle. Early-entry fallback:
+        # if fewer than N candles exist, hold the prior SL.
+        if trail_cfg is not None and next_trail_due is not None:
+            ts_py = pd.Timestamp(ts).to_pydatetime()
+            while ts_py >= next_trail_due:
+                history = df[df["timestamp"] <= ts]["close"]
+                if len(history) >= trail_cfg.sma_period:
+                    sma_val: float | None = float(
+                        history.tail(trail_cfg.sma_period).mean()
+                    )
+                else:
+                    sma_val = None
+                new_sl = compute_sma_trail_sl(
+                    prev_sl=current_sl,
+                    sma_value=sma_val,
+                    follow_direction=trail_cfg.follow_direction,
+                )
+                if sma_val is not None and new_sl != current_sl:
+                    trail_reason_parts.append(
+                        f"trail@{ts.strftime('%H:%M')}={new_sl:.2f}"
+                    )
+                    current_sl = new_sl
+                next_trail_due = next_trail_due + update_td
 
         # ---------- Hard exit (red candle entirely below VWAP) ----------
         # Per spec sections 7/8: open, high, low, close ALL strictly
@@ -255,10 +309,16 @@ def replay_exits(
                 break
 
             if tp1_touched:
-                # Half exits at TP1. Move SL to breakeven if config ON.
+                # Half exits at TP1. Under Method 1/2, move SL to
+                # breakeven if config ON. Under Method 3, breakeven does
+                # NOT apply — the SMA trail continues to manage the SL
+                # on the second leg.
                 pnl_per_unit += 0.5 * (tp1 - entry)
                 tp1_hit = True
-                if exit_cfg.move_sl_to_breakeven_after_tp1:
+                if (
+                    trail_cfg is None
+                    and exit_cfg.move_sl_to_breakeven_after_tp1
+                ):
                     current_sl = float(entry)
                 # Continue walking with remaining 50%.
                 continue
@@ -284,11 +344,12 @@ def replay_exits(
                 outcome = PARTIAL
                 exit_price = current_sl
                 exit_time = ts.isoformat()
-                be_label = (
-                    "breakeven"
-                    if exit_cfg.move_sl_to_breakeven_after_tp1
-                    else "original SL"
-                )
+                if trail_cfg is not None:
+                    be_label = "trailed SL"
+                elif exit_cfg.move_sl_to_breakeven_after_tp1:
+                    be_label = "breakeven"
+                else:
+                    be_label = "original SL"
                 exit_reason = (
                     f"TP1 banked then second leg hit {be_label} "
                     f"@ {current_sl:.2f}"
@@ -325,11 +386,15 @@ def replay_exits(
 
     assert outcome is not None and exit_price is not None and exit_time is not None
 
+    final_reason = str(exit_reason or outcome)
+    if trail_reason_parts:
+        final_reason = f"{final_reason} [SMA-trail: {', '.join(trail_reason_parts)}]"
+
     return ReplayResult(
         auto_order_status=outcome,
         auto_exit_price=float(exit_price),
         auto_exit_time=str(exit_time),
-        auto_exit_reason=str(exit_reason or outcome),
+        auto_exit_reason=final_reason,
         auto_pnl_per_unit=float(pnl_per_unit),
         mfe=float(mfe),
         mae=float(mae),
@@ -339,7 +404,7 @@ def replay_exits(
 
 # ---------------------------------------------------------------------------
 # Convenience adapter: take a logged alert row + config + candles -> result.
-# Refuses (returns None) if trail_sl_after_tp1 is ON.
+# Simulates whichever stop_loss.method (1/2/3) is configured.
 # ---------------------------------------------------------------------------
 
 
@@ -357,24 +422,18 @@ def replay_alert(
         candles: full-session 5-min option candles for the alert's
             trading day. Same shape as ``BaseFeed.get_5min_candles``.
         app_config: an ``AppConfig`` (or any object exposing
-            ``.risk_reward.move_sl_to_breakeven_after_tp1`` etc.).
+            ``.risk_reward.move_sl_to_breakeven_after_tp1``,
+            ``.stop_loss.method``, ``.stop_loss.sma_trail``, etc.).
 
     Returns:
-        ``ReplayResult`` or ``None`` if the kernel could not produce a
-        verdict (insufficient candles, or the trailing-SL refusal).
+        ``ReplayResult`` or ``None`` only when the day's data is
+        insufficient (no post-alert candles). The kernel simulates the
+        active ``stop_loss.method`` — Method 1/2 with optional breakeven
+        after TP1, or Method 3 with the SMA trail. It no longer refuses
+        on ``risk_reward.trail_sl_after_tp1``: under Method 1/2 that
+        legacy flag is informational (behavior matches
+        ``move_sl_to_breakeven_after_tp1``); Method 3 owns trailing.
     """
-    if app_config.risk_reward.trail_sl_after_tp1:
-        alert_id = _format_alert_id(alert_row)
-        logger.warning(
-            f"outcome_replay: SKIP {alert_id} — config "
-            f"risk_reward.trail_sl_after_tp1 is ON but trailing logic "
-            "is not implemented in v1. Silent breakeven would "
-            "misrepresent a trailing strategy. Set this OFF or wait "
-            "for trailing support before auto outcome-tracking can "
-            "stamp this alert."
-        )
-        return None
-
     entry = float(alert_row["entry"])
     sl = float(alert_row["sl"])
     tp1 = float(alert_row["tp1"])
@@ -385,6 +444,24 @@ def replay_alert(
     hh, mm = (int(x) for x in app_config.time_rules.hard_squareoff_time.split(":"))
     hard_cut = time(hh, mm)
 
+    sl_method = int(getattr(app_config.stop_loss, "method", 1))
+    sma_trail_params: SmaTrailParams | None = None
+    if sl_method == 3:
+        sma_cfg = getattr(app_config.stop_loss, "sma_trail", None)
+        if sma_cfg is not None:
+            sma_trail_params = SmaTrailParams(
+                sma_period=int(getattr(sma_cfg, "sma_period", 19)),
+                activate_after_minutes=int(
+                    getattr(sma_cfg, "activate_after_minutes", 15)
+                ),
+                update_interval_minutes=int(
+                    getattr(sma_cfg, "update_interval_minutes", 15)
+                ),
+                follow_direction=str(
+                    getattr(sma_cfg, "follow_direction", "both")
+                ),
+            )
+
     exit_cfg = ExitConfig(
         move_sl_to_breakeven_after_tp1=bool(
             app_config.risk_reward.move_sl_to_breakeven_after_tp1
@@ -394,6 +471,8 @@ def replay_alert(
             app_config.stop_loss.hard_exit_red_candle_below_vwap
         ),
         hard_squareoff_time=hard_cut,
+        sl_method=sl_method,
+        sma_trail=sma_trail_params,
     )
 
     return replay_exits(
@@ -405,11 +484,3 @@ def replay_alert(
         exit_cfg=exit_cfg,
         alert_timestamp=alert_ts,
     )
-
-
-def _format_alert_id(alert_row: dict[str, Any] | pd.Series) -> str:
-    ts = alert_row.get("timestamp_ist", "?") if hasattr(alert_row, "get") else "?"
-    sym = alert_row.get("symbol", "?") if hasattr(alert_row, "get") else "?"
-    strike = alert_row.get("strike", "?") if hasattr(alert_row, "get") else "?"
-    opt = alert_row.get("option_type", "?") if hasattr(alert_row, "get") else "?"
-    return f"{ts}|{sym}|{strike}|{opt}"

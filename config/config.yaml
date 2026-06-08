@@ -83,17 +83,26 @@ strike:
 stop_loss:
   method: 1                            # 1 = point buffer (default, from strategy doc)
                                        # 2 = percentage-based (alternative)
+                                       # 3 = Method-1 initial SL then N-SMA trail (see sma_trail below)
   use_vix_multiplier: ON               # ON = multiply SL buffer by VIX regime factor
                                        # OFF = use base buffer only (riskier in high vol)
   hard_exit_red_candle_below_vwap: ON  # ON = exit immediately if full red candle below VWAP
                                        #     (overrides SL — emergency rule)
+  sma_trail:                           # Only used when method: 3
+    sma_period: 19                     # SMA period on the option close (default 19)
+    activate_after_minutes: 15         # First N min after entry uses the Method 1 SL,
+                                       # then convert to SMA trail
+    update_interval_minutes: 15        # Re-evaluate the trailing SL every N min
+                                       # (matches the real-broker modify cadence)
+    follow_direction: both             # both    = SL follows the SMA up AND down
+                                       # ratchet = SL only moves up (never loosens)
 
 
 # ---------- RISK / REWARD ----------
 # How much to risk per trade and where to exit profitably.
 risk_reward:
   target_risk_per_trade: 3000          # Target ₹ risk per trade (sweet spot)
-  risk_range_min: 2500                 # Acceptable lower bound (don't trade if below)
+  risk_range_min: 2500                 # Acceptable lower bound (don't trade if below)- I need to update this because this is wring interpretation as if risk is lower then still it should trade.
   risk_range_max: 3500                 # Acceptable upper bound (cap)
 
   # TP multipliers (R = entry price − SL price; TP = entry + R × multiplier)
@@ -103,7 +112,10 @@ risk_reward:
   expiry_day_tp2_r: 3.0                # Expiry day: final exit at 3.0R
 
   move_sl_to_breakeven_after_tp1: ON   # After TP1, move remaining SL to entry price
-  trail_sl_after_tp1: OFF              # Optional: trail SL to previous candle low
+                                       # (Method 1/2 only; Method 3 ignores this and keeps trailing.)
+  trail_sl_after_tp1: OFF              # LEGACY FLAG — informational only.
+                                       # For real trailing, set stop_loss.method: 3
+                                       # and configure stop_loss.sma_trail above.
 
 
 # ---------- POSITION SIZING ----------
@@ -119,7 +131,7 @@ position_sizing:
 # Kill switches that stop trading for the day. First trigger wins.
 circuit_breakers:
   daily_sl_count_breaker: ON           # ON = stop after N stop-losses
-  max_sl_per_day: 2                    # Stop the day after 2 SL hits
+  max_sl_per_day: 3                    # Stop the day after 2 SL hits
 
   daily_loss_breaker: ON               # ON = stop after ₹X cumulative loss
   max_loss_per_day_rupees: 6000        # Stop the day if total loss >= ₹6000
@@ -137,9 +149,9 @@ orders:
 # All times in IST (Asia/Kolkata).
 time_rules:
   normal_start_time: "09:45"           # No signals before 9:45 (opening noise)
-  gap_day_start_time: "10:15"          # On gap-up/down days, wait until 10:15
+  gap_day_start_time: "10:00"          # On gap-up/down days, wait until 10:00
   last_entry_time: "14:30"             # No new entries after 2:30 PM
-  soft_squareoff_time: "14:55"         # Start closing positions at 2:55 PM
+  soft_squareoff_time: "14:59"         # Start closing positions at 2:59 PM
   hard_squareoff_time: "15:00"         # Hard close (cannot be disabled in code)
 
   # Gap-day rule — VWAP distortion on opens >threshold% from prev close
@@ -147,7 +159,7 @@ time_rules:
                                        # When OFF: gap math still LOGGED for
                                        # visibility, but 9:45 start used.
                                        # When ON: gap >threshold triggers
-                                       # 10:15 start on that day.
+                                       # 10:00 start on that day.
   gap_day_threshold_pct: 1.0           # % move that qualifies as gap day
                                        # 1.0 = strategy doc default
                                        # 0.75 = moderate, 0.5 = conservative
@@ -246,8 +258,9 @@ dashboard:
   # subsequent 5-min option candles and stamps auto_* outcome columns
   # in Parquet + Excel. Manual columns (order_status, exit_price,
   # pnl_rupees, outcome_remark, user_notes) are NEVER overwritten.
-  # Refuses to stamp if risk_reward.trail_sl_after_tp1 is ON.
-  auto_outcome_tracking: OFF
+  # The kernel simulates whichever stop_loss.method (1/2/3) is active,
+  # including Method 3's 19-SMA trail.
+  auto_outcome_tracking: ON
 
   # Outcome categories user can mark in the Excel Order Place sheet
   outcome_categories:
@@ -289,32 +302,18 @@ paper_trading:
     - OTM2
     - OTM3
 
-  # ----- D2: selection caps -----
-  # Replayed in time order over the day's episode representatives,
-  # reusing §13/§14 risk semantics. selection_mode "conviction" ranks
-  # by Bot Remark "clean"/"strong" first, then time (look-ahead OK
-  # for the selection gate — it's a "should-I-have-taken-it" study).
-  selection_mode: time_order             # time_order (default) | conviction
+  # ----- D2: selection caps (replayed in chronological order; §13/§14) -----
   max_trades_per_day: 3
   circuit_breaker_sl_count: 2            # 2-SL day-stopper (§14)
   cooldown_minutes_after_sl: 15          # §13 — usually equal to re_entry above
   same_strike_kill_after_2_sl: ON        # §13 — same strike SL'd twice = dead
 
-  # ----- D3: outcome / R-multiples (defaults match risk_reward block) -----
-  # The kernel returns the status; these knobs control the paper-side
-  # R-mapping per §9. Kept independent so future expiry-tuning doesn't
-  # require touching the trigger-side risk_reward block.
-  tp1_R_normal: 1.5
-  tp2_R_normal: 2.5
-  tp1_R_expiry: 2.0
-  tp2_R_expiry: 3.0
-  tp1_then_be_R_normal: 0.75             # TP1 then breakeven → 0.5×1.5 normal
-  tp1_then_be_R_expiry: 1.0              # TP1 then breakeven → 0.5×2.0 expiry
-  sl_R: -1.0                             # Full SL = -1R by definition
-
   # ----- D4: persistence -----
   paper_trades_path: logs/paper_trades.jsonl
   paper_overrides_path: logs/paper_overrides.csv
+  # TP1/TP2 multipliers and SL method are inherited from the
+  # `risk_reward` + `stop_loss` blocks above — no paper-only knobs.
+  # Full SL is -1R by definition.
 
 
 # ---------- BOT BEHAVIOR ----------

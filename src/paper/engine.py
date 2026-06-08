@@ -214,7 +214,6 @@ def run_paper_engine(
         circuit_breaker_sl_count=pt_cfg.circuit_breaker_sl_count,
         cooldown_minutes_after_sl=pt_cfg.cooldown_minutes_after_sl,
         same_strike_kill_after_2_sl=pt_cfg.same_strike_kill_after_2_sl,
-        selection_mode=pt_cfg.selection_mode,
         outcome_resolver=_resolve_outcome,
     )
 

@@ -13,9 +13,11 @@ from src.risk.stop_loss import (
     NIFTY_EXPIRY_DAY_BUFFER,
     NIFTY_NORMAL_DAY_BUFFER,
     SLResult,
+    SmaTrailParams,
     check_hard_exit_red_candle,
     compute_sl_method1,
     compute_sl_method2,
+    compute_sma_trail_sl,
     get_base_buffer,
 )
 from src.risk.vix_regime import VixRegime, VixRegimeInfo, classify_vix
@@ -25,8 +27,10 @@ __all__ = [
     "VixRegimeInfo",
     "classify_vix",
     "SLResult",
+    "SmaTrailParams",
     "compute_sl_method1",
     "compute_sl_method2",
+    "compute_sma_trail_sl",
     "check_hard_exit_red_candle",
     "get_base_buffer",
     "NIFTY_NORMAL_DAY_BUFFER",

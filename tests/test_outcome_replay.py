@@ -252,25 +252,20 @@ def _alert_row() -> dict:
     }
 
 
-def test_replay_alert_refuses_when_trail_sl_after_tp1_is_on(caplog):
+def test_replay_alert_does_not_refuse_when_trail_sl_after_tp1_is_on():
+    """Phase-5B-A refusal removed: trail_sl_after_tp1: ON no longer
+    blocks the kernel. Under Method 1/2 it falls back to the configured
+    breakeven path; Method 3 owns trailing. Either way, a real outcome
+    is produced (no NO_DATA on the dashboard sync)."""
     rows = _session_prefix() + [
         _candle(10, 5, 150, 166, 149, 165),
         _candle(10, 10, 165, 176, 160, 174),
     ]
     df = pd.DataFrame(rows)
     cfg = _StubConfig(trail=True)
-    # loguru -> std logging propagation. Capture loguru output via a sink.
-    from loguru import logger
-
-    messages: list[str] = []
-    sink_id = logger.add(lambda m: messages.append(str(m)), level="WARNING")
-    try:
-        res = replay_alert(_alert_row(), df, cfg)
-    finally:
-        logger.remove(sink_id)
-    assert res is None
-    assert any("trail_sl_after_tp1" in m for m in messages)
-    assert any("not implemented in v1" in m for m in messages)
+    res = replay_alert(_alert_row(), df, cfg)
+    assert res is not None
+    assert res.auto_order_status == TP2_HIT
 
 
 def test_replay_alert_normal_path_returns_result():

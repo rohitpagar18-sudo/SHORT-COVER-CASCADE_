@@ -110,10 +110,25 @@ class InstrumentsConfig(_Base):
 # ---------- STOP LOSS ----------
 
 
+class SmaTrailConfig(_Base):
+    """SL Method 3 — 19-SMA trailing knobs.
+
+    Active only when ``stop_loss.method == 3``. Defaults match the
+    strategy-doc N=19 / 15-min activate / 15-min update cadence and
+    bidirectional follow.
+    """
+
+    sma_period: int = Field(default=19, gt=0)
+    activate_after_minutes: int = Field(default=15, ge=0)
+    update_interval_minutes: int = Field(default=15, gt=0)
+    follow_direction: Literal["both", "ratchet"] = Field(default="both")
+
+
 class StopLossConfig(_Base):
-    method: Literal[1, 2]
+    method: Literal[1, 2, 3]
     use_vix_multiplier: bool
     hard_exit_red_candle_below_vwap: bool
+    sma_trail: SmaTrailConfig = Field(default_factory=SmaTrailConfig)
 
     @field_validator("use_vix_multiplier", "hard_exit_red_candle_below_vwap", mode="before")
     @classmethod
@@ -474,18 +489,10 @@ class PaperTradingConfig(_Base):
     relation_priority: list[str] = Field(
         default_factory=lambda: ["ITM1", "ATM", "ITM2", "ITM3", "OTM1", "OTM2", "OTM3"]
     )
-    selection_mode: Literal["time_order", "conviction"] = Field(default="time_order")
     max_trades_per_day: int = Field(default=3, gt=0)
     circuit_breaker_sl_count: int = Field(default=2, gt=0)
     cooldown_minutes_after_sl: int = Field(default=15, ge=0)
     same_strike_kill_after_2_sl: bool = Field(default=True)
-    tp1_R_normal: float = Field(default=1.5, gt=0)
-    tp2_R_normal: float = Field(default=2.5, gt=0)
-    tp1_R_expiry: float = Field(default=2.0, gt=0)
-    tp2_R_expiry: float = Field(default=3.0, gt=0)
-    tp1_then_be_R_normal: float = Field(default=0.75)
-    tp1_then_be_R_expiry: float = Field(default=1.0)
-    sl_R: float = Field(default=-1.0)
     paper_trades_path: str = Field(default="logs/paper_trades.jsonl")
     paper_overrides_path: str = Field(default="logs/paper_overrides.csv")
 
@@ -497,11 +504,7 @@ class PaperTradingConfig(_Base):
         return _onoff_to_bool(v)
 
     @model_validator(mode="after")
-    def _sane_ladders(self) -> "PaperTradingConfig":
-        if self.tp2_R_normal <= self.tp1_R_normal:
-            raise ValueError("paper_trading.tp2_R_normal must be > tp1_R_normal")
-        if self.tp2_R_expiry <= self.tp1_R_expiry:
-            raise ValueError("paper_trading.tp2_R_expiry must be > tp1_R_expiry")
+    def _sane_lists(self) -> "PaperTradingConfig":
         if not self.episode_key:
             raise ValueError("paper_trading.episode_key cannot be empty")
         if not self.relation_priority:

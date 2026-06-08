@@ -201,6 +201,44 @@ SL% comes directly from VIX Regime Table (Section 5). Multiplier is embedded in 
 
 **HARD EXIT RULE: Same as Method 1\.**
 
+# **8A\. STOP LOSS — METHOD 3 (METHOD-1 INITIAL + N-SMA TRAIL)**
+
+> CHANGED 2026-06-08: added SL Method 3 (initial Method-1 SL + 19-SMA trail). The strategy now has three SL methods; the legacy "Optional: trail SL to previous candle low" note under §9 is superseded by this method.
+
+**Formula: initial SL \= Method 1; after activate\_after\_minutes (default 15), SL \= N-period SMA of the option close (default N \= 19), re-evaluated every update\_interval\_minutes (default 15).**
+
+Method 3 is the live trailing model. It keeps the §6/§7 initial SL calculation, fixes the TP1/TP2 levels at entry from `R = entry − initial_SL`, and then replaces the static SL with a slow-moving SMA-based trail so winners keep room and losers cap at the Method-1 floor.
+
+•         Entry SL: Method 1 buffer (NIFTY / BankNifty tables in §7) with VIX multiplier.
+
+•         R, TP1, TP2: fixed at entry from `R = entry − initial_SL` using the §9 multipliers (normal 1.5×/2.5×, expiry 2.0×/3.0×). **Targets do not move with the trail.**
+
+•         Trail activation: `activate_after_minutes` after entry (default 15). The first N min uses the Method-1 SL.
+
+•         Update cadence: `update_interval_minutes` (default 15, matches the real-broker trail-modify cadence). The SL re-evaluates at each tick — NOT on every candle.
+
+•         `follow_direction`:
+    – `both` (default): SL \= SMA. Trails the SMA up AND down.
+    – `ratchet`: SL \= max(prev\_SL, SMA). Never loosens (only ratchets up).
+
+•         **Continues post-TP1.** After TP1 banks the first 50%, the remaining 50% keeps trailing on the SMA. Method 3 **overrides** `move_sl_to_breakeven_after_tp1` — breakeven does not apply when method=3.
+
+•         **Early-entry fallback.** If fewer than N candles exist when the trail would activate (e.g. activate=15 min with N=19 on a slow start), HOLD the Method-1 SL until N candles are available; never trail on a partial SMA.
+
+•         **HARD EXIT RULE:** unchanged from Methods 1/2.
+
+**Example: NIFTY CE entry ₹150, Method-1 SL ₹140, R \= 10:**
+
+•         Through 10:15: SL \= 140 (Method-1).
+
+•         10:15 trail tick — last 19 closes SMA \= 144 → SL → 144 (both) or max(140, 144) \= 144 (ratchet).
+
+•         10:30 tick — SMA \= 151 → SL → 151 (both) or max(144, 151) \= 151 (ratchet).
+
+•         10:45 tick — SMA \= 148 → SL → 148 (both, loosens by 3) OR 151 (ratchet, holds).
+
+Targets remain TP1 \= 165 and TP2 \= 175 throughout. The remaining 50% after a TP1 hit keeps trailing on the same SMA.
+
 # **9\. PROFIT TARGETS**
 
 **Risk (R) \= Entry Price − SL Price**
@@ -217,11 +255,11 @@ SL% comes directly from VIX Regime Table (Section 5). Multiplier is embedded in 
 
 •         TP1 \= Entry \+ (R × 1.5) → exit 50%
 
-•         After TP1 → move SL of remaining 50% to BREAKEVEN
+•         After TP1 → move SL of remaining 50% to BREAKEVEN *(Method 1/2 only — Method 3 keeps trailing per §8A)*
 
 •         TP2 \= Entry \+ (R × 2.5) → exit remaining 50%
 
-*Optional: After TP1, trail SL to previous candle low if momentum is very strong.*
+> CHANGED 2026-06-08: legacy "Optional: trail SL to previous candle low" footnote removed. Trailing is now a dedicated SL method — see §8A (Method 3, 19-SMA trail).
 
 # **10\. POSITION SIZING**
 

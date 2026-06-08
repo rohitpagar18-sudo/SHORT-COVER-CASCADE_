@@ -2460,25 +2460,38 @@ not two.
 
 ### Exit model
 
-Follows Section 9 of `ShortCoverCascade_v3.1_FINAL.md` exactly. All
-numeric inputs come from config — nothing is hardcoded:
+> CHANGED 2026-06-08: the kernel now simulates whichever `stop_loss.method` (1/2/3) is configured. The previous "Refusal" rule on `risk_reward.trail_sl_after_tp1` is removed — `trail_sl_after_tp1` on Method 1/2 falls back to the breakeven path (legacy flag, no longer changes behavior); Method 3 owns the new SMA trail. Old refusal prose removed; see git history.
+
+Follows Sections 7/8/8A/9 of `ShortCoverCascade_v3.1_FINAL.md`
+exactly. All numeric inputs come from config — nothing is hardcoded:
 
 - `R = entry − sl`, both read from the logged `alerts.jsonl` row
   (single source of truth — config drift between alert and replay
   cannot change historical R).
 - Entry assumption: filled at the logged `entry` on the alert candle.
   Documented in `data/schema.md`.
+- The SL method honored by the walk is whichever
+  `app_config.stop_loss.method` is set when the kernel runs:
+  - **Method 1 / Method 2** — static SL from the logged row until
+    TP1. After TP1, move SL to entry if
+    `risk_reward.move_sl_to_breakeven_after_tp1` is ON; otherwise
+    hold the original SL.
+  - **Method 3 (19-SMA trail)** — initial SL is the logged Method-1
+    price. After `sma_trail.activate_after_minutes`, the SL is
+    re-evaluated every `sma_trail.update_interval_minutes` to the
+    N-SMA (`sma_trail.sma_period`, default 19) of the option close,
+    honoring `follow_direction` (`both` / `ratchet`). Trailing
+    **continues post-TP1** (breakeven does NOT apply under Method 3).
+    Early-entry fallback: hold the Method-1 SL until N candles exist;
+    never trail on a partial SMA.
 - Walk each subsequent 5-min option candle in time order:
   - **SL_HIT** if `low <= current_sl` and TP1 not yet hit.
   - **HARD_EXIT** if a complete red candle body forms entirely below
     the option's running session VWAP. Implementation reuses
     `src/indicators/vwap.compute_session_vwap` — no duplicate VWAP
     formula.
-  - **TP1** (1.5R normal / 2.0R expiry): on touch, exit 50%. If
-    `risk_reward.move_sl_to_breakeven_after_tp1` is ON, move the
-    remaining 50%'s SL to entry. (If
-    `risk_reward.trail_sl_after_tp1` is ON, replay refuses to stamp
-    and logs a loud warning — see "Refusal" below.)
+  - **TP1** (1.5R normal / 2.0R expiry): on touch, exit 50%.
+    Targets do NOT move with the Method-3 trail.
   - **TP2** (2.5R normal / 3.0R expiry): remaining 50% exits.
   - **3:00 PM hard deadline**: any still-open virtual position is
     closed at the last walked candle's close.
@@ -2515,16 +2528,16 @@ Append-only, never rename, never overwrite the manual columns.
 | `mae`                 | float  | Max adverse excursion = entry − min(low).      |
 | `intrabar_ambiguous`  | bool   | True if SL and TP touched in same candle.      |
 
-### Refusal rules (loud, not silent)
+### Skip conditions (data-only)
 
-- If `risk_reward.trail_sl_after_tp1` is ON, the replay refuses to
-  stamp. It logs `WARNING: outcome_replay skipping <alert_id> — config
-  risk_reward.trail_sl_after_tp1 is ON, trailing logic not implemented
-  in v1.` Rationale: silently modelling breakeven would be wrong; the
-  user has explicitly asked for trailing.
+> CHANGED 2026-06-08: replaces the "Refusal rules" paragraph. The kernel no longer refuses on `risk_reward.trail_sl_after_tp1`; it simulates the active `stop_loss.method` instead. Old prose removed.
+
 - If the day's candle data isn't complete yet (today before 15:00 IST,
   or broker returned fewer candles than expected), leave `auto_*`
   null. The next sync fills it.
+- If the replay cache for a given alert is empty (e.g. pre-feature
+  alert without a cached candle slice), skip and try again on the next
+  sync. Manual columns remain authoritative.
 
 ### Idempotency + manual precedence
 
@@ -2576,4 +2589,10 @@ remaining steps.
 - Single candle covers both SL and TP → `SL_HIT` + `intrabar_ambiguous`.
 - Hard-exit rule on red candle below VWAP → `HARD_EXIT`.
 - Idempotent rerun preserves manual cells AND prior auto_* values.
-- `trail_sl_after_tp1: ON` → no stamp, warning logged.
+- `trail_sl_after_tp1: ON` (Method 1) → real outcome stamped (no
+  refusal). Behavior matches the breakeven path.
+- `stop_loss.method: 3` → real outcome stamped with SMA-trail audit in
+  `auto_exit_reason`. See `tests/test_sl_method3.py` for the full
+  Method 3 pin: initial SL = Method 1, activation delay, per-tick
+  cadence, follow_direction (both/ratchet), early-entry fallback,
+  no-breakeven-post-TP1.

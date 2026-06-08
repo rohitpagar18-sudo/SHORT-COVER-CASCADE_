@@ -208,6 +208,30 @@ revisit without explicit user approval.
 - This prevents passing index spot value (₹24,000) by accident
 - Method 1 (point buffer) is default per strategy doc
 - Method 2 (percentage) is available via config.stop_loss.method = 2
+- Method 3 (Method-1 initial → 19-SMA trail of option close) is the
+  trailing variant: initial SL = Method 1, then after
+  `stop_loss.sma_trail.activate_after_minutes` (default 15) the SL
+  trails the N-SMA of the option close (default N=19), re-evaluated
+  every `update_interval_minutes` (default 15). `follow_direction`
+  is `both` (SL follows SMA up AND down) or `ratchet` (up-only).
+  Trailing continues through and after TP1 — Method 3 OVERRIDES
+  `move_sl_to_breakeven_after_tp1`; breakeven does not apply.
+  TP1/TP2 are fixed at entry from R; targets never move with the
+  trail. Early-entry fallback: hold the Method-1 SL until N candles
+  exist; never trail on a partial SMA. All knobs are config-driven —
+  see config/config.yaml `stop_loss.sma_trail` block.
+
+### 5B-A Outcome Kernel — simulates active SL method
+- The Phase 5B-A exit-replay kernel (src/dashboard/outcome_replay.py)
+  now simulates whichever `stop_loss.method` (1/2/3) is configured
+  when the dashboard sync runs. The legacy refusal on
+  `risk_reward.trail_sl_after_tp1` is REMOVED — alerts logged with
+  that flag (or with method=3) now produce a real outcome instead of
+  NO_DATA. Under Method 1/2 the legacy `trail_sl_after_tp1` flag is
+  informational only (behavior matches `move_sl_to_breakeven_after_tp1`);
+  Method 3 owns the actual SMA trail. The kernel is the single source
+  of truth for exits — Phase 5D's paper engine and Phase 7's
+  backtest harness both call it; neither runs an independent walk.
 
 ### Token Refresh Discipline
 - Kite: refresh DAILY before 9:15 AM via scripts/refresh_token_kite.py

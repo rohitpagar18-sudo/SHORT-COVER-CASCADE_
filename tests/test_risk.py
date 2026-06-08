@@ -477,15 +477,22 @@ def test_state_circuit_breaker_blocks_re_entry(
 
 
 def test_state_re_entry_blocked_by_daily_sl_cap(
-    tmp_path: Path, config: AppConfig
+    tmp_path: Path, config: AppConfig, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     m = _make_manager(tmp_path)
     m.load_state()
-    # max_sl_per_day = 2 (config). Hit two SLs on different strikes.
-    m.increment_sl_count("NIFTY", 24050, "CE")
-    m.increment_sl_count("NIFTY", 24100, "CE")
-    # Re-entry on a fresh strike — still blocked by daily cap.
-    ok, reason = m.can_re_enter(config, "NIFTY", 24200, "CE")
+    # Drive the SL count up to the configured cap on distinct strikes,
+    # then push the clock past the cooldown window so the daily-cap
+    # check is the rule that fires (not "in cooldown").
+    cap = int(config.circuit_breakers.max_sl_per_day)
+    for i in range(cap):
+        m.increment_sl_count("NIFTY", 24050 + i * 50, "CE")
+    base = datetime.now(IST).replace(microsecond=0)
+    monkeypatch.setattr(
+        StateManager, "_now_ist", lambda self: base + timedelta(minutes=20)
+    )
+    # Re-entry on a fresh strike — blocked by daily cap.
+    ok, reason = m.can_re_enter(config, "NIFTY", 24500, "CE")
     assert ok is False
     assert "Daily SL count" in reason
 

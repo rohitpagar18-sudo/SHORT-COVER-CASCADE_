@@ -32,7 +32,7 @@ over `logs/alerts.jsonl` + the existing 5B-A `data/replay_cache/`.
 | ID | Module / artifact | What it does |
 |----|-------------------|--------------|
 | D1 | `src/paper/episodes.py` | Derive `alert_id` at read-time; collapse re-fires into one Episode per `(symbol, option_type)` within `dedup_window_minutes`. ITM1 tie-break on same `candle_timestamp`. |
-| D2 | `src/paper/selector.py` | Deterministic TAKEN / SKIPPED gate. Caps: `max_trades_per_day`, 2-SL circuit breaker (§14), 15-min cooldown (§13), same-strike kill after 2 SLs (§13). Modes: `time_order` / `conviction`. |
+| D2 | `src/paper/selector.py` | Deterministic TAKEN / SKIPPED gate, always replayed in chronological order. Caps: `max_trades_per_day`, 2-SL circuit breaker (§14), 15-min cooldown (§13), same-strike kill after 2 SLs (§13). |
 | D3 | `src/paper/outcome.py` | Wraps the 5B-A kernel. Maps kernel status → paper outcome (`TP2 / TP1_BE / TP1_HIT / SL / HARD_EXIT / OPEN_SQOFF / NO_DATA`). Computes `realized_R`, `paper_pnl = pnl_per_unit × lots × lot_size`, `mfe_R`, `mae_R`, `max_drawdown_R`. Fidelity flag for legacy close-only rows. |
 | D4 | `src/paper/persistence.py` | `logs/paper_trades.jsonl` (auto, rewritten idempotently each run); `logs/paper_overrides.csv` (user-owned, created with headers if missing, **never overwritten**). `merge_overrides` — manual always wins. |
 | D5 | `src/dashboard/paper_sheets.py` | Three new sheets appended to the quarterly workbook: `Paper Trades`, `Paper Dashboard`, `Echoes (diagnostic, hidden)`. Per-row colors, data bars on `realized_R` / `paper_pnl`, KPI cards via Excel formulas, dropdowns on the manual columns. |
@@ -107,15 +107,22 @@ representative.
 
 ## Outcome mapping (§9 R-ladder)
 
+> CHANGED 2026-06-08: the R-ladder is sourced directly from `risk_reward`. There are no paper-only override knobs; full SL is −1R by definition.
+
 | Kernel status | Paper outcome | Normal-day R | Expiry-day R |
 |---------------|---------------|--------------|--------------|
 | `SL_HIT`      | `SL_HIT`      | −1R          | −1R          |
 | `HARD_EXIT`   | `HARD_EXIT`   | −1R          | −1R          |
-| `TP2_HIT`     | `TP2_HIT`     | +2.5R        | +3.0R        |
-| `PARTIAL` (TP1 banked, second leg SL/breakeven) | `TP1_BE` | +0.75R | +1.0R |
+| `TP2_HIT`     | `TP2_HIT`     | +2.5R (= `risk_reward.normal_day_tp2_r`) | +3.0R (= `risk_reward.expiry_day_tp2_r`) |
+| `PARTIAL` (TP1 banked, second leg SL/breakeven/trailed) | `TP1_BE` | +0.75R (= 0.5 × `risk_reward.normal_day_tp1_r`) | +1.0R (= 0.5 × `risk_reward.expiry_day_tp1_r`) |
 | `TP1_HIT` (TP1 banked, second leg EOD-flat ≥ SL) | `TP1_HIT` | actual `pnl/R` | actual `pnl/R` |
 | `EOD_FLAT`    | `OPEN_SQOFF`  | actual `pnl/R` | actual `pnl/R` |
 | (no candles)  | `NO_DATA`     | 0            | 0            |
+
+The SL method used by the kernel is whichever `stop_loss.method`
+(1/2/3) is configured live — there is no paper-only SL toggle. Under
+Method 3, the `PARTIAL` second-leg exit reflects the SMA-trailed SL,
+not breakeven.
 
 `paper_pnl = auto_pnl_per_unit × lots × lot_size`. Lot size is
 read from `config.instruments.{nifty,banknifty}_lot_size` — never
@@ -123,24 +130,18 @@ hardcoded.
 
 ## Config (paper_trading block)
 
+> CHANGED 2026-06-08: paper_trading is now just the episode block + 4 caps + paths. The `tp*_R_*` / `tp1_then_be_R_*` / `sl_R` / `selection_mode` knobs are removed. TP1/TP2 multipliers and the SL method are read straight from the `risk_reward` and `stop_loss` blocks — single source of truth. Selection is always chronological; conviction-mode was over-engineering and is gone. Full SL is −1R by definition. Old prose removed; see git history.
+
 ```yaml
 paper_trading:
   enabled: ON
   episode_key: [symbol, option_type]
   dedup_window_minutes: 20
   relation_priority: [ITM1, ATM, ITM2, ITM3, OTM1, OTM2, OTM3]
-  selection_mode: time_order
   max_trades_per_day: 3
   circuit_breaker_sl_count: 2
   cooldown_minutes_after_sl: 15
   same_strike_kill_after_2_sl: ON
-  tp1_R_normal: 1.5
-  tp2_R_normal: 2.5
-  tp1_R_expiry: 2.0
-  tp2_R_expiry: 3.0
-  tp1_then_be_R_normal: 0.75
-  tp1_then_be_R_expiry: 1.0
-  sl_R: -1.0
   paper_trades_path: logs/paper_trades.jsonl
   paper_overrides_path: logs/paper_overrides.csv
 ```

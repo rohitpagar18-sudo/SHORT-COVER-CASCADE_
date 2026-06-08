@@ -85,8 +85,8 @@ def test_tp2_outcome_mapping(base_alert, config):
     kernel = replay_alert(base_alert, candles, config)
     assert kernel.auto_order_status == TP2_HIT
     assert po.outcome == OUTCOME_TP2
-    # Normal day → 2.5R from config (default).
-    assert po.realized_R == pytest.approx(config.paper_trading.tp2_R_normal)
+    # Normal day → 2.5R inherited from risk_reward (paper override is None).
+    assert po.realized_R == pytest.approx(config.risk_reward.normal_day_tp2_r)
 
 
 def test_tp1_be_outcome_mapping(base_alert, config):
@@ -98,8 +98,8 @@ def test_tp1_be_outcome_mapping(base_alert, config):
     kernel = replay_alert(base_alert, candles, config)
     assert kernel.auto_order_status == PARTIAL
     assert po.outcome == OUTCOME_TP1_BE
-    # Normal day → 0.75R.
-    assert po.realized_R == pytest.approx(config.paper_trading.tp1_then_be_R_normal)
+    # Normal day → 0.5 × 1.5 = 0.75R inherited from risk_reward.
+    assert po.realized_R == pytest.approx(0.5 * config.risk_reward.normal_day_tp1_r)
 
 
 def test_eod_flat_is_open_sqoff(base_alert, config):
@@ -130,6 +130,107 @@ def test_no_candles_returns_no_data(base_alert, config):
     po = compute_paper_outcome(base_alert, candles=None, app_config=config)
     assert po.outcome == OUTCOME_NO_DATA
     assert po.realized_R == 0.0
+
+
+def test_paper_engine_uses_stop_loss_method_from_config(base_alert, config):
+    """The paper engine must respect ``stop_loss.method`` — flipping the
+    live config to Method 3 changes the kernel's exit behavior, and the
+    paper outcome reflects that change. We do not mock the engine; we
+    flip ``config.stop_loss.method`` and verify the kernel route used."""
+    # Build a candle frame where Method 1 produces SL_HIT (low<140) but
+    # Method 3 with a high SMA-trail would have an even higher SL.
+    rows = _prefix() + [
+        _candle(10, 5, 150, 152, 149, 151),
+        _candle(10, 10, 151, 153, 150, 152),
+        # 10:15 with n=3 → SMA on last 3 = (150,151,152)/3 = 151.
+        # Under Method 3 (both), SL → 151. low=152 > 151 → safe.
+        _candle(10, 15, 151, 153, 152, 152),
+        # 10:20: low=141.5 > 140 (Method-1 SL) but < 151 (Method-3 SL).
+        # → Method 1 path: survives this candle.
+        # → Method 3 path: SL_HIT @ 151.
+        _candle(10, 20, 152, 152, 141.5, 142),
+    ]
+    candles = pd.DataFrame(rows)
+
+    cfg1 = config.model_copy(
+        update={"stop_loss": config.stop_loss.model_copy(update={"method": 1})}
+    )
+    cfg3 = config.model_copy(
+        update={
+            "stop_loss": config.stop_loss.model_copy(
+                update={
+                    "method": 3,
+                    "sma_trail": config.stop_loss.sma_trail.model_copy(
+                        update={
+                            "sma_period": 3,
+                            "activate_after_minutes": 15,
+                            "update_interval_minutes": 15,
+                            "follow_direction": "both",
+                        }
+                    ),
+                }
+            )
+        }
+    )
+
+    po1 = compute_paper_outcome(base_alert, candles=candles, app_config=cfg1)
+    po3 = compute_paper_outcome(base_alert, candles=candles, app_config=cfg3)
+
+    # Method 1: SL untouched (low=141.5 > 140) — outcome should not be SL.
+    assert po1.outcome != OUTCOME_SL
+    # Method 3 with n=3: SMA of [151, 152, 152] at 10:15 ≈ 151.67. The
+    # 10:20 dip to 141.5 sits below that trailed SL → SL outcome,
+    # exit price equal to the trailed SL value.
+    assert po3.outcome == OUTCOME_SL
+    assert po3.exit_price == pytest.approx((151 + 152 + 152) / 3.0)
+
+
+def test_paper_engine_reads_tp_multipliers_from_risk_reward(
+    base_alert, config
+):
+    """The paper engine reads TP1/TP2 multipliers directly from
+    ``risk_reward`` — the single source of truth. A change to
+    ``risk_reward.normal_day_tp2_r`` must show up in ``realized_R``."""
+    candles = pd.DataFrame(_prefix() + [
+        _candle(10, 5, 150, 166, 149, 165),
+        _candle(10, 10, 165, 176, 160, 174),
+    ])
+    po_default = compute_paper_outcome(
+        base_alert, candles=candles, app_config=config
+    )
+    assert po_default.outcome == OUTCOME_TP2
+    assert po_default.realized_R == pytest.approx(
+        config.risk_reward.normal_day_tp2_r
+    )
+
+    bumped = config.model_copy(
+        update={
+            "risk_reward": config.risk_reward.model_copy(
+                update={"normal_day_tp2_r": 3.7}
+            )
+        }
+    )
+    po_bumped = compute_paper_outcome(
+        base_alert, candles=candles, app_config=bumped
+    )
+    assert po_bumped.outcome == OUTCOME_TP2
+    assert po_bumped.realized_R == pytest.approx(3.7)
+
+
+def test_paper_trading_block_has_no_r_override_fields(config):
+    """The paper_trading block carries only episode/cap/path knobs —
+    no paper-only R-multiplier overrides, no sl_R, no selection_mode."""
+    pt_cls = type(config.paper_trading)
+    forbidden = {
+        "tp1_R_normal", "tp2_R_normal", "tp1_R_expiry", "tp2_R_expiry",
+        "tp1_then_be_R_normal", "tp1_then_be_R_expiry",
+        "sl_R", "selection_mode",
+    }
+    present = set(pt_cls.model_fields.keys())
+    assert forbidden.isdisjoint(present), (
+        f"paper_trading still carries forbidden fields: "
+        f"{sorted(forbidden & present)}"
+    )
 
 
 def test_close_only_fidelity_detected(base_alert, config):

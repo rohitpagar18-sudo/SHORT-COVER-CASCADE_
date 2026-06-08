@@ -3,10 +3,17 @@
 REUSES the Phase 5B-A exit kernel (``src.dashboard.outcome_replay``).
 There is intentionally **no second candle walk in this module** —
 every candle-level decision (SL touch, TP touch, intrabar ambiguity,
-hard-exit-below-VWAP, EOD force-close) is delegated to that kernel.
-This module only computes the extra paper-side numbers the kernel
-does not emit: ``realized_R``, ``paper_pnl``, ``mfe_R``, ``mae_R``,
-``max_drawdown_R``, plus the ``fidelity`` flag.
+hard-exit-below-VWAP, EOD force-close, Method 3 SMA-trail) is
+delegated to that kernel. This module only computes the extra
+paper-side numbers the kernel does not emit: ``realized_R``,
+``paper_pnl``, ``mfe_R``, ``mae_R``, ``max_drawdown_R``, plus the
+``fidelity`` flag.
+
+The single source of truth for the SL method and the TP1/TP2
+R-ladder is the live config: ``stop_loss.method`` (1/2/3) plus the
+``risk_reward`` block. There are no paper-only R knobs. The full-SL
+case is ``-1R`` by definition. Whichever SL method is configured for
+the live alerts is the method the kernel simulates here.
 
 When Phase 8 (live orders) lands, the broker callback replaces the
 kernel call; the R / paper_pnl mapping below stays useful as a
@@ -22,9 +29,6 @@ Key design points:
     has close-only legacy rows — in that case we still call the
     kernel but flag the result so the user knows MFE/MAE are
     coarse-grained.
-  - ``trail_sl_after_tp1: ON`` is forwarded to the kernel which
-    refuses to stamp (same loud-warning path as 5B-A). We never
-    silently model trailing.
 """
 
 from __future__ import annotations
@@ -91,21 +95,21 @@ def _map_kernel_to_paper(kernel_status: str) -> str:
 # ---------------------------------------------------------------------------
 
 
+SL_R = -1.0  # full SL is -1R by definition
+
+
 def _r_multiple(
     paper_outcome: str,
     pnl_per_unit: float,
     risk_per_unit: float,
     is_expiry_day: bool,
-    *,
-    tp1_R_normal: float,
-    tp2_R_normal: float,
-    tp1_R_expiry: float,
-    tp2_R_expiry: float,
-    tp1_then_be_R_normal: float,
-    tp1_then_be_R_expiry: float,
-    sl_R: float,
+    app_config: Any,
 ) -> float:
     """Map the kernel's outcome onto §9's R ladder.
+
+    TP1 / TP2 multipliers are read straight from ``risk_reward`` — the
+    single source of truth. The TP1+breakeven case is the §9-defined
+    half-banked R (``0.5 × tp1_R``).
 
     The kernel already returns the exact ₹/unit P&L. We could just do
     ``pnl_per_unit / R`` for every case — and that is the fallback —
@@ -114,18 +118,26 @@ def _r_multiple(
     (1.5R / 2.5R, expiry 2.0R / 3.0R) instead of e.g. 1.4938R from
     floating-point drift.
     """
+    rr = app_config.risk_reward
+    if is_expiry_day:
+        tp1_r = float(rr.expiry_day_tp1_r)
+        tp2_r = float(rr.expiry_day_tp2_r)
+    else:
+        tp1_r = float(rr.normal_day_tp1_r)
+        tp2_r = float(rr.normal_day_tp2_r)
+
     if paper_outcome == OUTCOME_SL or paper_outcome == OUTCOME_HARD_EXIT:
-        return float(sl_R)
+        return SL_R
     if paper_outcome == OUTCOME_TP2:
-        return float(tp2_R_expiry if is_expiry_day else tp2_R_normal)
+        return tp2_r
     if paper_outcome == OUTCOME_TP1_BE:
-        return float(tp1_then_be_R_expiry if is_expiry_day else tp1_then_be_R_normal)
+        return 0.5 * tp1_r
     if paper_outcome == OUTCOME_TP1_HIT:
         # TP1 banked + second leg EOD-flat at ≥SL. Use the per-unit P&L
         # the kernel computed — captures the actual close, not a label.
         if risk_per_unit and risk_per_unit > 0:
             return float(pnl_per_unit) / float(risk_per_unit)
-        return float(tp1_R_expiry if is_expiry_day else tp1_R_normal) * 0.5
+        return 0.5 * tp1_r
     if paper_outcome == OUTCOME_OPEN_SQOFF:
         if risk_per_unit and risk_per_unit > 0:
             return float(pnl_per_unit) / float(risk_per_unit)
@@ -272,8 +284,9 @@ def compute_paper_outcome(
         result = None
 
     if result is None:
-        # Refusal (trail_sl_after_tp1 ON) or insufficient candles.
-        reason = "kernel refused (trail_sl_after_tp1 ON or insufficient candles)"
+        # Insufficient post-alert candles. (The kernel no longer refuses
+        # on trail_sl_after_tp1 / Method 3 — see PHASE_5B.md.)
+        reason = "insufficient post-alert candles for replay"
         return PaperOutcome(
             alert_id=alert_id,
             outcome=OUTCOME_NO_DATA,
@@ -297,19 +310,12 @@ def compute_paper_outcome(
     risk_per_unit = abs(entry - sl)
     paper_outcome = _map_kernel_to_paper(result.auto_order_status)
 
-    pt = app_config.paper_trading
     realized_R = _r_multiple(
         paper_outcome,
         result.auto_pnl_per_unit,
         risk_per_unit,
         bool(is_expiry_day),
-        tp1_R_normal=pt.tp1_R_normal,
-        tp2_R_normal=pt.tp2_R_normal,
-        tp1_R_expiry=pt.tp1_R_expiry,
-        tp2_R_expiry=pt.tp2_R_expiry,
-        tp1_then_be_R_normal=pt.tp1_then_be_R_normal,
-        tp1_then_be_R_expiry=pt.tp1_then_be_R_expiry,
-        sl_R=pt.sl_R,
+        app_config,
     )
 
     paper_pnl_per_unit = float(result.auto_pnl_per_unit)

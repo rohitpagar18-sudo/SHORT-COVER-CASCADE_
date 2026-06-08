@@ -115,10 +115,14 @@ strike:
 stop_loss:
   method: 1                            # 1 = point buffer (default, from strategy doc)
                                        # 2 = percentage-based (alternative)
-  use_vix_multiplier: ON               # ON = multiply SL buffer by VIX regime factor
-                                       # OFF = use base buffer only (riskier in high vol)
-  hard_exit_red_candle_below_vwap: ON  # ON = exit immediately if full red candle below VWAP
-                                       #     (overrides SL — emergency rule)
+                                       # 3 = Method-1 initial then N-SMA trail (see §8A)
+  use_vix_multiplier: ON
+  hard_exit_red_candle_below_vwap: ON
+  sma_trail:                           # Only used when method: 3
+    sma_period: 19                     # SMA period on the option close
+    activate_after_minutes: 15         # First 15 min uses Method 1 SL
+    update_interval_minutes: 15        # Re-evaluate SL every 15 min
+    follow_direction: both             # both | ratchet
 
 
 # ---------- RISK / REWARD ----------
@@ -134,8 +138,9 @@ risk_reward:
   expiry_day_tp1_r: 2.0                # Expiry day: first exit at 2.0R (bigger targets)
   expiry_day_tp2_r: 3.0                # Expiry day: final exit at 3.0R
   
-  move_sl_to_breakeven_after_tp1: ON   # After TP1, move remaining SL to entry price
-  trail_sl_after_tp1: OFF              # Optional: trail SL to previous candle low
+  move_sl_to_breakeven_after_tp1: ON   # After TP1, move remaining SL to entry price (Method 1/2 only)
+  trail_sl_after_tp1: OFF              # LEGACY flag — informational only. For real trailing
+                                       # use stop_loss.method: 3 + stop_loss.sma_trail above.
 
 
 # ---------- POSITION SIZING ----------
@@ -338,7 +343,14 @@ ON/OFF lives in config; the actual numbers don't.)
 --- TASK 2: Create src/risk/stop_loss.py ---
 =========================================================
 
-Two SL methods from strategy doc Section 6 & 7.
+> CHANGED 2026-06-08: this module now ships THREE SL methods —
+> Method 1 (point buffer), Method 2 (percentage), and Method 3
+> (Method-1 initial → N-SMA trail of the option close). Method 3 is
+> implemented by the pure helper `compute_sma_trail_sl()` plus the
+> kernel walk in `src/dashboard/outcome_replay.py`. The
+> strategy-doc reference is now §§6 + 7 + 8A.
+
+SL methods from strategy doc Sections 6, 7, and 8A.
 
 from dataclasses import dataclass
 

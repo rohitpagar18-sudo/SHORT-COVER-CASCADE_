@@ -1,6 +1,7 @@
-"""Stop loss calculators — Method 1 (point buffer) and Method 2 (percentage).
+"""Stop loss calculators — Method 1 (point buffer), Method 2 (percentage),
+and Method 3 (Method-1 initial → N-SMA trail of the option close).
 
-Source-of-truth: strategy doc v3.1 FINAL Sections 6 and 7.
+Source-of-truth: strategy doc v3.1 FINAL Sections 6, 7, and 8.
 
 All functions are PURE: take primitives + ``VixRegimeInfo``, return an
 ``SLResult`` dataclass. No I/O, no broker calls.
@@ -184,6 +185,52 @@ def compute_sl_method2(
         final_buffer_or_pct=sl_pct,
         reason=reason,
     )
+
+
+# ---------------------------------------------------------------------------
+# Method 3 — SMA trailing helper (Phase 4 SL addendum)
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class SmaTrailParams:
+    """Knobs for the SL Method 3 trail. Lifted 1:1 from
+    ``AppConfig.stop_loss.sma_trail``.
+    """
+
+    sma_period: int            # N closes (default 19)
+    activate_after_minutes: int  # first N min after entry uses the static SL
+    update_interval_minutes: int  # re-evaluate cadence after activation
+    follow_direction: str       # "both" | "ratchet"
+
+
+def compute_sma_trail_sl(
+    *,
+    prev_sl: float,
+    sma_value: float | None,
+    follow_direction: str,
+) -> float:
+    """One-shot SL update during a Method 3 trail tick.
+
+    Args:
+        prev_sl: the SL currently in effect.
+        sma_value: SMA of the last N option closes, or ``None`` when the
+            early-entry fallback applies (fewer than N candles available).
+        follow_direction: ``"both"`` (SL = SMA, follows the SMA up AND
+            down) or ``"ratchet"`` (SL = ``max(prev_sl, sma)``, never
+            loosens).
+
+    Returns:
+        The new SL price. When ``sma_value is None`` the previous SL is
+        returned unchanged — Method 3's early-entry fallback (hold the
+        Method-1 SL until N candles exist).
+    """
+    if sma_value is None:
+        return float(prev_sl)
+    direction = (follow_direction or "both").strip().lower()
+    if direction == "ratchet":
+        return float(max(prev_sl, sma_value))
+    return float(sma_value)
 
 
 def check_hard_exit_red_candle(

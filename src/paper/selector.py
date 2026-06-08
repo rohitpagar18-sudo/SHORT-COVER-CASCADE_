@@ -80,25 +80,6 @@ def _strike_key(rep: pd.Series) -> tuple:
     )
 
 
-def _conviction_score(rep: pd.Series) -> int:
-    """Higher score = preferred in ``selection_mode == "conviction"``.
-
-    Looks at ``bot_tags`` / ``bot_remark`` for the strategy's "clean"
-    and "strong" signal markers. This is a light heuristic — the
-    selector remains deterministic.
-    """
-    score = 0
-    tags = str(rep.get("bot_tags", "") or "").lower()
-    remark = str(rep.get("bot_remark", "") or "").lower()
-    if "strong" in tags or "strong" in remark:
-        score += 2
-    if "clean" in tags or "clean" in remark:
-        score += 1
-    if "fresh_breakout" in tags:
-        score += 1
-    return score
-
-
 def _date_of(ts: datetime) -> str:
     return ts.date().isoformat()
 
@@ -115,10 +96,9 @@ def select_paper_trades(
     circuit_breaker_sl_count: int,
     cooldown_minutes_after_sl: int,
     same_strike_kill_after_2_sl: bool,
-    selection_mode: str = "time_order",
     outcome_resolver: Callable[[pd.Series], str | None] | None = None,
 ) -> list[SelectionResult]:
-    """Replay caps in order over the representatives and emit decisions.
+    """Replay caps in chronological order and emit decisions.
 
     Args:
         reps: episode-representative rows (one paper-trade candidate
@@ -131,11 +111,6 @@ def select_paper_trades(
         cooldown_minutes_after_sl: §13 cooldown window after any SL.
         same_strike_kill_after_2_sl: §13 — once a strike has two SLs
             on the day, it is dead for the rest of the day.
-        selection_mode: ``"time_order"`` (default — replay exactly in
-            chronological order, no look-ahead) or ``"conviction"``
-            (rank within each day by conviction score first, then time
-            — light look-ahead acceptable for the "should-I-have-taken
-            -it" study).
         outcome_resolver: callable that returns the kernel's
             ``auto_order_status`` for a TAKEN candidate. ``None``
             means "outcomes unknown" — the selector treats every
@@ -155,24 +130,7 @@ def select_paper_trades(
 
     rep_df = reps.copy().reset_index(drop=True)
     rep_df["_orig_idx"] = range(len(rep_df))
-
-    if selection_mode == "conviction":
-        rep_df["_score"] = rep_df.apply(_conviction_score, axis=1)
-        rep_df["_date"] = rep_df["candle_ts"].apply(_date_of)
-        # Within each day, rank by score DESC then by candle_ts ASC.
-        rep_df = rep_df.sort_values(
-            by=["_date", "_score", "candle_ts"],
-            ascending=[True, False, True],
-            kind="stable",
-        )
-    elif selection_mode == "time_order":
-        rep_df = rep_df.sort_values(
-            by=["candle_ts"], kind="stable"
-        )
-    else:
-        raise ValueError(
-            f"selector: unknown selection_mode {selection_mode!r}"
-        )
+    rep_df = rep_df.sort_values(by=["candle_ts"], kind="stable")
 
     cooldown = timedelta(minutes=int(cooldown_minutes_after_sl))
     day_states: dict[str, _DayState] = {}

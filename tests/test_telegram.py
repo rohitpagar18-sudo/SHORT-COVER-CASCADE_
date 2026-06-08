@@ -364,26 +364,27 @@ def _signal_dict_with_di(**overrides) -> dict:
 
 
 def test_c5_alert_line_combined_spot_and_option_di_ce_pass(telegram_env) -> None:
-    """The exact-report example: CE signal, ADX 24.1 ↑, Spot +DI>−DI ✓,
-    Opt +DI>−DI ✓ — combined line must appear in the formatted alert.
-    """
+    """Exact-report example: CE, ADX 24.1 ↑, ↳ sub-lines for Spot and Opt DI."""
     from src.alerts.telegram_bot import TelegramAlerter
     alerter = TelegramAlerter()
     msg = alerter._format_signal(_signal_dict_with_di())
-    assert "C0 ✓ C1 ✓ C2 ✓ C3 ✓ C4 ✓ | C5 ✓  ADX 24.1 ↑  |  Spot +DI>−DI ✓  Opt +DI>−DI ✓" in msg
+    assert "↳" in msg
+    assert "C5 ✓  ADX 24.1 ↑" in msg
+    assert "↳ Spot DI  +22.3 / −18.7  ✓ aligned" in msg
+    assert "↳ Opt  DI  +31.2 / −14.1  ✓ trending up" in msg
 
 
 def test_c5_alert_line_opt_di_misaligned_shows_cross(telegram_env) -> None:
-    """Same CE/Spot setup, but Option +DI < −DI → 'Opt +DI<−DI ✗'."""
+    """Same CE/Spot setup, but Option +DI < −DI → ✗ not trending sub-line."""
     from src.alerts.telegram_bot import TelegramAlerter
     alerter = TelegramAlerter()
     msg = alerter._format_signal(_signal_dict_with_di(
         option_di_plus=14.1, option_di_minus=31.2,
         option_di_aligned=False,
     ))
-    assert "Opt +DI<−DI ✗" in msg
+    assert "↳ Opt  DI  +14.1 / −31.2  ✗ not trending" in msg
     # Spot side unchanged — still aligned for CE.
-    assert "Spot +DI>−DI ✓" in msg
+    assert "↳ Spot DI  +22.3 / −18.7  ✓ aligned" in msg
 
 
 def test_c5_alert_line_opt_di_na_when_insufficient_candles(telegram_env) -> None:
@@ -394,10 +395,10 @@ def test_c5_alert_line_opt_di_na_when_insufficient_candles(telegram_env) -> None
         option_di_plus=None, option_di_minus=None,
         option_di_aligned=None,
     ))
-    assert "Opt N/A" in msg
+    assert "↳ Opt  DI  N/A" in msg
     # C5 + Spot still render with the available ADX data.
     assert "C5 ✓  ADX 24.1 ↑" in msg
-    assert "Spot +DI>−DI ✓" in msg
+    assert "↳ Spot DI  +22.3 / −18.7  ✓ aligned" in msg
 
 
 def test_c5_alert_line_pe_uses_minus_di_label(telegram_env) -> None:
@@ -408,7 +409,7 @@ def test_c5_alert_line_pe_uses_minus_di_label(telegram_env) -> None:
         option_type="PE",
         di_plus=18.7, di_minus=22.3,  # -DI > +DI -> aligned for PE
     ))
-    assert "Spot −DI>+DI ✓" in msg
+    assert "↳ Spot DI  +18.7 / −22.3  ✓ aligned" in msg
 
 
 def test_c5_alert_line_failing_c5_shows_cross_mark(telegram_env) -> None:
@@ -421,8 +422,8 @@ def test_c5_alert_line_failing_c5_shows_cross_mark(telegram_env) -> None:
         c5_passed=False,
     ))
     assert "C5 ❌  ADX 16.1 ↓" in msg
-    # CE but +DI < -DI → 'Spot +DI<−DI ✗'.
-    assert "Spot +DI<−DI ✗" in msg
+    # CE but +DI < −DI → not aligned sub-line.
+    assert "↳ Spot DI  +18.0 / −22.0  ✗ not aligned" in msg
 
 
 def test_c5_alert_line_absent_when_adx_inputs_missing(telegram_env) -> None:
@@ -439,5 +440,5 @@ def test_c5_alert_line_absent_when_adx_inputs_missing(telegram_env) -> None:
         c5_passed=None,
     ))
     assert "C0 ✓ C1 ✓ C2 ✓ C3 ✓ C4 ✓\n" in msg
-    # No "| C5" suffix.
-    assert "| C5" not in msg
+    # No C5 block at all.
+    assert "C5" not in msg

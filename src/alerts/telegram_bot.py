@@ -170,7 +170,7 @@ class TelegramAlerter:
         conditions_line = "C0 ✓ C1 ✓ C2 ✓ C3 ✓ C4 ✓"
         c5_line = self._format_c5_line(s)
         if c5_line:
-            conditions_line = f"{conditions_line} | {c5_line}"
+            conditions_line = f"{conditions_line}\n{c5_line}"
         return (
             "🚨 SHORT COVER CASCADE SIGNAL\n"
             "─────────────────────────────\n"
@@ -200,24 +200,20 @@ class TelegramAlerter:
 
     @staticmethod
     def _format_c5_line(s: dict) -> str:
-        """Render the combined C5 + Spot DI + Opt DI line for the Telegram alert.
+        """Render the C5 block for the Telegram alert (multi-line with ↳ sub-lines).
 
         Reads raw fields straight from the signal_record:
           adx, adx_prev, di_plus, di_minus, c5_passed,
           option_di_plus, option_di_minus, option_di_aligned,
           option_type ("CE" / "PE")
 
-        Format (per Phase 6.1 follow-up spec):
-          C5 ✓  ADX 24.1 ↑  |  Spot +DI>−DI ✓  Opt +DI>−DI ✓
-
-        Spot DI label uses CE/PE context (CE: +DI>−DI aligned;
-        PE: −DI>+DI aligned). Option DI label is direction-agnostic —
-        we are always BUYING the option and want premium trending up,
-        so it's always "+DI>−DI" (✓) or "+DI<−DI" (✗). Missing option
-        DI (insufficient candles or compute error) renders as "Opt N/A".
+        Format:
+          C5 ✓  ADX 24.1 ↑
+            ↳ Spot DI  +22.3 / −18.7  ✓ aligned
+            ↳ Opt  DI  +31.2 / −14.1  ✓ trending up
 
         Returns "" when ADX inputs are absent (c5_adx disabled or both
-        ADX values null) so the caller skips the C5 suffix entirely.
+        ADX values null) so the caller skips the C5 block entirely.
         """
         adx = s.get("adx")
         adx_prev = s.get("adx_prev")
@@ -228,35 +224,31 @@ class TelegramAlerter:
         c5_passed = s.get("c5_passed")
         c5_mark = "✓" if c5_passed else "❌"
 
-        # Spot DI side: CE wants +DI>−DI, PE wants −DI>+DI.
+        # Spot DI sub-line: CE wants +DI>−DI, PE wants −DI>+DI.
         opt_type = (s.get("option_type") or "").upper()
         di_plus = s.get("di_plus")
         di_minus = s.get("di_minus")
         if di_plus is None or di_minus is None:
-            spot_di = "Spot N/A"
-        elif opt_type == "PE":
-            if di_minus > di_plus:
-                spot_di = "Spot −DI>+DI ✓"
-            else:
-                spot_di = "Spot −DI<+DI ✗"
-        else:  # CE (default)
-            if di_plus > di_minus:
-                spot_di = "Spot +DI>−DI ✓"
-            else:
-                spot_di = "Spot +DI<−DI ✗"
+            spot_sub = "  ↳ Spot DI  N/A"
+        else:
+            if opt_type == "PE":
+                aligned = di_minus > di_plus
+            else:  # CE (default)
+                aligned = di_plus > di_minus
+            spot_label = "✓ aligned" if aligned else "✗ not aligned"
+            spot_sub = f"  ↳ Spot DI  +{di_plus:.1f} / −{di_minus:.1f}  {spot_label}"
 
-        # Option DI is direction-agnostic — always want +DI > −DI.
+        # Option DI sub-line: direction-agnostic, always want +DI > −DI.
         opt_di_plus = s.get("option_di_plus")
         opt_di_minus = s.get("option_di_minus")
         opt_aligned = s.get("option_di_aligned")
         if opt_di_plus is None or opt_di_minus is None or opt_aligned is None:
-            opt_di = "Opt N/A"
-        elif opt_aligned:
-            opt_di = "Opt +DI>−DI ✓"
+            opt_sub = "  ↳ Opt  DI  N/A"
         else:
-            opt_di = "Opt +DI<−DI ✗"
+            opt_label = "✓ trending up" if opt_aligned else "✗ not trending"
+            opt_sub = f"  ↳ Opt  DI  +{opt_di_plus:.1f} / −{opt_di_minus:.1f}  {opt_label}"
 
-        return f"C5 {c5_mark}  ADX {adx:.1f} {arrow}  |  {spot_di}  {opt_di}"
+        return f"C5 {c5_mark}  ADX {adx:.1f} {arrow}\n{spot_sub}\n{opt_sub}"
 
     def _format_eod(self, s: dict) -> str:
         # Session window line — present when the orchestrator populated

@@ -24,7 +24,7 @@ SEND_TIMEOUT_SECONDS = 10
 class TelegramAlerter:
     """Send formatted alerts to a single Telegram chat."""
 
-    def __init__(self) -> None:
+    def __init__(self, episode_window_minutes: int = 20) -> None:
         self.token = os.getenv("TELEGRAM_BOT_TOKEN")
         self.chat_id = os.getenv("TELEGRAM_CHAT_ID")
         if not self.token or not self.chat_id:
@@ -32,6 +32,10 @@ class TelegramAlerter:
                 "TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID missing from secrets.env"
             )
         self._url = f"{TELEGRAM_API_BASE}/bot{self.token}/sendMessage"
+        self._episode_window_minutes = episode_window_minutes
+        # key: (date_str, symbol, option_type)  value: {"first_time": datetime, "count": int}
+        # In-memory only — bot restart resets it, which is correct (next alert is MAIN).
+        self._episode: dict[tuple, dict] = {}
 
     # ----- public sending API -----
 
@@ -64,7 +68,29 @@ class TelegramAlerter:
         return self.send(self._format_startup(config_summary))
 
     def send_signal(self, signal_data: dict) -> bool:
-        return self.send(self._format_signal(signal_data))
+        key = (signal_data.get("date"), signal_data.get("symbol"), signal_data.get("option_type"))
+        now_ist = datetime.now(IST)
+        episode = self._episode.get(key)
+        if (
+            episode is None
+            or (now_ist - episode["first_time"]).total_seconds() / 60 >= self._episode_window_minutes
+        ):
+            self._episode[key] = {"first_time": now_ist, "count": 1}
+            alert_role, fire_number = "MAIN", 1
+            first_time_hhmm = now_ist.strftime("%H:%M")
+        else:
+            # Same directional episode — still within the dedup window.
+            # Edge case: if SL hits fast and cooldown expires before the window clears
+            # (e.g. SL at T+3, cooldown lifts at T+18, window ends at T+20), a fresh
+            # alert at T+19 shows as Follow-up. Accept this — no position tracking here.
+            episode["count"] += 1
+            fire_number = episode["count"]
+            alert_role = "FOLLOWUP"
+            first_time_hhmm = episode["first_time"].strftime("%H:%M")
+        return self.send(self._format_signal(
+            signal_data, alert_role=alert_role,
+            fire_number=fire_number, first_time_hhmm=first_time_hhmm,
+        ))
 
     def send_circuit_breaker(self, reason: str) -> bool:
         msg = (
@@ -158,21 +184,39 @@ class TelegramAlerter:
             f"  {verdict}"
         )
 
-    def _format_signal(self, s: dict) -> str:
-        # Phase 5.2: Insight line, populated only if the orchestrator
-        # generated a short remark. Old callers (tests) still work.
+    def _format_signal(
+        self,
+        s: dict,
+        *,
+        alert_role: str = "MAIN",
+        fire_number: int = 1,
+        first_time_hhmm: str = "",
+    ) -> str:
+        if alert_role == "FOLLOWUP":
+            return (
+                f"🔁 Follow-up #{fire_number} — {s['symbol']} {s['option_type']}\n"
+                "─────────────────────────────\n"
+                f"Strike: {s['strike']} | {s['relation']} | {s['time']}\n"
+                f"Entry: ₹{s['entry']:.2f} | SL: ₹{s['sl']:.2f} | "
+                f"TP1: ₹{s['tp1']:.2f} | TP2: ₹{s['tp2']:.2f}\n"
+                f"VIX: {s['vix']:.1f} ({s['vix_regime']}, {s['vix_multiplier']}×) | "
+                f"Day: {s['day_type']}\n"
+                f"Main alert: {first_time_hhmm} | Same directional move\n"
+                "─────────────────────────────\n"
+                "ALERT ONLY — no order placed"
+            )
+
+        # MAIN alert — full format, header line changed from generic to MAIN SIGNAL.
         insight = (s.get("telegram_short_remark") or "").strip()
         insight_line = f"\nInsight: {insight}\n" if insight else "\n"
         cheap_warning = (s.get("cheap_option_warning") or "").strip()
         cheap_line = f"{cheap_warning}\n" if cheap_warning else ""
-        # Phase 6.1: existing C0-C4 line, with an optional combined
-        # C5 + Spot DI + Opt DI suffix when ADX data is present.
         conditions_line = "C0 ✓ C1 ✓ C2 ✓ C3 ✓ C4 ✓"
         c5_line = self._format_c5_line(s)
         if c5_line:
             conditions_line = f"{conditions_line}\n{c5_line}"
         return (
-            "🚨 SHORT COVER CASCADE SIGNAL\n"
+            "🚨 MAIN SIGNAL\n"
             "─────────────────────────────\n"
             f"Instrument: {s['symbol']} {s['strike']} {s['option_type']}\n"
             f"Strike relation: {s['relation']}\n"

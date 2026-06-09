@@ -250,7 +250,7 @@ def test_format_signal_includes_all_required_fields(telegram_env) -> None:
             "risk_per_unit": 12.50, "lots": 3, "total_risk": 2437.50,
         }
     )
-    assert "SHORT COVER CASCADE SIGNAL" in msg
+    assert "MAIN SIGNAL" in msg
     assert "NIFTY 24050 CE" in msg
     assert "ENTRY: ₹152.50" in msg
     assert "SL: ₹140.00" in msg
@@ -442,3 +442,36 @@ def test_c5_alert_line_absent_when_adx_inputs_missing(telegram_env) -> None:
     assert "C0 ✓ C1 ✓ C2 ✓ C3 ✓ C4 ✓\n" in msg
     # No C5 block at all.
     assert "C5" not in msg
+
+
+# ---------------------------------------------------------------------------
+# Episode tracking — MAIN / Follow-up labeling
+# ---------------------------------------------------------------------------
+
+
+def test_send_signal_labels_followup_within_window(telegram_env) -> None:
+    """Second send_signal for same (date, symbol, option_type) within the
+    episode window must produce a Follow-up message, not another MAIN."""
+    from unittest.mock import patch
+    from src.alerts.telegram_bot import TelegramAlerter
+
+    alerter = TelegramAlerter(episode_window_minutes=20)
+    signal = {
+        "symbol": "NIFTY", "strike": 24050, "option_type": "CE",
+        "relation": "ATM", "expiry": "2026-06-02",
+        "date": "2026-05-28", "time": "09:30", "day_type": "Normal",
+        "vix": 14.2, "vix_regime": "Normal", "vix_multiplier": 1.0,
+        "spot": 24030.0, "spot_position": "Above VWAP ✓",
+        "lot_size": 65, "entry": 152.50, "sl": 140.00, "sl_method": 1,
+        "tp1": 171.25, "tp1_r": 1.5, "tp2": 183.75, "tp2_r": 2.5,
+        "risk_per_unit": 12.50, "lots": 3, "total_risk": 2437.50,
+    }
+    captured: list[str] = []
+    with patch.object(alerter, "send", side_effect=lambda m: captured.append(m) or True):
+        alerter.send_signal(signal)
+        alerter.send_signal(signal)
+
+    assert len(captured) == 2
+    assert "MAIN SIGNAL" in captured[0]
+    assert "Follow-up" in captured[1]
+    assert "Follow-up #2" in captured[1]

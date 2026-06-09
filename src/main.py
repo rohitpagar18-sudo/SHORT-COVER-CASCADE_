@@ -230,7 +230,9 @@ class Orchestrator:
                 )
 
         # 6. Initialize alerters and state.
-        self.telegram = TelegramAlerter()
+        self.telegram = TelegramAlerter(
+            episode_window_minutes=self.config.paper_trading.dedup_window_minutes
+        )
         self.signal_logger = SignalLogger()
         self.state = StateManager()
         self.state.load_state()

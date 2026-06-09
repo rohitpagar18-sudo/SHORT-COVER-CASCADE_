@@ -182,6 +182,12 @@ def build_paper_trades_sheet(
         return 0
 
     df = paper_trades_df.copy()
+    # Only show trades we actually took — SKIPPED rows are not paper trades.
+    if "decision" in df.columns:
+        df = df[df["decision"].str.upper() == "TAKEN"].copy()
+    if df.empty:
+        _set_paper_headers(ws, ["(no TAKEN trades yet)"], row=header_row)
+        return 0
     for col in PAPER_TRADE_COLUMNS:
         if col not in df.columns:
             df[col] = None

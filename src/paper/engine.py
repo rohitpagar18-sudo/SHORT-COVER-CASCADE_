@@ -217,18 +217,15 @@ def run_paper_engine(
         outcome_resolver=_resolve_outcome,
     )
 
-    # Compute outcomes for SKIPPED reps too — the dashboard shows the
-    # what-would-have-happened column for context.
+    # SKIPPED reps: record the row but don't fetch candles — no API calls
+    # for trades we never took, and they're filtered out of the sheet anyway.
     for _, rep in reps.iterrows():
         aid = str(rep["alert_id"])
         if aid in outcomes_taken:
             continue
-        candles = (
-            resolve_candles(rep, source=candle_source) if candle_source else None
-        )
         outcomes_taken[aid] = compute_paper_outcome(
             rep,
-            candles=candles,
+            candles=None,
             app_config=app_config,
             is_expiry_day=_is_expiry_day(rep),
         )

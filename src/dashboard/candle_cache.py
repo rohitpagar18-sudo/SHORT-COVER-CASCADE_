@@ -182,17 +182,29 @@ def get_or_fetch_candles(
     if chain is None or chain.empty:
         return None
 
-    key_col = "ce_instrument_key" if option_type.upper() == "CE" else "pe_instrument_key"
-    if key_col not in chain.columns or "strike" not in chain.columns:
+    # Both feeds return one row per option with instrument_type (CE/PE).
+    # Upstox key column: "instrument_key"; Kite key column: "instrument_token".
+    if "instrument_type" not in chain.columns or "strike" not in chain.columns:
         logger.warning(
             f"candle_cache: chain for {symbol}/{expiry} missing "
-            f"'{key_col}' or 'strike' column"
+            f"'instrument_type' or 'strike' column (got: {list(chain.columns)})"
         )
         return None
-    row = chain[chain["strike"] == int(strike)]
+    mask = (chain["instrument_type"].str.upper() == option_type.upper()) & (
+        chain["strike"] == float(strike)
+    )
+    row = chain[mask]
     if row.empty:
         return None
-    instrument_key = row.iloc[0][key_col]
+    if "instrument_key" in chain.columns:
+        instrument_key = str(row.iloc[0]["instrument_key"])
+    elif "instrument_token" in chain.columns:
+        instrument_key = str(row.iloc[0]["instrument_token"])
+    else:
+        logger.warning(
+            f"candle_cache: chain for {symbol}/{expiry} has no instrument key column"
+        )
+        return None
 
     try:
         # ~80 candles covers a full 09:15-15:30 session; ask for 200 to

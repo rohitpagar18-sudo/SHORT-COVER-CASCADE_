@@ -115,22 +115,42 @@ def _outcome_chip(outcome: str | None, decision: str | None) -> str:
 
 
 PAPER_TRADE_COLUMNS = [
-    # Alert detail
+    # Primary trade detail — shown first for quick review
     "date", "candle_timestamp", "symbol", "strike", "relation",
     "option_type", "expiry", "entry", "sl", "tp1", "tp2", "lots",
-    "lot_size", "is_expiry_day",
-    # Auto decision
-    "decision", "decision_reason", "slot",
-    # Manual override
+    "lot_size",
+    # Outcome — what happened
+    "paper_pnl", "outcome", "result_chip", "exit_price",
+    "decision", "is_expiry_day",
+    # Decision detail
+    "decision_reason", "slot",
+    # Manual override columns
     "manual_decision", "manual_reason", "manual_outcome",
     "manual_exit", "user_notes",
-    # Auto outcome
-    "outcome", "result_chip", "exit_price", "exit_time",
-    "realized_R", "paper_pnl", "mfe", "mae", "mfe_R", "mae_R",
+    # Detailed metrics (back)
+    "exit_time", "realized_R", "mfe", "mae", "mfe_R", "mae_R",
     "max_drawdown_R", "intrabar_ambiguous", "fidelity", "fidelity_note",
-    # Identity
+    # Identity / diagnostics
     "alert_id", "episode_id", "bot_remark", "bot_tags", "triggered_caps",
 ]
+
+
+def _fmt_expiry(val: object) -> str:
+    """Format ISO date as '9th Jul 26' style."""
+    if val is None or (isinstance(val, float) and pd.isna(val)):
+        return ""
+    try:
+        from datetime import date as _date
+        s = str(val)[:10]
+        d = _date.fromisoformat(s)
+        day = d.day
+        if 11 <= day <= 13:
+            sfx = "th"
+        else:
+            sfx = {1: "st", 2: "nd", 3: "rd"}.get(day % 10, "th")
+        return f"{day}{sfx} {d.strftime('%b')} {d.strftime('%y')}"
+    except Exception:
+        return str(val)
 
 
 def build_paper_trades_sheet(
@@ -174,6 +194,8 @@ def build_paper_trades_sheet(
     )
 
     df = df[PAPER_TRADE_COLUMNS].copy()
+    if "expiry" in df.columns:
+        df["expiry"] = df["expiry"].apply(_fmt_expiry)
     _set_paper_headers(ws, df.columns, row=header_row)
 
     written = 0

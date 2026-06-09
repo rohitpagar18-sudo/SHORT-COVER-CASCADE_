@@ -2,13 +2,16 @@
 
 Two on-disk artifacts:
 
-  - ``logs/paper_trades.jsonl`` — auto-generated. One record per
-    episode representative (TAKEN or SKIPPED). Keyed by ``alert_id``;
-    the generator rewrites the file in full on every run, but ordering
-    + content is deterministic so the file stays idempotent.
+  - ``logs/paper_trades.jsonl`` — auto-generated. One record per TAKEN
+    episode representative. Keyed by ``alert_id``; the generator
+    rewrites the file in full on every run, but ordering + content is
+    deterministic so the file stays idempotent. SKIPPED reps are NOT
+    persisted — they are not paper trades.
 
-  - ``logs/paper_overrides.csv`` — **user-owned**. Manual overrides
-    keyed by ``alert_id`` with columns ``manual_decision``,
+  - ``logs/paper_overrides.csv`` — **user-owned manual override file.**
+    Use it to correct an auto-computed outcome when the candle replay
+    got it wrong (data gap, broker fill differed from cache, etc.).
+    Keyed by ``alert_id`` with columns ``manual_decision``,
     ``manual_reason``, ``manual_outcome``, ``manual_exit``,
     ``user_notes``. The generator NEVER overwrites or deletes this
     file; it only creates it (headers-only) when missing.

@@ -248,12 +248,14 @@ def run_paper_engine(
             )
 
     # --- D4: records + persistence ---
+    # Only TAKEN trades are persisted — SKIPPED reps stay in-memory for
+    # selector caps but are not paper trades and do not belong on disk.
     sel_by_aid = {s.alert_id: s for s in selection_results}
     records: list[PaperTradeRecord] = []
     for _, rep in reps.iterrows():
         aid = str(rep["alert_id"])
         sel = sel_by_aid.get(aid)
-        if sel is None:
+        if sel is None or sel.decision != DECISION_TAKEN:
             continue
         outcome = outcomes_taken[aid]
         records.append(_build_record(rep, sel, outcome))

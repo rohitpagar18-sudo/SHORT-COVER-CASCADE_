@@ -115,24 +115,32 @@ def _outcome_chip(outcome: str | None, decision: str | None) -> str:
 
 
 PAPER_TRADE_COLUMNS = [
-    # Primary trade detail — shown first for quick review
-    "date", "candle_timestamp", "symbol", "strike", "relation",
-    "option_type", "expiry", "entry", "sl", "tp1", "tp2", "lots",
-    "lot_size",
-    # Outcome — what happened
-    "paper_pnl", "outcome", "result_chip", "exit_price",
-    "decision", "is_expiry_day",
-    # Decision detail
+    # Trade identifier (when + what)
+    "date", "candle_timestamp", "symbol", "strike",
+    # Levels
+    "entry", "sl", "tp1", "tp2", "lots", "lot_size",
+    # Outcome — headline
+    "paper_pnl", "outcome", "result_chip",
+    # Position context (per spec — after result_chip)
+    "relation", "option_type", "expiry",
+    # Exit detail
+    "exit_price", "exit_time", "decision", "is_expiry_day",
     "decision_reason", "slot",
-    # Manual override columns
-    "manual_decision", "manual_reason", "manual_outcome",
-    "manual_exit", "user_notes",
-    # Detailed metrics (back)
-    "exit_time", "realized_R", "mfe", "mae", "mfe_R", "mae_R",
-    "max_drawdown_R", "intrabar_ambiguous", "fidelity", "fidelity_note",
+    # Detailed metrics
+    "realized_R", "mfe", "mae", "mfe_R", "mae_R",
+    "max_drawdown_R", "intrabar_ambiguous",
     # Identity / diagnostics
     "alert_id", "episode_id", "bot_remark", "bot_tags", "triggered_caps",
+    # Manual override columns — END (user fills these to override auto)
+    "manual_decision", "manual_reason", "manual_outcome",
+    "manual_exit", "user_notes",
 ]
+
+
+# Header display names — internal column key → user-friendly label
+COLUMN_HEADER_DISPLAY = {
+    "slot": "Trade #",
+}
 
 
 def _fmt_expiry(val: object) -> str:
@@ -151,6 +159,41 @@ def _fmt_expiry(val: object) -> str:
         return f"{day}{sfx} {d.strftime('%b')} {d.strftime('%y')}"
     except Exception:
         return str(val)
+
+
+def _fmt_exit_time(val: object) -> str:
+    """Format ISO timestamp as 'DD-Mon HH:MM' IST (e.g. '05-Jun 14:25')."""
+    if val is None or (isinstance(val, float) and pd.isna(val)):
+        return ""
+    try:
+        ts = pd.to_datetime(str(val))
+        if ts.tzinfo is None:
+            ts = ts.tz_localize(IST)
+        else:
+            ts = ts.tz_convert(IST)
+        return ts.strftime("%d-%b %H:%M")
+    except Exception:
+        return str(val)
+
+
+def _fmt_is_expiry_day(val: object) -> str:
+    if val is None or (isinstance(val, float) and pd.isna(val)):
+        return ""
+    if isinstance(val, bool):
+        return "Expiry Day" if val else "Normal Day"
+    s = str(val).strip().lower()
+    if s in ("true", "1", "yes"):
+        return "Expiry Day"
+    if s in ("false", "0", "no"):
+        return "Normal Day"
+    return str(val)
+
+
+def _truncate(val: object, n: int = 60) -> str:
+    if val is None or (isinstance(val, float) and pd.isna(val)):
+        return ""
+    s = str(val)
+    return s if len(s) <= n else s[: n - 1] + "…"
 
 
 def build_paper_trades_sheet(
@@ -202,7 +245,14 @@ def build_paper_trades_sheet(
     df = df[PAPER_TRADE_COLUMNS].copy()
     if "expiry" in df.columns:
         df["expiry"] = df["expiry"].apply(_fmt_expiry)
-    _set_paper_headers(ws, df.columns, row=header_row)
+    if "exit_time" in df.columns:
+        df["exit_time"] = df["exit_time"].apply(_fmt_exit_time)
+    if "is_expiry_day" in df.columns:
+        df["is_expiry_day"] = df["is_expiry_day"].apply(_fmt_is_expiry_day)
+    if "bot_remark" in df.columns:
+        df["bot_remark"] = df["bot_remark"].apply(_truncate)
+    headers = [COLUMN_HEADER_DISPLAY.get(c, c) for c in df.columns]
+    _set_paper_headers(ws, headers, row=header_row)
 
     written = 0
     for offset, (_, row) in enumerate(df.iterrows()):
@@ -338,91 +388,63 @@ def build_paper_dashboard_sheet(
     sheet_ref = f"'{paper_trades_sheet_name}'!"
 
     # Map columns to letters. Must match the column order in
-    # ``build_paper_trades_sheet`` exactly.
+    # ``build_paper_trades_sheet`` exactly. The Paper Trades sheet now
+    # contains ONLY TAKEN rows, so formulas no longer filter on decision.
     column_letter = {
         col: get_column_letter(i + 1)
         for i, col in enumerate(PAPER_TRADE_COLUMNS)
     }
-    dec_col = column_letter["decision"]
-    eff_outcome_col = column_letter["outcome"]
-    manual_outcome_col = column_letter["manual_outcome"]
+    date_col = column_letter["date"]
+    symbol_col = column_letter["symbol"]
+    outcome_col = column_letter["outcome"]
     realized_R_col = column_letter["realized_R"]
     paper_pnl_col = column_letter["paper_pnl"]
-    mfe_R_col = column_letter["mfe_R"]
-    mae_R_col = column_letter["mae_R"]
-    dd_R_col = column_letter["max_drawdown_R"]
-    entry_col = column_letter["entry"]
-    lots_col = column_letter["lots"]
-    lot_size_col = column_letter["lot_size"]
 
     def rng(col_letter: str) -> str:
         return f"{sheet_ref}{col_letter}{data_start}:{col_letter}{data_end}"
 
-    taken_count_f = f"=COUNTIF({rng(dec_col)},\"TAKEN\")"
-    skipped_count_f = f"=COUNTIF({rng(dec_col)},\"SKIPPED\")"
-    # Resolved = TAKEN AND outcome in {TP2,TP1_BE,TP1_HIT,SL_HIT,HARD_EXIT}
-    resolved_f = (
-        f"=SUMPRODUCT(({rng(dec_col)}=\"TAKEN\")*"
-        f"(({rng(eff_outcome_col)}=\"TP2_HIT\")+"
-        f"({rng(eff_outcome_col)}=\"TP1_BE\")+"
-        f"({rng(eff_outcome_col)}=\"TP1_HIT\")+"
-        f"({rng(eff_outcome_col)}=\"SL_HIT\")+"
-        f"({rng(eff_outcome_col)}=\"HARD_EXIT\")))"
-    )
-    wins_f = (
-        f"=SUMPRODUCT(({rng(dec_col)}=\"TAKEN\")*"
-        f"(({rng(eff_outcome_col)}=\"TP2_HIT\")+"
-        f"({rng(eff_outcome_col)}=\"TP1_BE\")+"
-        f"({rng(eff_outcome_col)}=\"TP1_HIT\")))"
-    )
-    losses_f = (
-        f"=SUMPRODUCT(({rng(dec_col)}=\"TAKEN\")*"
-        f"(({rng(eff_outcome_col)}=\"SL_HIT\")+"
-        f"({rng(eff_outcome_col)}=\"HARD_EXIT\")))"
-    )
-    # Headline P&L: TAKEN only.
-    headline_pnl_f = (
-        f"=SUMPRODUCT(({rng(dec_col)}=\"TAKEN\")*{rng(paper_pnl_col)})"
-    )
-    # All-alerts P&L diagnostic — include every row in the file
-    # (still TAKEN rows only inflates correctly because echoes are
-    # not in this sheet; this number is the "if I'd taken every
-    # representative" reading).
-    all_pnl_f = f"=SUM({rng(paper_pnl_col)})"
-    avg_R_f = (
-        f"=IFERROR(AVERAGEIFS({rng(realized_R_col)},{rng(dec_col)},\"TAKEN\"),0)"
-    )
-    max_dd_R_f = (
-        f"=IFERROR(MIN(IF({rng(dec_col)}=\"TAKEN\",{rng(dd_R_col)})),0)"
-    )
-    avg_mfe_R_f = (
-        f"=IFERROR(AVERAGEIFS({rng(mfe_R_col)},{rng(dec_col)},\"TAKEN\"),0)"
-    )
-    avg_mae_R_f = (
-        f"=IFERROR(AVERAGEIFS({rng(mae_R_col)},{rng(dec_col)},\"TAKEN\"),0)"
-    )
-    peak_outlay_f = (
-        f"=IFERROR(MAX(({rng(dec_col)}=\"TAKEN\")*"
-        f"({rng(entry_col)}*{rng(lots_col)}*{rng(lot_size_col)})),0)"
-    )
+    out_rng = rng(outcome_col)
+    pnl_rng = rng(paper_pnl_col)
+    sym_rng = rng(symbol_col)
+    date_rng = rng(date_col)
+    R_rng = rng(realized_R_col)
 
-    # Win rate = wins / resolved (taken+resolved).
+    # Resolved = every TAKEN trade whose outcome is not pending (NO_DATA).
+    total_taken_f = f"=COUNTA({date_rng})"
+    resolved_f = f"=COUNTA({out_rng})-COUNTIF({out_rng},\"NO_DATA\")"
+    wins_f = f"=COUNTIF({out_rng},\"TP2_HIT\")+COUNTIF({out_rng},\"TP1_HIT\")"
+    sl_count_f = f"=COUNTIF({out_rng},\"SL_HIT\")"
+    no_data_count_f = f"=COUNTIF({out_rng},\"NO_DATA\")"
+    headline_pnl_f = f"=SUM({pnl_rng})"
+    avg_R_f = (
+        f"=IFERROR(AVERAGEIFS({R_rng},{out_rng},\"<>NO_DATA\"),0)"
+    )
     win_rate_f = (
         f"=IFERROR(({wins_f.lstrip('=')})/({resolved_f.lstrip('=')}),0)"
     )
+    sl_rate_f = (
+        f"=IFERROR(({sl_count_f.lstrip('=')})/({resolved_f.lstrip('=')}),0)"
+    )
+    best_pnl_f = f"=IFERROR(MAX({pnl_rng}),0)"
+    worst_pnl_f = f"=IFERROR(MIN({pnl_rng}),0)"
+    best_detail_f = (
+        f"=IFERROR(INDEX({sym_rng},MATCH(MAX({pnl_rng}),{pnl_rng},0))"
+        f"&\" — \"&INDEX({date_rng},MATCH(MAX({pnl_rng}),{pnl_rng},0)),\"\")"
+    )
+    worst_detail_f = (
+        f"=IFERROR(INDEX({sym_rng},MATCH(MIN({pnl_rng}),{pnl_rng},0))"
+        f"&\" — \"&INDEX({date_rng},MATCH(MIN({pnl_rng}),{pnl_rng},0)),\"\")"
+    )
 
     kpi_rows = [
-        ("Taken count",                taken_count_f),
-        ("Skipped count",              skipped_count_f),
-        ("Resolved (taken & resolved)", resolved_f),
-        ("Wins (TP1 / TP2)",           wins_f),
-        ("Losses (SL / Hard)",         losses_f),
-        ("Win rate",                   win_rate_f),
-        ("Average R",                  avg_R_f),
-        ("Average MFE (R)",            avg_mfe_R_f),
-        ("Average MAE (R)",            avg_mae_R_f),
-        ("Max drawdown (R, taken)",    max_dd_R_f),
-        ("Peak premium outlay (₹)",    peak_outlay_f),
+        ("Total Trades Taken",   total_taken_f,   None),
+        ("Win Rate",             win_rate_f,      None),
+        ("Total Paper P&L (₹)",  headline_pnl_f,  None),
+        ("Avg R per Trade",      avg_R_f,         None),
+        ("Best Trade (₹)",       best_pnl_f,      best_detail_f),
+        ("Worst Trade (₹)",      worst_pnl_f,     worst_detail_f),
+        ("SL Hit Rate",          sl_rate_f,       None),
+        ("Pending (NO_DATA)",    no_data_count_f, None),
     ]
 
     # Headline P&L (TAKEN only) — large + bold, deep green.
@@ -439,23 +461,15 @@ def build_paper_dashboard_sheet(
     ws.merge_cells("A5:C5")
     ws.row_dimensions[5].height = 36
 
-    # All-alerts diagnostic — greyed, smaller.
-    ws.cell(row=6, column=1, value="all-alerts P&L (diagnostic, biased by re-fires)").font = Font(
-        italic=True, color="757575", size=10
-    )
-    ws.merge_cells("A6:C6")
-    diag = ws.cell(row=7, column=1, value=all_pnl_f)
-    diag.font = Font(size=12, color="757575")
-    diag.number_format = '₹#,##0.00'
-    ws.merge_cells("A7:C7")
-
     # KPI table.
-    row = 9
+    row = 7
     ws.cell(row=row, column=1, value="KPI").font = PAPER_HEADER_FONT
     ws.cell(row=row, column=1).fill = PAPER_HEADER_FILL
     ws.cell(row=row, column=2, value="Value").font = PAPER_HEADER_FONT
     ws.cell(row=row, column=2).fill = PAPER_HEADER_FILL
-    for i, (label, formula) in enumerate(kpi_rows, start=1):
+    ws.cell(row=row, column=3, value="Detail").font = PAPER_HEADER_FONT
+    ws.cell(row=row, column=3).fill = PAPER_HEADER_FILL
+    for i, (label, formula, detail) in enumerate(kpi_rows, start=1):
         ws.cell(row=row + i, column=1, value=label).font = PAPER_BODY_FONT
         cell = ws.cell(row=row + i, column=2, value=formula)
         cell.font = PAPER_BODY_FONT
@@ -463,8 +477,11 @@ def build_paper_dashboard_sheet(
             cell.number_format = "0.0%"
         elif "₹" in label:
             cell.number_format = '₹#,##0'
-        elif "(R" in label or "R)" in label or label == "Average R":
+        elif label == "Avg R per Trade":
             cell.number_format = "0.00"
+        if detail is not None:
+            d = ws.cell(row=row + i, column=3, value=detail)
+            d.font = PAPER_BODY_FONT
 
     # Outcome distribution table + collapse ratio.
     table_start = row + len(kpi_rows) + 3
@@ -485,7 +502,7 @@ def build_paper_dashboard_sheet(
             ws.cell(row=table_start + j, column=1).fill = fill
         ws.cell(
             row=table_start + j, column=2,
-            value=f'=COUNTIF({rng(eff_outcome_col)},"{outcome_label}")',
+            value=f'=COUNTIF({rng(outcome_col)},"{outcome_label}")',
         ).font = PAPER_BODY_FONT
 
     # Collapse-ratio block (so re-fire inflation is visible).

@@ -151,3 +151,49 @@ def test_engine_episode_collapse_eight_refires_to_one_record(tmp_path: Path, con
     # The 7 echoes are present in the annotated frame.
     assert (result.annotated_alerts["paper_role"] == "echo").sum() == 7
     assert (result.annotated_alerts["paper_role"] == "representative").sum() == 1
+
+
+def test_paper_trades_jsonl_contains_only_taken(tmp_path: Path, config):
+    """paper_trades.jsonl must NEVER contain SKIPPED rows.
+
+    Force SKIPPED rows by triggering the daily cap (default 3) with 4
+    distinct (symbol, option_type) episodes — the 4th must be skipped.
+    The on-disk JSONL must contain exactly 3 TAKEN records.
+    """
+    alerts_path = tmp_path / "alerts.jsonl"
+    paper_trades_path = tmp_path / "paper_trades.jsonl"
+
+    # 4 distinct episodes via different option_type / strikes,
+    # all on the same day. Default max_trades_per_day=3 → last one SKIPPED.
+    with alerts_path.open("w", encoding="utf-8") as f:
+        f.write(_line(_alert("2026-05-27T10:00:00+05:30", strike=24050, option_type="CE")))
+        f.write(_line(_alert("2026-05-27T10:30:00+05:30", strike=24100, option_type="PE")))
+        f.write(_line(_alert("2026-05-27T11:00:00+05:30", strike=24150, option_type="CE",
+                              relation="ITM1")))
+        f.write(_line(_alert("2026-05-27T11:30:00+05:30", strike=24200, option_type="PE",
+                              relation="ITM1")))
+
+    result = run_paper_engine(
+        alerts_path=str(alerts_path),
+        app_config=config,
+        candle_source=None,  # outcome=NO_DATA — selector still works
+        paper_trades_path=str(paper_trades_path),
+        overrides_path=str(tmp_path / "paper_overrides.csv"),
+        write=True,
+        compute_all_alerts=False,
+    )
+
+    # The 4th must be SKIPPED at the selection layer.
+    decisions = [s.decision for s in result.selection_results]
+    assert decisions.count("TAKEN") == 3
+    assert decisions.count("SKIPPED") == 1
+
+    # On-disk JSONL must contain ONLY TAKEN rows.
+    lines = [
+        json.loads(ln)
+        for ln in paper_trades_path.read_text(encoding="utf-8").splitlines()
+        if ln.strip()
+    ]
+    assert len(lines) == 3
+    for row in lines:
+        assert row["decision"] == "TAKEN", f"SKIPPED row leaked into JSONL: {row}"

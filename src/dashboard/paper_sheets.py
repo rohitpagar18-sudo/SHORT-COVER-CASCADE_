@@ -76,6 +76,11 @@ PAPER_SHEET_BANNER = (
     "First-alert-only."
 )
 
+# Row where the Paper Trades column headers live (data starts at +1).
+# Paired constants — update both if the help/banner block changes size.
+PAPER_TRADES_HEADER_ROW = 10
+PAPER_TRADES_DATA_START = PAPER_TRADES_HEADER_ROW + 1
+
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -218,7 +223,26 @@ def build_paper_trades_sheet(
     sub = ws.cell(row=2, column=1, value=PAPER_SHEET_BANNER)
     sub.font = PAPER_SUB_FONT
 
-    header_row = 4
+    # Quick help box — explains terms NOT shown in the sheet but still
+    # in the JSONL. Update PAPER_TRADES_HEADER_ROW below if rows change.
+    ws.merge_cells("A3:H3")
+    help_title = ws.cell(row=3, column=1, value="📖 Quick help")
+    help_title.font = Font(name="Calibri", bold=True, color="2E7D32", size=11)
+    help_lines = [
+        "• Trade #  →  trade number for the day (cap is 3 per config).",
+        "• result_chip  →  🟢 TP2 / TP1   🟡 TP1→BE   🔴 SL / Hard   ⏹ SqOff (3:00 PM)   · N/A (no data yet).",
+        "• intrabar_ambiguous (in JSONL, not shown)  →  same 5-min candle hit BOTH SL and TP.",
+        "    e.g. entry ₹100, SL ₹90, TP ₹110; candle low ₹85, high ₹115 → can't tell which side hit first from OHLC.",
+        "• fidelity (in JSONL, not shown)  →  'ohlc' is normal (full data). 'close_only' = legacy log, MFE/MAE less precise.",
+    ]
+    for i, line in enumerate(help_lines):
+        r = 4 + i
+        ws.merge_cells(f"A{r}:H{r}")
+        cell = ws.cell(row=r, column=1, value=line)
+        cell.font = Font(name="Calibri", italic=True, color="595959", size=10)
+
+    # Headers live at row 10 (1 title + 1 banner + 1 help-title + 5 help + 1 blank).
+    header_row = PAPER_TRADES_HEADER_ROW
 
     if paper_trades_df is None or paper_trades_df.empty:
         _set_paper_headers(ws, ["(no paper trades yet — run the bot)"], row=header_row)
@@ -381,9 +405,10 @@ def build_paper_dashboard_sheet(
         ws.cell(row=4, column=1, value="(no paper trades yet)").font = PAPER_SUB_FONT
         return
 
-    # Range references — Paper Trades data block is rows 5..(5+n-1).
+    # Range references — Paper Trades data block starts after the
+    # title + banner + help box. Single source of truth lives above.
     n = len(paper_trades_df)
-    data_start = 5
+    data_start = PAPER_TRADES_DATA_START
     data_end = data_start + n - 1
     sheet_ref = f"'{paper_trades_sheet_name}'!"
 

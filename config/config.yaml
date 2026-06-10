@@ -123,7 +123,7 @@ risk_reward:
 position_sizing:
   lot_cap_enabled: ON                  # ON = enforce hard caps below (recommended)
   nifty_max_lots: 5                    # Hard ceiling for NIFTY
-  banknifty_max_lots: 3                # Hard ceiling for BankNifty
+  banknifty_max_lots: 5                # Hard ceiling for BankNifty
   # If OFF: lots determined only by ₹3000 risk formula (risky for cheap premiums)
 
 
@@ -303,8 +303,8 @@ paper_trading:
     - OTM3
 
   # ----- D2: selection caps (replayed in chronological order; §13/§14) -----
-  max_trades_per_day: 3
-  circuit_breaker_sl_count: 2            # 2-SL day-stopper (§14)
+  max_trades_per_day: 5
+  circuit_breaker_sl_count: 5            # 2-SL day-stopper (§14)
   cooldown_minutes_after_sl: 15          # §13 — usually equal to re_entry above
   same_strike_kill_after_2_sl: ON        # §13 — same strike SL'd twice = dead
 

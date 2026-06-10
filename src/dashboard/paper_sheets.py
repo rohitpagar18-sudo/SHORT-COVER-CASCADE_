@@ -121,15 +121,15 @@ def _outcome_chip(outcome: str | None, decision: str | None) -> str:
 
 PAPER_TRADE_COLUMNS = [
     # Trade identifier (when + what)
-    "date", "candle_timestamp", "symbol", "strike",
+    "date", "candle_timestamp", "symbol", "strike", "option_type", "expiry",
     # Levels
     "entry", "sl", "tp1", "tp2", "lots", "lot_size",
-    # Outcome — headline
-    "paper_pnl", "outcome", "result_chip",
-    # Position context (per spec — after result_chip)
-    "relation", "option_type", "expiry",
+    # Exit + outcome — headline
+    "exit_price", "paper_pnl", "outcome", "result_chip",
+    # Position context
+    "relation",
     # Exit detail
-    "exit_price", "exit_time", "decision", "is_expiry_day",
+    "exit_time", "decision", "is_expiry_day",
     "decision_reason", "slot",
     # Detailed metrics
     "realized_R", "mfe", "mae", "mfe_R", "mae_R",

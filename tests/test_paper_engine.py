@@ -156,15 +156,22 @@ def test_engine_episode_collapse_eight_refires_to_one_record(tmp_path: Path, con
 def test_paper_trades_jsonl_contains_only_taken(tmp_path: Path, config):
     """paper_trades.jsonl must NEVER contain SKIPPED rows.
 
-    Force SKIPPED rows by triggering the daily cap (default 3) with 4
+    Force SKIPPED rows by triggering the daily cap (cap=3) with 4
     distinct (symbol, option_type) episodes — the 4th must be skipped.
     The on-disk JSONL must contain exactly 3 TAKEN records.
+
+    Uses a pinned cap of 3 regardless of config.yaml so this test is
+    immune to the user changing max_trades_per_day in the live config.
     """
     alerts_path = tmp_path / "alerts.jsonl"
     paper_trades_path = tmp_path / "paper_trades.jsonl"
 
+    # Pin max_trades_per_day=3 so this test never depends on config.yaml.
+    patched_pt = config.paper_trading.model_copy(update={"max_trades_per_day": 3})
+    pinned_config = config.model_copy(update={"paper_trading": patched_pt})
+
     # 4 distinct episodes via different option_type / strikes,
-    # all on the same day. Default max_trades_per_day=3 → last one SKIPPED.
+    # all on the same day. Cap=3 → last one SKIPPED.
     with alerts_path.open("w", encoding="utf-8") as f:
         f.write(_line(_alert("2026-05-27T10:00:00+05:30", strike=24050, option_type="CE")))
         f.write(_line(_alert("2026-05-27T10:30:00+05:30", strike=24100, option_type="PE")))
@@ -175,7 +182,7 @@ def test_paper_trades_jsonl_contains_only_taken(tmp_path: Path, config):
 
     result = run_paper_engine(
         alerts_path=str(alerts_path),
-        app_config=config,
+        app_config=pinned_config,
         candle_source=None,  # outcome=NO_DATA — selector still works
         paper_trades_path=str(paper_trades_path),
         overrides_path=str(tmp_path / "paper_overrides.csv"),

@@ -1,82 +1,107 @@
 @echo off
 REM ============================================================
 REM  Short Cover Cascade — Frontend launcher
-REM  - Independent of run.bat (the bot launcher).
-REM  - Ensures Python API deps are installed.
-REM  - Builds the React app once (if dist is missing).
-REM  - Launches uvicorn serving BOTH /api and the static SPA
-REM    on a single port (default 8000).
+REM  Uses goto-based flow (no nested if blocks) for CMD compat.
 REM ============================================================
-
 setlocal
 cd /d "%~dp0"
 
-REM ---- resolve project root (parent of this folder) ----
+REM ---- resolve project root (parent of frontend\) ----
 for %%I in ("%~dp0..") do set "PROJECT_ROOT=%%~fI"
 set "VENV_PY=%PROJECT_ROOT%\venv\Scripts\python.exe"
 
-if not exist "%VENV_PY%" (
-  echo [run_ui] ERROR: Python venv not found at %VENV_PY%
-  echo [run_ui] Run the bot's setup first (creates venv/), then retry.
-  exit /b 1
-)
+echo [run_ui] Project root: %PROJECT_ROOT%
+echo [run_ui] Python venv:  %VENV_PY%
+
+if not exist "%VENV_PY%" goto :no_venv
 
 REM ---- ensure API deps are installed ----
-echo [run_ui] Verifying Python API deps...
-"%VENV_PY%" -c "import fastapi, uvicorn, ruamel.yaml, pydantic" 2>nul
-if errorlevel 1 (
-  echo [run_ui] Installing FastAPI + Uvicorn + ruamel.yaml + Pydantic into venv...
-  "%VENV_PY%" -m pip install --quiet fastapi "uvicorn[standard]" "ruamel.yaml" pydantic
-  if errorlevel 1 (
-    echo [run_ui] pip install FAILED. Aborting.
-    exit /b 1
-  )
-)
+echo [run_ui] Checking Python API deps...
+"%VENV_PY%" -c "import fastapi, uvicorn, ruamel, pydantic" 2>nul
+if errorlevel 1 goto :install_py_deps
+goto :check_spa
 
-REM ---- build the SPA if dist is missing ----
-if not exist "%~dp0web\dist\index.html" (
-  echo [run_ui] frontend\web\dist\ missing — building SPA...
-  where npm >nul 2>&1
-  if errorlevel 1 (
-    echo.
-    echo [run_ui] ERROR: 'npm' not found on PATH.
-    echo [run_ui] Install Node.js LTS from https://nodejs.org and re-run.
-    echo [run_ui] Alternatively, for development run: cd frontend\web ^&^& npm install ^&^& npm run dev
-    echo [run_ui]   then run this script in another window to start the API on port 8000.
-    exit /b 1
-  )
-  pushd "%~dp0web"
-  if not exist "node_modules" (
-    echo [run_ui] Installing JS deps (first run, may take a minute)...
-    call npm install
-    if errorlevel 1 (
-      popd
-      echo [run_ui] npm install FAILED. Aborting.
-      exit /b 1
-    )
-  )
-  echo [run_ui] Building production bundle...
-  call npm run build
-  if errorlevel 1 (
-    popd
-    echo [run_ui] npm run build FAILED. Aborting.
-    exit /b 1
-  )
-  popd
-)
+:install_py_deps
+echo [run_ui] Installing FastAPI + Uvicorn + ruamel.yaml + Pydantic...
+"%VENV_PY%" -m pip install fastapi "uvicorn[standard]" "ruamel.yaml" pydantic
+if errorlevel 1 goto :pip_fail
 
-REM ---- launch the API + SPA on a single port ----
+:check_spa
+if exist "%~dp0web\dist\index.html" goto :launch
+
+REM ---- build the SPA (first run only) ----
+echo [run_ui] web\dist not found. Need to build the React app first.
+where npm >nul 2>nul
+if errorlevel 1 goto :no_npm
+
+cd "%~dp0web"
+
+if not exist "node_modules" goto :npm_install
+goto :npm_build
+
+:npm_install
+echo [run_ui] Running npm install (first run, takes 1-2 min)...
+call npm install
+if errorlevel 1 goto :npm_fail
+
+:npm_build
+echo [run_ui] Building production bundle...
+call npm run build
+if errorlevel 1 goto :build_fail
+cd "%~dp0"
+
+:launch
 set "SCC_UI_PORT=8000"
 if not "%~1"=="" set "SCC_UI_PORT=%~1"
 
 echo.
-echo [run_ui] Serving UI at http://localhost:%SCC_UI_PORT%/
-echo [run_ui] API root        http://localhost:%SCC_UI_PORT%/api/health
-echo [run_ui] Press Ctrl+C to stop.
+echo ============================================================
+echo  UI ready:  http://localhost:%SCC_UI_PORT%/
+echo  API:       http://localhost:%SCC_UI_PORT%/api/health
+echo  Press Ctrl+C to stop.
+echo ============================================================
 echo.
 
-pushd "%~dp0api"
+cd "%~dp0api"
 "%VENV_PY%" -m uvicorn app.main:app --host 127.0.0.1 --port %SCC_UI_PORT%
-popd
+goto :eof
 
-endlocal
+:no_venv
+echo.
+echo ERROR: venv not found at:
+echo   %VENV_PY%
+echo Run the bot setup first so venv\ exists, then retry.
+echo.
+pause
+exit /b 1
+
+:pip_fail
+echo.
+echo ERROR: pip install failed. Check internet connection and retry.
+echo.
+pause
+exit /b 1
+
+:no_npm
+echo.
+echo ERROR: npm not found on PATH.
+echo Install Node.js LTS from https://nodejs.org then re-run.
+echo.
+echo TIP: After installing Node, open a NEW Command Prompt and retry.
+echo.
+pause
+exit /b 1
+
+:npm_fail
+echo.
+echo ERROR: npm install failed.
+echo.
+pause
+exit /b 1
+
+:build_fail
+echo.
+echo ERROR: npm run build failed.
+echo.
+pause
+exit /b 1

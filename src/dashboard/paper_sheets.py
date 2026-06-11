@@ -123,13 +123,8 @@ PAPER_TRADE_COLUMNS = [
     # Trade identifier (when + what)
     "date", "candle_timestamp", "symbol", "strike", "option_type", "expiry",
     # Levels
-    "entry", "sl", "tp1", "tp2", "lots", "lot_size",
-    # Exit + outcome — headline
-    "exit_price", "paper_pnl", "outcome", "result_chip",
-    # Position context
-    "relation",
-    # Exit detail
-    "exit_time", "decision", "is_expiry_day",
+    "entry", "sl", "tp1", "tp2", "lots","exit_price", "paper_pnl", "outcome", "result_chip","is_expiry_day",
+    "relation","exit_time","decision","lot_size",
     "decision_reason", "slot",
     # Detailed metrics
     "realized_R", "mfe", "mae", "mfe_R", "mae_R",

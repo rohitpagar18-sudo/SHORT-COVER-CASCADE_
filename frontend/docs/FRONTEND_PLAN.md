@@ -16,7 +16,7 @@ config-write capability (clearly separated and restart-aware).
                  ┌────────────────────────────────────┐
    browser ─────►│  FastAPI (frontend/api)            │
    (React SPA)   │  - read-only file services         │
-                 │  - config writes (later phase)     │
+                 │  - config writes (atomic, safe)    │
                  └──────────┬─────────────────────────┘
                             │ read only
             ┌───────────────┼────────────────┐
@@ -44,15 +44,17 @@ Single-port mode in production: FastAPI also serves the built SPA from
 ## Safety rules (non-negotiable)
 
 1. **Never write to `logs/` or `data/`.** Those are the bot's outputs.
-2. **Config writes go through `ruamel.yaml` round-trip + atomic
-   `os.replace`** when they arrive. They are not implemented in this
-   phase. When implemented:
-   - Validate against the Pydantic config model.
-   - Write to a temp file in the same directory, then `os.replace`.
-   - **Flag `feeds.active_feed` and `mode.order_place_mode` as
-     restart-required** — the UI must show a "restart needed" banner
-     after any such change. Both are called out as restart-only in
-     `config/config.yaml` and `CLAUDE.md`.
+2. **Config writes use surgical text replacement + atomic `os.replace`.**
+   Implemented in `frontend/api/app/services/config_write_service.py`:
+   - `GET /api/config` — returns full config.yaml as JSON (ON/OFF → bool).
+   - `PUT /api/config` — accepts a partial nested change dict. Only
+     lines whose values actually changed are modified; all other bytes
+     are preserved (comments, alignment, CRLF, quoted strings).
+   - Validate feed/bool/numeric fields; reject invalid changes with 422.
+   - **`feeds.active_feed` and `mode.order_place_mode` are
+     restart-required** — the API returns `restart_required: [key]`
+     and the UI shows a "restart needed" banner. Both are called out as
+     restart-only in `config/config.yaml` and `CLAUDE.md`.
 3. **Never import bot code from `src/`.** The API only reads files.
 4. **All datetimes are IST** (`Asia/Kolkata`). Never naive, never UTC.
 5. **Every file read is wrapped in try/except.** Missing or locked
@@ -72,8 +74,10 @@ frontend/
 │   │   ├── paths.py                 # PROJECT_ROOT resolution (env SCC_ROOT)
 │   │   ├── time_utils.py            # IST helpers
 │   │   ├── models/                  # Pydantic response schemas
-│   │   ├── routers/                 # /health, /overview, /bot/status
-│   │   └── services/                # config / state / signals / paper / botstatus
+│   │   ├── routers/                 # /health, /overview, /bot/status, /config
+│   │   └── services/                # config_write_service, state, signals, paper, botstatus
+│   ├── tests/
+│   │   └── test_roundtrip_noop.py   # acceptance test: no-op PUT leaves file byte-identical
 │   └── requirements.txt
 ├── web/
 │   ├── index.html
@@ -83,9 +87,19 @@ frontend/
 │   ├── tsconfig.json
 │   └── src/
 │       ├── main.tsx, App.tsx
-│       ├── components/              # Sidebar, Header, Card, ProgressBar, ComingSoon
-│       ├── pages/                   # Overview.tsx (only real page this phase)
-│       └── lib/                     # api.ts (typed fetch), format.ts
+│       ├── context/
+│       │   └── ConfigContext.tsx    # ConfigProvider + useConfig hook
+│       ├── components/
+│       │   ├── Sidebar, Header, Card, ProgressBar, ComingSoon
+│       │   └── config/              # reusable config field primitives + SectionShell
+│       │       ├── Toggle.tsx, NumberField.tsx, TextField.tsx
+│       │       ├── SelectField.tsx, RadioCards.tsx, SectionShell.tsx
+│       │       └── sections/        # FeedsSection, ModeSection, InstrumentsSection
+│       ├── pages/
+│       │   ├── Overview.tsx
+│       │   ├── Configuration.tsx    # tabbed: Feeds / Mode / Instruments / (coming soon)
+│       │   └── Instruments.tsx      # standalone, reuses InstrumentsSection
+│       └── lib/                     # api.ts (typed fetch + getConfig/putConfig), format.ts
 ├── docs/
 │   └── FRONTEND_PLAN.md             # this file
 └── run_ui.bat                       # single-port launcher
@@ -146,6 +160,8 @@ Open http://localhost:5173/ — Vite proxies `/api` to :8000.
 | GET    | `/api/health`    | `{ok, now_ist, project_root, config_present}` | Liveness — does not touch bot files beyond `stat()`. |
 | GET    | `/api/bot/status`| `{status, last_activity_ist}` | Polled by sidebar every 15s. |
 | GET    | `/api/overview`  | Aggregated Overview payload (see `app/models/overview.py`). | Single round-trip for the Overview page. |
+| GET    | `/api/config`    | Full `config.yaml` as plain JSON dict (ON/OFF → bool). | Used by the config editor pages. |
+| PUT    | `/api/config`    | `{ok, updated, restart_required: [key,...], message}` | Partial nested change dict. 422 on validation error. |
 
 All future endpoints will be added here as they ship.
 
@@ -156,8 +172,8 @@ All future endpoints will be added here as they ship.
 | Sidebar item             | Route                  | Status   |
 |--------------------------|------------------------|----------|
 | Overview                 | `/overview`            | **Done** |
-| Configuration            | `/configuration`       | Pending  |
-| Instruments              | `/instruments`         | Pending  |
+| Configuration            | `/configuration`       | **Done** (Feeds / Mode / Instruments tabs; others coming soon) |
+| Instruments              | `/instruments`         | **Done** (standalone InstrumentsSection) |
 | Strike & Scanning        | `/strike-scanning`     | Pending  |
 | Risk & Money             | `/risk-money`          | Pending  |
 | Conditions               | `/conditions`          | Pending  |

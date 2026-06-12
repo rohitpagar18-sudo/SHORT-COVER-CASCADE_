@@ -4,8 +4,8 @@ Single-port mode (production / `run_ui.bat`): also serves the built
 React app from frontend/web/dist at "/". In dev (`npm run dev`), Vite
 serves the SPA on 5173 and proxies /api to this server on 8000.
 
-Read-only API. NEVER writes to logs/ or data/. Config writes will be
-introduced in a later phase via a separate router.
+The ONLY file the API writes is config/config.yaml (via config router).
+Never writes to logs/ or data/.
 """
 from __future__ import annotations
 
@@ -19,6 +19,7 @@ from .paths import WEB_DIST_DIR, PROJECT_ROOT
 from .routers import overview as overview_router
 from .routers import botstatus as botstatus_router
 from .routers import health as health_router
+from .routers import config as config_router
 
 
 def create_app() -> FastAPI:
@@ -41,6 +42,7 @@ def create_app() -> FastAPI:
     app.include_router(health_router.router, prefix="/api")
     app.include_router(overview_router.router, prefix="/api")
     app.include_router(botstatus_router.router, prefix="/api")
+    app.include_router(config_router.router, prefix="/api")
 
     # Serve the built SPA (single-port mode). In dev (Vite), this dir
     # may be empty and that's fine — Vite is on 5173.

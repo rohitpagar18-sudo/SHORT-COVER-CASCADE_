@@ -4,6 +4,8 @@ import Sidebar, { MENU } from "./components/Sidebar";
 import Header from "./components/Header";
 import ComingSoon from "./components/ComingSoon";
 import OverviewPage from "./pages/Overview";
+import ConfigurationPage from "./pages/Configuration";
+import InstrumentsPage from "./pages/Instruments";
 import { api, type BotStatus, type Overview } from "./lib/api";
 
 const BOT_POLL_MS = 15_000;
@@ -51,7 +53,14 @@ export default function App() {
               path="/overview"
               element={<OverviewPage onData={(d) => { setOverview(d); setBot(d.bot); }} />}
             />
-            {MENU.filter((m) => m.to !== "/overview").map((m) => (
+            <Route path="/configuration" element={<ConfigurationPage />} />
+            <Route path="/instruments" element={<InstrumentsPage />} />
+            {MENU.filter(
+              (m) =>
+                m.to !== "/overview" &&
+                m.to !== "/configuration" &&
+                m.to !== "/instruments",
+            ).map((m) => (
               <Route key={m.to} path={m.to} element={<ComingSoon />} />
             ))}
             <Route path="*" element={<ComingSoon />} />

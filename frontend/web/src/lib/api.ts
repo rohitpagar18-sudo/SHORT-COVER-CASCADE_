@@ -1,6 +1,16 @@
 // Tiny typed fetch wrapper for the FastAPI backend. Same-origin in prod
 // (FastAPI serves dist/), proxied via Vite in dev.
 
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export type ConfigData = Record<string, any>;
+
+export type PutConfigResult = {
+  ok: boolean;
+  updated: boolean;
+  restart_required: string[];
+  message: string;
+};
+
 export type Overview = {
   feed: { active_feed: string; status: "RUNNING" | "STOPPED" };
   modes: { alert_mode: boolean; order_place_mode: boolean; paper_trade_mode: boolean };
@@ -66,7 +76,27 @@ async function getJSON<T>(path: string): Promise<T> {
   return (await r.json()) as T;
 }
 
+async function putJSON<T>(path: string, body: unknown): Promise<T> {
+  const r = await fetch(path, {
+    method: "PUT",
+    headers: { Accept: "application/json", "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (!r.ok) {
+    // FastAPI validation errors come back as { detail: { errors: [...] } }
+    const payload = await r.json().catch(() => null);
+    const msgs: string[] | undefined = payload?.detail?.errors;
+    const str: string | undefined =
+      typeof payload?.detail === "string" ? payload.detail : undefined;
+    throw new Error(msgs?.join("; ") ?? str ?? `${r.status} ${r.statusText}`);
+  }
+  return (await r.json()) as T;
+}
+
 export const api = {
   overview: () => getJSON<Overview>("/api/overview"),
   botStatus: () => getJSON<BotStatus>("/api/bot/status"),
+  getConfig: () => getJSON<ConfigData>("/api/config"),
+  putConfig: (changes: Record<string, unknown>) =>
+    putJSON<PutConfigResult>("/api/config", changes),
 };

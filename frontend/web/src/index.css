@@ -1,12 +1,52 @@
+@import url("https://rsms.me/inter/inter.css");
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
+
+/* Theme tokens. The sidebar always uses its own dark navy palette
+   (`bg-sidebar`), so only the content area swaps. */
+:root {
+  --c-bg: #F4F6FB;
+  --c-surface: #FFFFFF;
+  --c-card: #FFFFFF;
+  --c-ink: #0F172A;
+  --c-muted: #64748B;
+  --c-line: #E2E8F0;
+  --c-line2: #F1F5F9;
+  --c-accent: #2563EB;
+}
+
+html.dark {
+  --c-bg: #0B1220;
+  --c-surface: #0F172A;
+  --c-card: #111A2E;
+  --c-ink: #E2E8F0;
+  --c-muted: #94A3B8;
+  --c-line: #1E293B;
+  --c-line2: #182236;
+  --c-accent: #60A5FA;
+}
 
 html, body, #root {
   height: 100%;
 }
 
 body {
-  font-family: Inter, system-ui, "Segoe UI", Roboto, sans-serif;
+  background-color: var(--c-bg);
+  color: var(--c-ink);
+  font-family: "Inter", system-ui, "Segoe UI", Roboto, sans-serif;
   -webkit-font-smoothing: antialiased;
+}
+
+/* recharts overrides — pull text color from the theme */
+.recharts-cartesian-axis-tick-value,
+.recharts-legend-item-text,
+.recharts-default-tooltip {
+  fill: var(--c-muted) !important;
+  color: var(--c-ink) !important;
+}
+.recharts-default-tooltip {
+  background-color: var(--c-card) !important;
+  border: 1px solid var(--c-line) !important;
+  border-radius: 8px !important;
 }

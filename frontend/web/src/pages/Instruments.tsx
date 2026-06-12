@@ -7,7 +7,7 @@ function InstrumentsInner() {
 
   if (loading) {
     return (
-      <div className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
+      <div className="rounded-xl border border-line bg-card p-5 shadow-card">
         <Skeleton className="h-5 w-40" />
         <Skeleton className="mt-2 h-3 w-72" />
         <Skeleton className="mt-6 h-10 w-full" />
@@ -20,7 +20,7 @@ function InstrumentsInner() {
 
   if (error) {
     return (
-      <div className="rounded-md border border-rose-200 bg-rose-50 p-4 text-sm text-rose-700">
+      <div className="rounded-md border border-rose-200 bg-rose-50 p-4 text-sm text-rose-700 dark:bg-rose-950/40 dark:text-rose-200">
         Failed to load configuration: {error}
       </div>
     );

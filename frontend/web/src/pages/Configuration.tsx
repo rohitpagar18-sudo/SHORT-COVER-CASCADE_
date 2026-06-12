@@ -21,7 +21,7 @@ function ConfigLoadingState() {
   return (
     <div className="space-y-3">
       <Skeleton className="h-10 w-full" />
-      <div className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
+      <div className="rounded-xl border border-line bg-card p-5 shadow-card">
         <Skeleton className="h-5 w-40" />
         <Skeleton className="mt-2 h-3 w-64" />
         <Skeleton className="mt-6 h-12 w-full" />
@@ -34,7 +34,7 @@ function ConfigLoadingState() {
 
 function ConfigErrorState({ message }: { message: string }) {
   return (
-    <div className="rounded-md border border-rose-200 bg-rose-50 p-4 text-sm text-rose-700">
+    <div className="rounded-md border border-rose-200 bg-rose-50 p-4 text-sm text-rose-700 dark:bg-rose-950/40 dark:text-rose-200">
       Failed to load configuration: {message}
     </div>
   );
@@ -50,7 +50,7 @@ function ConfigInner() {
   return (
     <div className="space-y-4">
       {/* Tab bar */}
-      <div className="flex flex-wrap gap-1 rounded-xl border border-slate-200 bg-white p-1.5 shadow-sm">
+      <div className="flex flex-wrap gap-1 rounded-xl border border-line bg-card p-1.5 shadow-card">
         {TABS.map((t) => (
           <button
             key={t.id}
@@ -61,10 +61,10 @@ function ConfigInner() {
             className={[
               "rounded-lg px-3.5 py-1.5 text-sm font-medium transition-colors",
               !t.live
-                ? "cursor-not-allowed text-slate-300"
+                ? "cursor-not-allowed text-muted opacity-50"
                 : "cursor-pointer",
               tab === t.id && t.live
-                ? "bg-slate-900 text-white"
+                ? "bg-ink text-bg"
                 : t.live
                 ? "text-muted hover:text-ink"
                 : "",

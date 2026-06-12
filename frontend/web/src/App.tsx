@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { Navigate, Route, Routes, useLocation } from "react-router-dom";
 import Sidebar, { MENU } from "./components/Sidebar";
 import Header from "./components/Header";
@@ -7,16 +7,24 @@ import OverviewPage from "./pages/Overview";
 import ConfigurationPage from "./pages/Configuration";
 import InstrumentsPage from "./pages/Instruments";
 import { api, type BotStatus, type Overview } from "./lib/api";
+import { useToast } from "./context/ToastContext";
 
 const BOT_POLL_MS = 15_000;
+
+function todayISTISO(): string {
+  const now = new Date();
+  const ist = new Date(now.getTime() + (now.getTimezoneOffset() + 330) * 60_000);
+  return ist.toISOString().slice(0, 10);
+}
 
 export default function App() {
   const [bot, setBot] = useState<BotStatus | null>(null);
   const [overview, setOverview] = useState<Overview | null>(null);
+  const [selectedDate, setSelectedDate] = useState<string>(todayISTISO());
+  const [reloadTick, setReloadTick] = useState(0);
   const loc = useLocation();
+  const toast = useToast();
 
-  // Poll bot status independently of the Overview page so the sidebar
-  // pill stays live on every route.
   useEffect(() => {
     let alive = true;
     let timer: number | undefined;
@@ -39,19 +47,52 @@ export default function App() {
   }, []);
 
   const item = MENU.find((m) => m.to === loc.pathname);
-  const title = item?.label ?? "Short Cover Cascade Bot";
+  const title = useMemo(() => {
+    if (loc.pathname === "/overview") return "Dashboard / Overview";
+    return item?.label ?? "Short Cover Cascade Bot";
+  }, [item, loc.pathname]);
+
+  const subtitle = useMemo(() => {
+    if (loc.pathname === "/overview") return "Real-time view of bot state and today's activity";
+    return "Auto-Reload: ON · polls every 15s";
+  }, [loc.pathname]);
+
+  const notificationCount = overview?.recent_alerts.filter((a) => a.status === "ALERT").length ?? 0;
+
+  const onReload = useCallback(() => {
+    setReloadTick((x) => x + 1);
+    toast.push("Config auto-reloads on the bot's next scan", "info");
+  }, [toast]);
 
   return (
-    <div className="min-h-screen">
+    <div className="min-h-screen bg-bg">
       <Sidebar bot={bot} />
       <div className="ml-64">
-        <Header title={title} lastSynced={overview?.last_synced_ist ?? null} />
+        <Header
+          title={title}
+          subtitle={subtitle}
+          lastSynced={overview?.last_synced_ist ?? null}
+          lastConfigReload={overview?.bot.last_config_reload_ist ?? bot?.last_config_reload_ist ?? null}
+          notificationCount={notificationCount}
+          selectedDate={selectedDate}
+          onSelectDate={setSelectedDate}
+          onReload={onReload}
+        />
         <main className="p-6">
           <Routes>
             <Route path="/" element={<Navigate to="/overview" replace />} />
             <Route
               path="/overview"
-              element={<OverviewPage onData={(d) => { setOverview(d); setBot(d.bot); }} />}
+              element={
+                <OverviewPage
+                  selectedDate={selectedDate}
+                  reloadTick={reloadTick}
+                  onData={(d) => {
+                    setOverview(d);
+                    setBot(d.bot);
+                  }}
+                />
+              }
             />
             <Route path="/configuration" element={<ConfigurationPage />} />
             <Route path="/instruments" element={<InstrumentsPage />} />

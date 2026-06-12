@@ -64,45 +64,81 @@ Single-port mode in production: FastAPI also serves the built SPA from
 
 ---
 
+## Design system (Overview v2 phase)
+
+The visual layer is now token-driven so every later page inherits the
+same look without duplicating colors or fonts.
+
+* **Theme:** `web/src/context/ThemeContext.tsx` toggles a `dark` class
+  on `<html>`. Default = light. `localStorage["scc.theme"]` persists
+  the choice. The sidebar always uses its own dark navy (`bg-sidebar`)
+  regardless of theme — only the content area swaps.
+* **Tokens:** all colors flow through CSS variables in
+  `web/src/index.css` (`--c-bg`, `--c-surface`, `--c-card`, `--c-ink`,
+  `--c-muted`, `--c-line`, `--c-line2`, `--c-accent`). Tailwind classes
+  `bg-bg`, `bg-card`, `text-ink`, `text-muted`, `border-line`,
+  `bg-line2` resolve to those tokens — `darkMode: "class"` is set in
+  `tailwind.config.js`.
+* **Font:** Inter, loaded via the rsms CDN in `index.css`.
+* **Sidebar (canonical order):** Overview, Configuration, Instruments,
+  Strike & Scanning, Stop Loss, Risk & Money, Conditions (C0–C5),
+  Orders, Time Rules, Re-entry Rules, Alerts & Telegram, Paper Trading,
+  Trades & Performance, Dashboard & Reports, Logs, Bot Status,
+  Settings, About. Footer shows the RUNNING/STOPPED pill, uptime,
+  last config reload, next health check, a "View System Health"
+  button, and the theme toggle. Uptime and next health check require a
+  bot heartbeat (later phase) — until then they display "—" with a
+  tooltip. Last config reload uses `config.yaml` mtime.
+* **Header:** title + subtitle, "Last Config Reload … / Auto-Reload: ON"
+  strip, notification bell badged with the count of today's ALERTED
+  signals, IST date picker (default today), and a "Reload Config"
+  button. Reload only refetches the UI; it shows a toast reminding the
+  user that the bot itself auto-reloads at its next 5-min scan.
+* **Toast:** `web/src/context/ToastContext.tsx` — global toasts used
+  by the Reload Config button.
+* **Reusable charts:** `web/src/components/charts/`
+  - `PnLChart` — recharts `ComposedChart` (per-day bars + cumulative
+    line), reused by Trades & Performance and Dashboard & Reports.
+  - `ConditionDonut` — donut with center total + legend.
+  - `StatPanel` — Total/Realized/Unrealized/Max-profit/Max-loss list.
+  - `PriceSparkline` — small price line for open positions.
+
+---
+
 ## Folder layout
 
 ```
 frontend/
 ├── api/
 │   ├── app/
-│   │   ├── main.py                  # FastAPI app, CORS, SPA mount
-│   │   ├── paths.py                 # PROJECT_ROOT resolution (env SCC_ROOT)
-│   │   ├── time_utils.py            # IST helpers
-│   │   ├── models/                  # Pydantic response schemas
-│   │   ├── routers/                 # /health, /overview, /bot/status, /config
-│   │   └── services/                # config_write_service, state, signals, paper, botstatus
-│   ├── tests/
-│   │   └── test_roundtrip_noop.py   # acceptance test: no-op PUT leaves file byte-identical
+│   │   ├── main.py
+│   │   ├── paths.py
+│   │   ├── time_utils.py
+│   │   ├── models/overview.py          # extended in Overview v2
+│   │   ├── routers/                    # /health /overview /bot/status /config
+│   │   └── services/                   # config (rt+write), signals, paper, state, botstatus
+│   ├── tests/test_roundtrip_noop.py
 │   └── requirements.txt
 ├── web/
-│   ├── index.html
-│   ├── package.json
-│   ├── vite.config.ts               # /api proxy to :8000 in dev
-│   ├── tailwind.config.js
-│   ├── tsconfig.json
+│   ├── index.html, package.json, vite.config.ts, tailwind.config.js
 │   └── src/
-│       ├── main.tsx, App.tsx
+│       ├── main.tsx, App.tsx, index.css
 │       ├── context/
-│       │   └── ConfigContext.tsx    # ConfigProvider + useConfig hook
+│       │   ├── ConfigContext.tsx       # config editor cache (F1)
+│       │   ├── ThemeContext.tsx        # NEW — light/dark theme
+│       │   └── ToastContext.tsx        # NEW — global toasts
 │       ├── components/
 │       │   ├── Sidebar, Header, Card, ProgressBar, ComingSoon
-│       │   └── config/              # reusable config field primitives + SectionShell
-│       │       ├── Toggle.tsx, NumberField.tsx, TextField.tsx
-│       │       ├── SelectField.tsx, RadioCards.tsx, SectionShell.tsx
-│       │       └── sections/        # FeedsSection, ModeSection, InstrumentsSection
+│       │   ├── charts/                 # NEW — PnLChart, ConditionDonut,
+│       │   │                           #       StatPanel, PriceSparkline
+│       │   └── config/                 # reusable config primitives (F1)
 │       ├── pages/
-│       │   ├── Overview.tsx
-│       │   ├── Configuration.tsx    # tabbed: Feeds / Mode / Instruments / (coming soon)
-│       │   └── Instruments.tsx      # standalone, reuses InstrumentsSection
-│       └── lib/                     # api.ts (typed fetch + getConfig/putConfig), format.ts
-├── docs/
-│   └── FRONTEND_PLAN.md             # this file
-└── run_ui.bat                       # single-port launcher
+│       │   ├── Overview.tsx            # v2 design (this phase)
+│       │   ├── Configuration.tsx       # F1
+│       │   └── Instruments.tsx         # F1
+│       └── lib/                        # api.ts (typed fetch), format.ts
+├── docs/FRONTEND_PLAN.md               # this file
+└── run_ui.bat
 ```
 
 ---
@@ -110,38 +146,25 @@ frontend/
 ## How to run
 
 ### Production mode (single port, recommended)
-
 ```cmd
 frontend\run_ui.bat
 ```
-
-What it does:
-1. Verifies the bot's `venv\` exists.
-2. Installs `fastapi`, `uvicorn`, `ruamel.yaml`, `pydantic` into the
-   venv if missing.
-3. If `frontend\web\dist\` is missing, runs `npm install` + `npm run
-   build` (requires Node.js LTS — install from https://nodejs.org).
-4. Starts uvicorn on port `8000` (override with `run_ui.bat 9000`).
-
-Open http://localhost:8000/ — the SPA loads from the same port and
-calls `/api/*` on the same origin.
+Builds `web/dist` if missing, then uvicorn serves `/` + `/api/*` from
+port 8000. Override the port with `run_ui.bat 9000`.
 
 ### Dev mode (hot reload)
-
 Terminal 1 — API:
 ```cmd
 cd frontend\api
 ..\..\venv\Scripts\python.exe -m uvicorn app.main:app --host 127.0.0.1 --port 8000
 ```
-
-Terminal 2 — Vite dev server:
+Terminal 2 — Vite:
 ```cmd
 cd frontend\web
-npm install        :: first time only
+npm install
 npm run dev
 ```
-
-Open http://localhost:5173/ — Vite proxies `/api` to :8000.
+Open http://localhost:5173/. Vite proxies `/api` to :8000.
 
 ### Environment overrides
 
@@ -157,55 +180,98 @@ Open http://localhost:5173/ — Vite proxies `/api` to :8000.
 
 | Method | Path             | Returns | Notes |
 |--------|------------------|---------|-------|
-| GET    | `/api/health`    | `{ok, now_ist, project_root, config_present}` | Liveness — does not touch bot files beyond `stat()`. |
-| GET    | `/api/bot/status`| `{status, last_activity_ist}` | Polled by sidebar every 15s. |
-| GET    | `/api/overview`  | Aggregated Overview payload (see `app/models/overview.py`). | Single round-trip for the Overview page. |
-| GET    | `/api/config`    | Full `config.yaml` as plain JSON dict (ON/OFF → bool). | Used by the config editor pages. |
-| PUT    | `/api/config`    | `{ok, updated, restart_required: [key,...], message}` | Partial nested change dict. 422 on validation error. |
+| GET    | `/api/health`    | `{ok, now_ist, project_root, config_present}` | Liveness. |
+| GET    | `/api/bot/status`| `{status, last_activity_ist, uptime_seconds, next_health_check_ist, last_config_reload_ist}` | uptime / next_health_check are `null` until the bot writes a heartbeat. |
+| GET    | `/api/overview?date=YYYY-MM-DD` | Aggregated Overview payload (see below). | Single round-trip; `date` defaults to today IST. |
+| GET    | `/api/config`    | Full `config.yaml` as JSON. | |
+| PUT    | `/api/config`    | `{ok, updated, restart_required, message}` | 422 on validation error. |
 
-All future endpoints will be added here as they ship.
+### `/api/overview` payload — Overview v2
+
+In addition to the F0 fields (`feed`, `modes`, `instruments`,
+`position`, `today`, `circuit_breakers`, `next_events`,
+`recent_alerts`, `bot`, `last_synced_ist`) the response now carries:
+
+* `today.paper_pnl_today` (₹), `today.paper_pnl_pct_today` (%),
+  `today.open_positions_count`
+* `circuit_breakers.status` — `"OK" | "WARN" | "TRIPPED"`
+* `recent_alerts[].conditions` — `[{name,passed}]` derived from the
+  REAL `conditions_passed` / `conditions_failed` arrays in
+  `signals.jsonl` / `alerts.jsonl`. No hardcoded legend.
+* `recent_alerts[].conditions_passed_count` / `conditions_total` /
+  `notes` (falls back to `telegram_short_remark` or `bot_remark`).
+* `pnl_series` — `{window_days, days, cumulative, totals}` aggregated
+  from `paper_trades.jsonl` by IST `date` field.
+* `open_position` — most recent unresolved TAKEN paper trade, or
+  `null`. **`ltp`, `pnl`, and `price_series` are intentionally `null` /
+  `[]`** because the JSONL is post-hoc; the UI labels them "—".
+* `condition_summary` — total scans on the chosen date + `5/5 .. 1/5`
+  buckets counted from `signals.jsonl`.
+* `trade_plan` — `{max_trades_per_day, trades_taken, trades_remaining,
+  daily_sl_hit, max_sl_per_day, cooldown_active, same_strike_sl_count}`
+  derived from `config.paper_trading` + today's `paper_trades.jsonl`.
+* `reentry_status` — `{cooldown_minutes, minutes_since_last_sl,
+  same_strike_kill_enabled, strikes_locked_today}` derived from
+  `config.re_entry` + today's `paper_trades.jsonl`.
+* `bot.uptime_seconds`, `bot.next_health_check_ist`,
+  `bot.last_config_reload_ist`.
+* `date_ist` — the IST date the response is scoped to.
+
+### Honest limitations
+
+| Field                                | Backed by                                 |
+|--------------------------------------|-------------------------------------------|
+| `open_position.ltp` / `pnl` / `price_series` | Not in `paper_trades.jsonl`. Will require a broker tap. |
+| `bot.uptime_seconds`                 | Bot does not yet emit a heartbeat file.   |
+| `bot.next_health_check_ist`          | Same — placeholder.                       |
+| `bot.last_config_reload_ist`         | Proxy = `config.yaml` mtime.              |
+
+These never fabricate values — the UI renders "—" with a tooltip.
 
 ---
 
 ## Pages status
 
-| Sidebar item             | Route                  | Status   |
-|--------------------------|------------------------|----------|
-| Overview                 | `/overview`            | **Done** |
+| Sidebar item             | Route                  | Status     |
+|--------------------------|------------------------|------------|
+| Overview                 | `/overview`            | **v2 done** |
 | Configuration            | `/configuration`       | **Done** (Feeds / Mode / Instruments tabs; others coming soon) |
-| Instruments              | `/instruments`         | **Done** (standalone InstrumentsSection) |
-| Strike & Scanning        | `/strike-scanning`     | Pending  |
-| Risk & Money             | `/risk-money`          | Pending  |
-| Conditions               | `/conditions`          | Pending  |
-| Orders                   | `/orders`              | Pending  |
-| Time & Re-entry          | `/time-reentry`        | Pending  |
-| Alerts & Telegram        | `/alerts-telegram`     | Pending  |
-| Paper Trading            | `/paper-trading`       | Pending  |
-| Trades & Performance     | `/trades-performance`  | Pending  |
-| Logs Viewer              | `/logs`                | Pending  |
-| Dashboard & Reports      | `/dashboard-reports`   | Pending  |
-| Bot Status               | `/bot-status`          | Pending  |
-| Settings                 | `/settings`            | Pending  |
-| About                    | `/about`               | Pending  |
+| Instruments              | `/instruments`         | **Done**   |
+| Strike & Scanning        | `/strike-scanning`     | Pending    |
+| Stop Loss                | `/stop-loss`           | Pending    |
+| Risk & Money             | `/risk-money`          | Pending    |
+| Conditions (C0–C5)       | `/conditions`          | Pending    |
+| Orders                   | `/orders`              | Pending    |
+| Time Rules               | `/time-rules`          | Pending    |
+| Re-entry Rules           | `/reentry-rules`       | Pending    |
+| Alerts & Telegram        | `/alerts-telegram`     | Pending    |
+| Paper Trading            | `/paper-trading`       | Pending    |
+| Trades & Performance     | `/trades-performance`  | Pending    |
+| Dashboard & Reports      | `/dashboard-reports`   | Pending    |
+| Logs                     | `/logs`                | Pending    |
+| Bot Status               | `/bot-status`          | Pending    |
+| Settings                 | `/settings`            | Pending    |
+| About                    | `/about`               | Pending    |
 
-Pending routes render a shared "Coming soon" placeholder.
+Pending routes render the shared "Coming soon" placeholder.
 
 ---
 
 ## Field-name contract (observed from real data)
 
-Recorded in `frontend/api/app/services/signals_service.py` and
-`paper_service.py` headers — kept here for quick reference.
-
 **`logs/alerts.jsonl`** — one row per fired alert:
 `timestamp_ist, time, date, event_type="alert", symbol, strike, relation,
-option_type, expiry, trading_symbol, conditions_passed[], all_passed,
-entry, sl, tp1, tp2, lots, lot_size, total_risk, risk_per_unit,
-day_type, vix_regime, vix_multiplier, bot_remark, bot_tags,
-telegram_short_remark`.
+option_type, expiry, trading_symbol, conditions_passed[], conditions_failed[],
+all_passed, entry, sl, sl_method, tp1, tp2, tp1_r, tp2_r,
+lots, lot_size, total_risk, risk_per_unit, day_type, vix_regime,
+vix_multiplier, spot, spot_position, bot_remark, bot_tags,
+telegram_short_remark, reasons{}, opt_above_vwap_pct`.
 
 **`logs/signals.jsonl`** — one row per scan/rejection/extended event
-(superset of alerts minus the entry/sl/tp fields).
+(superset of alerts minus the entry/sl/tp fields). `event_type` is one
+of `scan`, `rejection`, `would_alert_extended`, `alert`. Condition
+names live in `conditions_passed` / `conditions_failed` and are the
+single source of truth for the Recent Alerts legend.
 
 **`logs/paper_trades.jsonl`** — one row per paper trade decision:
 `alert_id, episode_id, paper_role, date, candle_timestamp, symbol,
@@ -215,6 +281,10 @@ slot, outcome ("TP2_HIT"|"TP1_HIT"|"SL_HIT"|"NO_DATA"|"PARTIAL"|"WOULD_SKIP"),
 exit_price, exit_time, exit_reason, realized_R, paper_pnl,
 paper_pnl_per_unit, mfe, mae, mfe_R, mae_R, max_drawdown_R,
 intrabar_ambiguous, fidelity, bot_remark, bot_tags, triggered_caps[]`.
+
+**`logs/state.json`** — daily counters; may be missing on a fresh
+machine. Always treated as `{}` when absent. Today's Status reads
+`gap_day` from here when present.
 
 If new fields appear in production data, prefer reading them
 opportunistically (`.get()`) and updating this doc rather than failing.

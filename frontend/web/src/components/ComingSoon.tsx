@@ -9,7 +9,7 @@ export default function ComingSoon() {
   return (
     <div className="flex h-[70vh] items-center justify-center">
       <div className="text-center">
-        <Construction className="mx-auto h-10 w-10 text-slate-400" />
+        <Construction className="mx-auto h-10 w-10 text-muted" />
         <h2 className="mt-3 text-xl font-semibold text-ink">{label}</h2>
         <p className="mt-1 text-sm text-muted">Coming soon — this page will arrive in a later phase.</p>
       </div>

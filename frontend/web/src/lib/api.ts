@@ -11,6 +11,78 @@ export type PutConfigResult = {
   message: string;
 };
 
+export type ConditionFlag = { name: string; passed: boolean };
+
+export type RecentAlert = {
+  time: string | null;
+  timestamp_ist: string | null;
+  symbol: string | null;
+  strike: number | null;
+  option_type: string | null;
+  relation: string | null;
+  conditions: ConditionFlag[];
+  conditions_passed_count: number;
+  conditions_total: number;
+  status: string | null;
+  risk: number | null;
+  entry: number | null;
+  lots: number | null;
+  notes: string | null;
+};
+
+export type PnlDay = { date: string; realized_pnl: number; is_profit: boolean };
+export type CumulativePoint = { date: string; net: number };
+export type PnlTotals = {
+  total_pnl: number;
+  realized_pnl: number;
+  unrealized_pnl: number;
+  max_daily_profit: number;
+  max_daily_loss: number;
+};
+export type PnlSeries = {
+  window_days: number;
+  days: PnlDay[];
+  cumulative: CumulativePoint[];
+  totals: PnlTotals;
+};
+
+export type OpenPosition = {
+  symbol: string | null;
+  option_type: string | null;
+  strike: number | null;
+  relation: string | null;
+  status: string | null;
+  entry_time: string | null;
+  qty_lots: number | null;
+  buy_price: number | null;
+  ltp: number | null;
+  sl: number | null;
+  tp1: number | null;
+  tp2: number | null;
+  pnl: number | null;
+  price_series: Array<{ t: string; price: number }>;
+};
+
+export type ConditionBucket = { label: string; count: number; pct: number };
+export type ConditionSummary = { total_scans: number; buckets: ConditionBucket[] };
+
+export type TradePlan = {
+  max_trades_per_day: number;
+  trades_taken: number;
+  trades_remaining: number;
+  daily_sl_hit: number;
+  max_sl_per_day: number;
+  cooldown_active: boolean;
+  same_strike_sl_count: number;
+};
+
+export type ReentryStatus = {
+  cooldown_minutes: number;
+  minutes_since_last_sl: number | null;
+  same_strike_kill_enabled: boolean;
+  strikes_locked_today: number[];
+};
+
 export type Overview = {
   feed: { active_feed: string; status: "RUNNING" | "STOPPED" };
   modes: { alert_mode: boolean; order_place_mode: boolean; paper_trade_mode: boolean };
@@ -34,12 +106,15 @@ export type Overview = {
     positions_open: number;
     sl_hit_today: number;
     paper_pnl_today: number;
+    paper_pnl_pct_today: number;
+    open_positions_count: number;
   };
   circuit_breakers: {
     sl_count: number;
     max_sl_per_day: number;
     daily_loss: number;
     max_loss_per_day: number;
+    status: "OK" | "WARN" | "TRIPPED";
   };
   next_events: {
     last_entry_time: string | null;
@@ -48,26 +123,23 @@ export type Overview = {
     eod_summary_time: string | null;
     dashboard_sync_time: string | null;
   };
-  recent_alerts: Array<{
-    time: string | null;
-    timestamp_ist: string | null;
-    symbol: string | null;
-    strike: number | null;
-    option_type: string | null;
-    relation: string | null;
-    conditions_passed: string[];
-    status: string | null;
-    risk: number | null;
-    entry: number | null;
-    lots: number | null;
-  }>;
-  bot: { status: "RUNNING" | "STOPPED"; last_activity_ist: string | null };
+  recent_alerts: RecentAlert[];
+  pnl_series: PnlSeries;
+  open_position: OpenPosition | null;
+  condition_summary: ConditionSummary;
+  trade_plan: TradePlan;
+  reentry_status: ReentryStatus;
+  bot: BotStatus;
   last_synced_ist: string;
+  date_ist: string;
 };
 
 export type BotStatus = {
   status: "RUNNING" | "STOPPED";
   last_activity_ist: string | null;
+  uptime_seconds: number | null;
+  next_health_check_ist: string | null;
+  last_config_reload_ist: string | null;
 };
 
 async function getJSON<T>(path: string): Promise<T> {
@@ -83,7 +155,6 @@ async function putJSON<T>(path: string, body: unknown): Promise<T> {
     body: JSON.stringify(body),
   });
   if (!r.ok) {
-    // FastAPI validation errors come back as { detail: { errors: [...] } }
     const payload = await r.json().catch(() => null);
     const msgs: string[] | undefined = payload?.detail?.errors;
     const str: string | undefined =
@@ -94,7 +165,8 @@ async function putJSON<T>(path: string, body: unknown): Promise<T> {
 }
 
 export const api = {
-  overview: () => getJSON<Overview>("/api/overview"),
+  overview: (date?: string) =>
+    getJSON<Overview>(`/api/overview${date ? `?date=${encodeURIComponent(date)}` : ""}`),
   botStatus: () => getJSON<BotStatus>("/api/bot/status"),
   getConfig: () => getJSON<ConfigData>("/api/config"),
   putConfig: (changes: Record<string, unknown>) =>

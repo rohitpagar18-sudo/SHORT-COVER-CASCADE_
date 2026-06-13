@@ -331,8 +331,116 @@ def validate_changes(doc: Any, changes: Dict[str, Any]) -> List[str]:
             if not isinstance(ls, int) or isinstance(ls, bool) or ls <= 0:
                 errors.append(f"instruments.{sym}_lot_size must be a positive integer.")
 
+    _validate_strike(doc, changes, errors)
+    _validate_stop_loss(changes, errors)
+    _validate_risk_reward(changes, errors)
+    _validate_position_sizing(changes, errors)
+    _validate_circuit_breakers(changes, errors)
+
     _walk_bool_checks(doc, changes, errors, "")
     return errors
+
+
+# ---------------------------------------------------------------------------
+# Per-section validators (Frontend Phase 4 — Strike/StopLoss/RiskMoney editor)
+# ---------------------------------------------------------------------------
+
+def _is_positive_int(v: Any) -> bool:
+    return isinstance(v, int) and not isinstance(v, bool) and v > 0
+
+
+def _is_non_neg_int(v: Any) -> bool:
+    return isinstance(v, int) and not isinstance(v, bool) and v >= 0
+
+
+def _is_positive_number(v: Any) -> bool:
+    return isinstance(v, (int, float)) and not isinstance(v, bool) and v > 0
+
+
+_ALERT_STRIKE_KEYS = ("itm3", "itm2", "itm1", "atm", "otm1", "otm2", "otm3")
+
+
+def _validate_strike(doc: Any, changes: Dict[str, Any], errors: List[str]) -> None:
+    mdev = _nested_get(changes, "strike.max_deviation_from_atm")
+    if mdev is not None and not _is_non_neg_int(mdev):
+        errors.append("strike.max_deviation_from_atm must be a non-negative integer.")
+
+    lep = _nested_get(changes, "strike.late_entry_threshold_percent")
+    if lep is not None and not _is_positive_number(lep):
+        errors.append("strike.late_entry_threshold_percent must be a positive number.")
+
+    new_alert = _nested_get(changes, "strike.alert_strikes")
+    if isinstance(new_alert, dict):
+        existing_alert = _nested_get(doc, "strike.alert_strikes") or {}
+        merged: Dict[str, Any] = {}
+        for k in _ALERT_STRIKE_KEYS:
+            if k in existing_alert:
+                merged[k] = existing_alert[k]
+        for k, v in new_alert.items():
+            merged[k] = v
+        any_on = any(
+            _bool_yaml(merged[k]) for k in _ALERT_STRIKE_KEYS if k in merged
+        )
+        if not any_on:
+            errors.append(
+                "strike.alert_strikes: at least one alert strike must be enabled."
+            )
+
+
+def _validate_stop_loss(changes: Dict[str, Any], errors: List[str]) -> None:
+    method = _nested_get(changes, "stop_loss.method")
+    if method is not None:
+        if not isinstance(method, int) or isinstance(method, bool) or method not in (1, 2, 3):
+            errors.append("stop_loss.method must be one of 1, 2, or 3.")
+
+    sma_period = _nested_get(changes, "stop_loss.sma_trail.sma_period")
+    if sma_period is not None and not _is_positive_int(sma_period):
+        errors.append("stop_loss.sma_trail.sma_period must be a positive integer.")
+
+    aam = _nested_get(changes, "stop_loss.sma_trail.activate_after_minutes")
+    if aam is not None and not _is_positive_int(aam):
+        errors.append("stop_loss.sma_trail.activate_after_minutes must be a positive integer.")
+
+    uim = _nested_get(changes, "stop_loss.sma_trail.update_interval_minutes")
+    if uim is not None and not _is_positive_int(uim):
+        errors.append("stop_loss.sma_trail.update_interval_minutes must be a positive integer.")
+
+    fdir = _nested_get(changes, "stop_loss.sma_trail.follow_direction")
+    if fdir is not None and fdir not in ("both", "ratchet"):
+        errors.append("stop_loss.sma_trail.follow_direction must be 'both' or 'ratchet'.")
+
+
+def _validate_risk_reward(changes: Dict[str, Any], errors: List[str]) -> None:
+    for key in (
+        "target_risk_per_trade",
+        "risk_range_min",
+        "risk_range_max",
+        "normal_day_tp1_r",
+        "normal_day_tp2_r",
+        "expiry_day_tp1_r",
+        "expiry_day_tp2_r",
+    ):
+        v = _nested_get(changes, f"risk_reward.{key}")
+        if v is not None and not _is_positive_number(v):
+            errors.append(f"risk_reward.{key} must be a positive number.")
+
+
+def _validate_position_sizing(changes: Dict[str, Any], errors: List[str]) -> None:
+    for key in ("nifty_max_lots", "banknifty_max_lots"):
+        v = _nested_get(changes, f"position_sizing.{key}")
+        if v is not None and not _is_positive_int(v):
+            errors.append(f"position_sizing.{key} must be a positive integer.")
+
+
+def _validate_circuit_breakers(changes: Dict[str, Any], errors: List[str]) -> None:
+    msl = _nested_get(changes, "circuit_breakers.max_sl_per_day")
+    if msl is not None:
+        if not isinstance(msl, int) or isinstance(msl, bool) or msl < 1:
+            errors.append("circuit_breakers.max_sl_per_day must be an integer >= 1.")
+
+    mlpd = _nested_get(changes, "circuit_breakers.max_loss_per_day_rupees")
+    if mlpd is not None and not _is_positive_number(mlpd):
+        errors.append("circuit_breakers.max_loss_per_day_rupees must be a positive number.")
 
 
 # ---------------------------------------------------------------------------

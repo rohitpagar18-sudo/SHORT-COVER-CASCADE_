@@ -55,6 +55,33 @@ Single-port mode in production: FastAPI also serves the built SPA from
      restart-required** — the API returns `restart_required: [key]`
      and the UI shows a "restart needed" banner. Both are called out as
      restart-only in `config/config.yaml` and `CLAUDE.md`.
+   - **Section-specific validators** (added Phase 4 editor pages):
+     * `strike.max_deviation_from_atm` — integer ≥ 0.
+     * `strike.late_entry_threshold_percent` — number > 0.
+     * `strike.alert_strikes.{itm3,itm2,itm1,atm,otm1,otm2,otm3}` —
+       booleans; **at least one must be ON** (rejected with 422 if all
+       seven would end up OFF after the merge).
+     * `strike.order_strikes.{itm,atm,otm}` — booleans.
+     * `stop_loss.method` — integer in {1, 2, 3}.
+     * `stop_loss.use_vix_multiplier`, `hard_exit_red_candle_below_vwap` —
+       booleans.
+     * `stop_loss.sma_trail.sma_period` — positive integer.
+     * `stop_loss.sma_trail.activate_after_minutes` /
+       `update_interval_minutes` — positive integers.
+     * `stop_loss.sma_trail.follow_direction` — `"both"` or `"ratchet"`.
+     * `risk_reward.target_risk_per_trade`, `risk_range_min`,
+       `risk_range_max`, `normal_day_tp1_r`, `normal_day_tp2_r`,
+       `expiry_day_tp1_r`, `expiry_day_tp2_r` — numbers > 0.
+     * `risk_reward.move_sl_to_breakeven_after_tp1`, `trail_sl_after_tp1` —
+       booleans.
+     * `position_sizing.lot_cap_enabled` — boolean;
+       `nifty_max_lots` / `banknifty_max_lots` — positive integers.
+     * `circuit_breakers.daily_sl_count_breaker`, `daily_loss_breaker` —
+       booleans; `max_sl_per_day` — integer ≥ 1;
+       `max_loss_per_day_rupees` — number > 0.
+   - None of these changes is restart-required — saves apply on the
+     bot's next 5-min scan, and the UI shows a "Saved — applies on the
+     bot's next scan." toast on success.
 3. **Never import bot code from `src/`.** The API only reads files.
 4. **All datetimes are IST** (`Asia/Kolkata`). Never naive, never UTC.
 5. **Every file read is wrapped in try/except.** Missing or locked
@@ -133,9 +160,12 @@ frontend/
 │       │   │                           #       StatPanel, PriceSparkline
 │       │   └── config/                 # reusable config primitives (F1)
 │       ├── pages/
-│       │   ├── Overview.tsx            # v2 design (this phase)
-│       │   ├── Configuration.tsx       # F1
-│       │   └── Instruments.tsx         # F1
+│       │   ├── Overview.tsx            # v2 design
+│       │   ├── Configuration.tsx       # F1 + Phase 4 tabs
+│       │   ├── Instruments.tsx         # F1
+│       │   ├── StrikeScanning.tsx      # Phase 4 — wraps StrikeScanningSection
+│       │   ├── StopLoss.tsx            # Phase 4 — wraps StopLossSection
+│       │   └── RiskMoney.tsx           # Phase 4 — wraps RiskMoneySection
 │       └── lib/                        # api.ts (typed fetch), format.ts
 ├── docs/FRONTEND_PLAN.md               # this file
 └── run_ui.bat
@@ -235,11 +265,11 @@ These never fabricate values — the UI renders "—" with a tooltip.
 | Sidebar item             | Route                  | Status     |
 |--------------------------|------------------------|------------|
 | Overview                 | `/overview`            | **v2 done** |
-| Configuration            | `/configuration`       | **Done** (Feeds / Mode / Instruments tabs; others coming soon) |
+| Configuration            | `/configuration`       | **Done** (Feeds / Mode / Instruments / Strikes & Scanning / Stop Loss / Risk & Money tabs; others coming soon) |
 | Instruments              | `/instruments`         | **Done**   |
-| Strike & Scanning        | `/strike-scanning`     | Pending    |
-| Stop Loss                | `/stop-loss`           | Pending    |
-| Risk & Money             | `/risk-money`          | Pending    |
+| Strike & Scanning        | `/strike-scanning`     | **Done**   |
+| Stop Loss                | `/stop-loss`           | **Done**   |
+| Risk & Money             | `/risk-money`          | **Done**   |
 | Conditions (C0–C5)       | `/conditions`          | Pending    |
 | Orders                   | `/orders`              | Pending    |
 | Time Rules               | `/time-rules`          | Pending    |
@@ -254,6 +284,34 @@ These never fabricate values — the UI renders "—" with a tooltip.
 | About                    | `/about`               | Pending    |
 
 Pending routes render the shared "Coming soon" placeholder.
+
+### Phase 4 section components (config editor)
+
+Three section components live under
+`web/src/components/config/sections/`. Each is built on the same
+`SectionShell` + `useConfig` primitives as the F1 sections, and is
+mounted from two places:
+
+* As a tab inside `Configuration.tsx`.
+* As the only body of a standalone sidebar route
+  (`StrikeScanning.tsx`, `StopLoss.tsx`, `RiskMoney.tsx`).
+
+| Component                 | File                                                       | Config blocks edited                                       |
+|---------------------------|------------------------------------------------------------|------------------------------------------------------------|
+| `StrikeScanningSection`   | `components/config/sections/StrikeScanningSection.tsx`     | `strike`                                                    |
+| `StopLossSection`         | `components/config/sections/StopLossSection.tsx`           | `stop_loss`                                                 |
+| `RiskMoneySection`        | `components/config/sections/RiskMoneySection.tsx`          | `risk_reward`, `position_sizing`, `circuit_breakers`        |
+
+Notable UX rules these components encode:
+
+* **Alert strikes:** disable Save and show an inline error when all
+  seven `strike.alert_strikes.*` toggles are OFF; the API also rejects
+  this state with 422 — defense in depth.
+* **SMA Trail panel:** rendered greyed/disabled with an "Active only
+  when Method 3 is selected" note whenever `stop_loss.method !== 3`.
+* **Save toast:** on a successful write the section pushes a
+  `"Saved — applies on the bot's next scan."` toast via the existing
+  `ToastContext` — there's no restart banner for these blocks.
 
 ---
 

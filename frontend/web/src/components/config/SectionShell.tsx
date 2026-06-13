@@ -9,10 +9,13 @@ interface SectionShellProps {
   onSave: () => Promise<PutConfigResult>;
   isDirty: boolean;
   onReload: () => void;
+  saveDisabled?: boolean;
+  saveDisabledHint?: string;
 }
 
 export function SectionShell({
   title, subtitle, children, onSave, isDirty, onReload,
+  saveDisabled = false, saveDisabledHint,
 }: SectionShellProps) {
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
@@ -62,7 +65,8 @@ export function SectionShell({
           <button
             type="button"
             onClick={handleSave}
-            disabled={!isDirty || saving}
+            disabled={!isDirty || saving || saveDisabled}
+            title={saveDisabled ? saveDisabledHint : undefined}
             className="flex items-center gap-1.5 rounded-md bg-emerald-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-emerald-700 disabled:cursor-not-allowed disabled:opacity-50"
           >
             <Save className="h-3 w-3" />

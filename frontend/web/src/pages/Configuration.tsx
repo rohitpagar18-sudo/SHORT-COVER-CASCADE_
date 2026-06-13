@@ -3,6 +3,9 @@ import { ConfigProvider, useConfig } from "../context/ConfigContext";
 import { FeedsSection } from "../components/config/sections/FeedsSection";
 import { ModeSection } from "../components/config/sections/ModeSection";
 import { InstrumentsSection } from "../components/config/sections/InstrumentsSection";
+import { StrikeScanningSection } from "../components/config/sections/StrikeScanningSection";
+import { StopLossSection } from "../components/config/sections/StopLossSection";
+import { RiskMoneySection } from "../components/config/sections/RiskMoneySection";
 import { Skeleton } from "../components/Card";
 
 type Tab = "feeds" | "mode" | "instruments" | "strikes" | "stop-loss" | "risk-money" | "more";
@@ -11,9 +14,9 @@ const TABS: { id: Tab; label: string; live: boolean }[] = [
   { id: "feeds",      label: "Feeds",             live: true  },
   { id: "mode",       label: "Mode",              live: true  },
   { id: "instruments", label: "Instruments",      live: true  },
-  { id: "strikes",    label: "Strikes & Scanning", live: false },
-  { id: "stop-loss",  label: "Stop Loss",         live: false },
-  { id: "risk-money", label: "Risk & Money",      live: false },
+  { id: "strikes",    label: "Strikes & Scanning", live: true  },
+  { id: "stop-loss",  label: "Stop Loss",         live: true  },
+  { id: "risk-money", label: "Risk & Money",      live: true  },
   { id: "more",       label: "More ▾",            live: false },
 ];
 
@@ -78,6 +81,9 @@ function ConfigInner() {
       {tab === "feeds"       && <FeedsSection />}
       {tab === "mode"        && <ModeSection />}
       {tab === "instruments" && <InstrumentsSection />}
+      {tab === "strikes"     && <StrikeScanningSection />}
+      {tab === "stop-loss"   && <StopLossSection />}
+      {tab === "risk-money"  && <RiskMoneySection />}
     </div>
   );
 }

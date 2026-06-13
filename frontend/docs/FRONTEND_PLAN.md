@@ -265,16 +265,16 @@ These never fabricate values — the UI renders "—" with a tooltip.
 | Sidebar item             | Route                  | Status     |
 |--------------------------|------------------------|------------|
 | Overview                 | `/overview`            | **v2 done** |
-| Configuration            | `/configuration`       | **Done** (Feeds / Mode / Instruments / Strikes & Scanning / Stop Loss / Risk & Money tabs; others coming soon) |
+| Configuration            | `/configuration`       | **Done** (all 11 tabs live) |
 | Instruments              | `/instruments`         | **Done**   |
 | Strike & Scanning        | `/strike-scanning`     | **Done**   |
 | Stop Loss                | `/stop-loss`           | **Done**   |
 | Risk & Money             | `/risk-money`          | **Done**   |
-| Conditions (C0–C5)       | `/conditions`          | Pending    |
-| Orders                   | `/orders`              | Pending    |
-| Time Rules               | `/time-rules`          | Pending    |
-| Re-entry Rules           | `/reentry-rules`       | Pending    |
-| Alerts & Telegram        | `/alerts-telegram`     | Pending    |
+| Conditions (C0–C5)       | `/conditions`          | **Done**   |
+| Orders                   | `/orders`              | **Done**   |
+| Time Rules               | `/time-rules`          | **Done**   |
+| Re-entry Rules           | `/reentry-rules`       | **Done**   |
+| Alerts & Telegram        | `/alerts-telegram`     | **Done**   |
 | Paper Trading            | `/paper-trading`       | Pending    |
 | Trades & Performance     | `/trades-performance`  | Pending    |
 | Dashboard & Reports      | `/dashboard-reports`   | Pending    |
@@ -312,6 +312,76 @@ Notable UX rules these components encode:
 * **Save toast:** on a successful write the section pushes a
   `"Saved — applies on the bot's next scan."` toast via the existing
   `ToastContext` — there's no restart banner for these blocks.
+
+### Phase 5 section components (final config-editor pages)
+
+Five more section components added under the same folder. Each has
+a standalone sidebar route AND a tab in `Configuration.tsx`.
+
+| Component                  | File                                                        | Config block  | Standalone route |
+|----------------------------|-------------------------------------------------------------|---------------|------------------|
+| `ConditionsSection`        | `components/config/sections/ConditionsSection.tsx`          | `conditions`  | `/conditions`    |
+| `TimeRulesSection`         | `components/config/sections/TimeRulesSection.tsx`           | `time_rules`  | `/time-rules`    |
+| `ReEntrySection`           | `components/config/sections/ReEntrySection.tsx`             | `re_entry`    | `/reentry-rules` |
+| `AlertsTelegramSection`    | `components/config/sections/AlertsTelegramSection.tsx`      | `telegram`    | `/alerts-telegram` |
+| `OrdersSection`            | `components/config/sections/OrdersSection.tsx`              | `orders`      | `/orders`        |
+
+Notable UX rules these components encode:
+
+* **ConditionsSection:** Save is disabled if `c3_rsi_min >= c3_rsi_max`
+  or if `c5_adx.gating` is ON while `c5_adx.enabled` is OFF.
+  The **Gating toggle** is fully disabled (not just visually greyed) until
+  Enabled is ON — prevents the cross-field constraint from ever being
+  violated before Save. When Gating is turned ON, an inline amber
+  warning explains the impact: alerts will require C1–C5 all passing.
+  Turning Enabled OFF automatically forces Gating to OFF. All C5
+  sub-settings (Period, ADX Min, Require Rising, Use DI Alignment,
+  Lookback Candles) pass `disabled={!enabled}` so they deactivate
+  visually when C5 is OFF.
+* **TimeRulesSection:** Uses an inline `TimeInput` component (not
+  `TextField`) that validates the 24-hour `HH:MM` format on each
+  keystroke, shows a red border + inline error on invalid input, and
+  disables Save until all five time fields are valid.
+* **OrdersSection:** A prominent "Phase 8 only — ignored in alert/paper
+  mode" amber banner appears at the top of the section.
+* All sections: Save toast says "Saved — applies on the bot's next scan."
+
+### Phase 5 API validators (config_write_service.py)
+
+Five new per-section validator functions added in Phase 5:
+
+* **`_validate_conditions`**: validates `c3_rsi_min` and `c3_rsi_max`
+  in 0..100 with cross-field `min < max` check; `c1_max_distance_pct > 0`;
+  `c1_extended_zone_max_pct >= c1_max_distance_pct`; `c5_adx.period` and
+  `c5_adx.lookback_candles` as positive integers; `c5_adx.adx_min > 0`.
+  **Cross-field rule:** `c5_adx.gating` may be ON only if `c5_adx.enabled`
+  is ON — rejected with 422 otherwise. The check uses effective values
+  (considers both the incoming change and the existing doc value).
+* **`_validate_time_rules`**: validates 5 time strings against
+  `^([01]\d|2[0-3]):[0-5]\d$`; `gap_day_threshold_pct > 0`;
+  `gap_day_direction` in `{"both","up","down"}`.
+* **`_validate_re_entry`**: validates `cooldown_minutes_after_sl >= 0`.
+* **`_validate_orders`**: validates `order_type` in `{"limit","market"}`.
+* **`_walk_bool_checks`** (existing, unchanged): already covers all
+  boolean toggles in `telegram`, `orders`, `re_entry`, and `conditions`.
+
+### Quote-preservation fix in `_surgical_set`
+
+`_surgical_set` now detects when the original YAML value was
+double-quoted (e.g. `"09:45"`, `"both"`) and re-wraps the replacement
+in double quotes if the new value is a bare string. This prevents
+PyYAML (YAML 1.1, used by the bot) from misinterpreting bare
+colon-containing strings like `10:00` as sexagesimal integers.
+
+### Housekeeping — consolidated frontend/requirements.txt
+
+* `frontend/requirements.txt` created at the frontend root (canonical
+  location). Contains: `fastapi>=0.110.0`, `uvicorn[standard]>=0.27.0`,
+  `ruamel.yaml>=0.18.0`, `pydantic>=2.5.0`.
+* `frontend/api/requirements.txt` removed (was a duplicate).
+* `run_ui.bat` updated: `pip install -r "%~dp0requirements.txt"` instead
+  of inlining the package list.
+* Bot's root `requirements.txt` is untouched.
 
 ---
 

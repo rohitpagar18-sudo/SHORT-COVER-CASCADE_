@@ -6,18 +6,30 @@ import { InstrumentsSection } from "../components/config/sections/InstrumentsSec
 import { StrikeScanningSection } from "../components/config/sections/StrikeScanningSection";
 import { StopLossSection } from "../components/config/sections/StopLossSection";
 import { RiskMoneySection } from "../components/config/sections/RiskMoneySection";
+import { ConditionsSection } from "../components/config/sections/ConditionsSection";
+import { TimeRulesSection } from "../components/config/sections/TimeRulesSection";
+import { ReEntrySection } from "../components/config/sections/ReEntrySection";
+import { AlertsTelegramSection } from "../components/config/sections/AlertsTelegramSection";
+import { OrdersSection } from "../components/config/sections/OrdersSection";
 import { Skeleton } from "../components/Card";
 
-type Tab = "feeds" | "mode" | "instruments" | "strikes" | "stop-loss" | "risk-money" | "more";
+type Tab =
+  | "feeds" | "mode" | "instruments" | "strikes"
+  | "stop-loss" | "risk-money" | "conditions"
+  | "time-rules" | "re-entry" | "telegram" | "orders";
 
-const TABS: { id: Tab; label: string; live: boolean }[] = [
-  { id: "feeds",      label: "Feeds",             live: true  },
-  { id: "mode",       label: "Mode",              live: true  },
-  { id: "instruments", label: "Instruments",      live: true  },
-  { id: "strikes",    label: "Strikes & Scanning", live: true  },
-  { id: "stop-loss",  label: "Stop Loss",         live: true  },
-  { id: "risk-money", label: "Risk & Money",      live: true  },
-  { id: "more",       label: "More ▾",            live: false },
+const TABS: { id: Tab; label: string }[] = [
+  { id: "feeds",       label: "Feeds"             },
+  { id: "mode",        label: "Mode"              },
+  { id: "instruments", label: "Instruments"       },
+  { id: "strikes",     label: "Strikes & Scanning" },
+  { id: "stop-loss",   label: "Stop Loss"         },
+  { id: "risk-money",  label: "Risk & Money"      },
+  { id: "conditions",  label: "Conditions"        },
+  { id: "time-rules",  label: "Time Rules"        },
+  { id: "re-entry",    label: "Re-entry"          },
+  { id: "telegram",    label: "Alerts & Telegram" },
+  { id: "orders",      label: "Orders"            },
 ];
 
 function ConfigLoadingState() {
@@ -58,19 +70,12 @@ function ConfigInner() {
           <button
             key={t.id}
             type="button"
-            onClick={() => t.live && setTab(t.id)}
-            disabled={!t.live}
-            title={t.live ? undefined : "Coming in a later phase"}
+            onClick={() => setTab(t.id)}
             className={[
               "rounded-lg px-3.5 py-1.5 text-sm font-medium transition-colors",
-              !t.live
-                ? "cursor-not-allowed text-muted opacity-50"
-                : "cursor-pointer",
-              tab === t.id && t.live
+              tab === t.id
                 ? "bg-ink text-bg"
-                : t.live
-                ? "text-muted hover:text-ink"
-                : "",
+                : "cursor-pointer text-muted hover:text-ink",
             ].join(" ")}
           >
             {t.label}
@@ -84,6 +89,11 @@ function ConfigInner() {
       {tab === "strikes"     && <StrikeScanningSection />}
       {tab === "stop-loss"   && <StopLossSection />}
       {tab === "risk-money"  && <RiskMoneySection />}
+      {tab === "conditions"  && <ConditionsSection />}
+      {tab === "time-rules"  && <TimeRulesSection />}
+      {tab === "re-entry"    && <ReEntrySection />}
+      {tab === "telegram"    && <AlertsTelegramSection />}
+      {tab === "orders"      && <OrdersSection />}
     </div>
   );
 }

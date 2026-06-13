@@ -9,6 +9,11 @@ import InstrumentsPage from "./pages/Instruments";
 import StrikeScanningPage from "./pages/StrikeScanning";
 import StopLossPage from "./pages/StopLoss";
 import RiskMoneyPage from "./pages/RiskMoney";
+import ConditionsPage from "./pages/Conditions";
+import TimeRulesPage from "./pages/TimeRules";
+import ReEntryPage from "./pages/ReEntry";
+import AlertsTelegramPage from "./pages/AlertsTelegram";
+import OrdersPage from "./pages/Orders";
 import { api, type BotStatus, type Overview } from "./lib/api";
 import { useToast } from "./context/ToastContext";
 
@@ -102,6 +107,11 @@ export default function App() {
             <Route path="/strike-scanning" element={<StrikeScanningPage />} />
             <Route path="/stop-loss" element={<StopLossPage />} />
             <Route path="/risk-money" element={<RiskMoneyPage />} />
+            <Route path="/conditions" element={<ConditionsPage />} />
+            <Route path="/time-rules" element={<TimeRulesPage />} />
+            <Route path="/reentry-rules" element={<ReEntryPage />} />
+            <Route path="/alerts-telegram" element={<AlertsTelegramPage />} />
+            <Route path="/orders" element={<OrdersPage />} />
             {MENU.filter(
               (m) =>
                 m.to !== "/overview" &&
@@ -109,7 +119,12 @@ export default function App() {
                 m.to !== "/instruments" &&
                 m.to !== "/strike-scanning" &&
                 m.to !== "/stop-loss" &&
-                m.to !== "/risk-money",
+                m.to !== "/risk-money" &&
+                m.to !== "/conditions" &&
+                m.to !== "/time-rules" &&
+                m.to !== "/reentry-rules" &&
+                m.to !== "/alerts-telegram" &&
+                m.to !== "/orders",
             ).map((m) => (
               <Route key={m.to} path={m.to} element={<ComingSoon />} />
             ))}

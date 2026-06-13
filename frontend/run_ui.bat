@@ -22,8 +22,8 @@ if errorlevel 1 goto :install_py_deps
 goto :check_spa
 
 :install_py_deps
-echo [run_ui] Installing FastAPI + Uvicorn + ruamel.yaml + Pydantic...
-"%VENV_PY%" -m pip install fastapi "uvicorn[standard]" "ruamel.yaml" pydantic
+echo [run_ui] Installing Python deps from frontend\requirements.txt...
+"%VENV_PY%" -m pip install -r "%~dp0requirements.txt"
 if errorlevel 1 goto :pip_fail
 
 :check_spa

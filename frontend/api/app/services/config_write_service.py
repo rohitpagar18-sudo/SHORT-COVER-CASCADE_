@@ -47,6 +47,9 @@ RESTART_REQUIRED_KEYS: frozenset = frozenset({
     "mode.order_place_mode",
 })
 
+# 24-hour HH:MM pattern used by time_rules fields
+_TIME_PATTERN = re.compile(r'^([01]\d|2[0-3]):[0-5]\d$')
+
 
 # ---------------------------------------------------------------------------
 # Boolean helpers
@@ -217,7 +220,16 @@ def _surgical_set(text: str, path: List[str], yaml_val: str) -> str:
                     line,
                 )
                 if m:
-                    lines[i] = m.group(1) + yaml_val + m.group(3)
+                    old_raw = m.group(2)
+                    # Preserve original YAML quoting: if the existing value was
+                    # double-quoted (e.g. "09:45") and the replacement is a bare
+                    # string, re-wrap in double quotes.  This prevents YAML 1.1
+                    # parsers (PyYAML used by the bot) from misinterpreting bare
+                    # colon-containing strings like 10:00 as sexagesimal integers.
+                    final_val = yaml_val
+                    if old_raw.startswith('"') and not yaml_val.startswith('"'):
+                        final_val = f'"{yaml_val}"'
+                    lines[i] = m.group(1) + final_val + m.group(3)
                 # If no match (key without value), leave line unchanged
             else:
                 search_from = i + 1  # next depth: search after this header
@@ -336,6 +348,10 @@ def validate_changes(doc: Any, changes: Dict[str, Any]) -> List[str]:
     _validate_risk_reward(changes, errors)
     _validate_position_sizing(changes, errors)
     _validate_circuit_breakers(changes, errors)
+    _validate_conditions(doc, changes, errors)
+    _validate_time_rules(changes, errors)
+    _validate_re_entry(changes, errors)
+    _validate_orders(changes, errors)
 
     _walk_bool_checks(doc, changes, errors, "")
     return errors
@@ -441,6 +457,118 @@ def _validate_circuit_breakers(changes: Dict[str, Any], errors: List[str]) -> No
     mlpd = _nested_get(changes, "circuit_breakers.max_loss_per_day_rupees")
     if mlpd is not None and not _is_positive_number(mlpd):
         errors.append("circuit_breakers.max_loss_per_day_rupees must be a positive number.")
+
+
+# ---------------------------------------------------------------------------
+# Per-section validators added in Frontend Phase 5 (final config-editor pages)
+# ---------------------------------------------------------------------------
+
+def _validate_conditions(doc: Any, changes: Dict[str, Any], errors: List[str]) -> None:
+    c3_min = _nested_get(changes, "conditions.c3_rsi_min")
+    c3_max = _nested_get(changes, "conditions.c3_rsi_max")
+
+    if c3_min is not None:
+        if (not isinstance(c3_min, (int, float)) or isinstance(c3_min, bool)
+                or not (0 <= c3_min <= 100)):
+            errors.append("conditions.c3_rsi_min must be a number in 0..100.")
+
+    if c3_max is not None:
+        if (not isinstance(c3_max, (int, float)) or isinstance(c3_max, bool)
+                or not (0 <= c3_max <= 100)):
+            errors.append("conditions.c3_rsi_max must be a number in 0..100.")
+
+    # Cross-field: min must be less than max (using effective values)
+    if c3_min is not None or c3_max is not None:
+        eff_min = c3_min if c3_min is not None else _nested_get(doc, "conditions.c3_rsi_min")
+        eff_max = c3_max if c3_max is not None else _nested_get(doc, "conditions.c3_rsi_max")
+        if (eff_min is not None and eff_max is not None
+                and isinstance(eff_min, (int, float)) and not isinstance(eff_min, bool)
+                and isinstance(eff_max, (int, float)) and not isinstance(eff_max, bool)
+                and eff_min >= eff_max):
+            errors.append("conditions.c3_rsi_min must be less than c3_rsi_max.")
+
+    c1_dist = _nested_get(changes, "conditions.c1_max_distance_pct")
+    if c1_dist is not None and not _is_positive_number(c1_dist):
+        errors.append("conditions.c1_max_distance_pct must be a positive number.")
+
+    c1_ext = _nested_get(changes, "conditions.c1_extended_zone_max_pct")
+    if c1_ext is not None:
+        if not _is_positive_number(c1_ext):
+            errors.append("conditions.c1_extended_zone_max_pct must be a positive number.")
+        else:
+            eff_dist = (c1_dist if c1_dist is not None
+                        else _nested_get(doc, "conditions.c1_max_distance_pct"))
+            if (eff_dist is not None
+                    and isinstance(eff_dist, (int, float)) and not isinstance(eff_dist, bool)
+                    and c1_ext < eff_dist):
+                errors.append(
+                    "conditions.c1_extended_zone_max_pct must be >= c1_max_distance_pct."
+                )
+
+    period = _nested_get(changes, "conditions.c5_adx.period")
+    if period is not None and not _is_positive_int(period):
+        errors.append("conditions.c5_adx.period must be a positive integer.")
+
+    lookback = _nested_get(changes, "conditions.c5_adx.lookback_candles")
+    if lookback is not None and not _is_positive_int(lookback):
+        errors.append("conditions.c5_adx.lookback_candles must be a positive integer.")
+
+    adx_min_val = _nested_get(changes, "conditions.c5_adx.adx_min")
+    if adx_min_val is not None and not _is_positive_number(adx_min_val):
+        errors.append("conditions.c5_adx.adx_min must be a positive number.")
+
+    # Cross-field: c5_adx.gating may be ON only if c5_adx.enabled is ON
+    new_gating = _nested_get(changes, "conditions.c5_adx.gating")
+    if (new_gating is not None
+            and _is_bool_like(new_gating)
+            and _bool_yaml(new_gating)):
+        new_enabled = _nested_get(changes, "conditions.c5_adx.enabled")
+        if new_enabled is not None and _is_bool_like(new_enabled):
+            eff_enabled = _bool_yaml(new_enabled)
+        else:
+            existing_enabled = _nested_get(doc, "conditions.c5_adx.enabled")
+            eff_enabled = (
+                _bool_yaml(existing_enabled)
+                if existing_enabled is not None and _is_bool_like(existing_enabled)
+                else False
+            )
+        if not eff_enabled:
+            errors.append(
+                "conditions.c5_adx.gating may be ON only when c5_adx.enabled is also ON."
+            )
+
+
+def _validate_time_rules(changes: Dict[str, Any], errors: List[str]) -> None:
+    for key in (
+        "normal_start_time", "gap_day_start_time", "last_entry_time",
+        "soft_squareoff_time", "hard_squareoff_time",
+    ):
+        v = _nested_get(changes, f"time_rules.{key}")
+        if v is not None:
+            if not isinstance(v, str) or not _TIME_PATTERN.match(v):
+                errors.append(
+                    f"time_rules.{key} must be a 24-hour time string in HH:MM format."
+                )
+
+    gap_pct = _nested_get(changes, "time_rules.gap_day_threshold_pct")
+    if gap_pct is not None and not _is_positive_number(gap_pct):
+        errors.append("time_rules.gap_day_threshold_pct must be a positive number.")
+
+    direction = _nested_get(changes, "time_rules.gap_day_direction")
+    if direction is not None and direction not in ("both", "up", "down"):
+        errors.append("time_rules.gap_day_direction must be 'both', 'up', or 'down'.")
+
+
+def _validate_re_entry(changes: Dict[str, Any], errors: List[str]) -> None:
+    cooldown = _nested_get(changes, "re_entry.cooldown_minutes_after_sl")
+    if cooldown is not None and not _is_non_neg_int(cooldown):
+        errors.append("re_entry.cooldown_minutes_after_sl must be a non-negative integer.")
+
+
+def _validate_orders(changes: Dict[str, Any], errors: List[str]) -> None:
+    order_type = _nested_get(changes, "orders.order_type")
+    if order_type is not None and order_type not in ("limit", "market"):
+        errors.append("orders.order_type must be 'limit' or 'market'.")
 
 
 # ---------------------------------------------------------------------------

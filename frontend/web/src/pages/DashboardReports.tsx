@@ -906,7 +906,7 @@ export default function DashboardReportsPage() {
 
           {/* 4. C5 ADX Shadow Analysis */}
           <Card className="border-amber-300 dark:border-amber-700">
-            <CardTitle className="text-amber-900 dark:text-amber-200">C5 ADX Shadow Analysis</CardTitle>
+            <CardTitle><span className="text-amber-900 dark:text-amber-200">C5 ADX Shadow Analysis</span></CardTitle>
             {loading && !conditionsData ? (
               <Skeleton className="h-[200px] w-full" />
             ) : conditionsData?.c5_shadow ? (

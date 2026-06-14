@@ -139,6 +139,70 @@ def latest_open_position() -> Optional[Dict[str, Any]]:
     }
 
 
+def _as_int_cfg(v) -> Optional[int]:
+    try:
+        return int(v) if v is not None else None
+    except (TypeError, ValueError):
+        return None
+
+
+def get_trade_plan_dict(date_iso: Optional[str] = None) -> Dict[str, Any]:
+    """Build trade-plan snapshot for a given IST date (today if omitted).
+    Called by /api/paper/today and /api/overview — single source of truth.
+    """
+    from ..services.config_service import get as cfg_get
+    from ..time_utils import today_ist
+    date_iso = date_iso or today_ist().isoformat()
+    is_today = (date_iso == today_ist().isoformat())
+
+    max_per_day = _as_int_cfg(cfg_get("paper_trading.max_trades_per_day")) or 0
+    cooldown_min = (
+        _as_int_cfg(cfg_get("paper_trading.cooldown_minutes_after_sl"))
+        or _as_int_cfg(cfg_get("re_entry.cooldown_minutes_after_sl"))
+        or 0
+    )
+    cb_max_sl = _as_int_cfg(cfg_get("circuit_breakers.max_sl_per_day")) or 0
+    sl_hits = sl_hits_on_date(date_iso)
+    t_taken = trades_taken_on_date(date_iso)
+    same_strike_count = same_strike_sl_count_today() if is_today else 0
+    minutes_since_sl = minutes_since_last_sl_today() if is_today else None
+    cooldown_active = (minutes_since_sl is not None and minutes_since_sl < cooldown_min and cooldown_min > 0)
+
+    return {
+        "max_trades_per_day": max_per_day,
+        "trades_taken": t_taken,
+        "trades_remaining": max(0, max_per_day - t_taken) if max_per_day else 0,
+        "daily_sl_hit": sl_hits,
+        "max_sl_per_day": cb_max_sl,
+        "cooldown_active": cooldown_active,
+        "same_strike_sl_count": same_strike_count,
+    }
+
+
+def get_reentry_status_dict(date_iso: Optional[str] = None) -> Dict[str, Any]:
+    """Build reentry-status snapshot for a given IST date (today if omitted).
+    Called by /api/paper/today and /api/overview — single source of truth.
+    """
+    from ..services.config_service import get as cfg_get, get_bool as cfg_get_bool
+    from ..time_utils import today_ist
+    date_iso = date_iso or today_ist().isoformat()
+    is_today = (date_iso == today_ist().isoformat())
+
+    cooldown_min = (
+        _as_int_cfg(cfg_get("paper_trading.cooldown_minutes_after_sl"))
+        or _as_int_cfg(cfg_get("re_entry.cooldown_minutes_after_sl"))
+        or 0
+    )
+    minutes_since_sl = minutes_since_last_sl_today() if is_today else None
+
+    return {
+        "cooldown_minutes": cooldown_min,
+        "minutes_since_last_sl": minutes_since_sl,
+        "same_strike_kill_enabled": cfg_get_bool("re_entry.same_strike_kill_after_2_sl", False),
+        "strikes_locked_today": strikes_locked_today() if is_today else [],
+    }
+
+
 def pnl_series(window_days: int = 15, end_date: Optional[date_cls] = None) -> Dict[str, Any]:
     """Aggregate paper_pnl by IST date over the trailing `window_days`
     days ending at `end_date` (inclusive). Days with no trades show as 0.

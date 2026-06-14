@@ -33,4 +33,6 @@ PAPER_TRADES_JSONL: Path = LOGS_DIR / "paper_trades.jsonl"
 STATE_JSON: Path = LOGS_DIR / "state.json"
 BOT_LOG: Path = LOGS_DIR / "bot.log"
 
+PAPER_OVERRIDES_CSV: Path = LOGS_DIR / "paper_overrides.csv"
+
 WEB_DIST_DIR: Path = PROJECT_ROOT / "frontend" / "web" / "dist"

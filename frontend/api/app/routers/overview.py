@@ -154,31 +154,12 @@ def get_overview(
         buckets=[ConditionBucket(**b) for b in cs["buckets"]],
     )
 
-    max_per_day = _as_int(get("paper_trading.max_trades_per_day")) or 0
-    cooldown_min = _as_int(get("paper_trading.cooldown_minutes_after_sl")) \
-        or _as_int(get("re_entry.cooldown_minutes_after_sl")) or 0
-    same_strike_count = paper_service.same_strike_sl_count_today() if sel_iso == today_ist().isoformat() else 0
-    minutes_since_sl = paper_service.minutes_since_last_sl_today() if sel_iso == today_ist().isoformat() else None
-    cooldown_active = (
-        minutes_since_sl is not None and minutes_since_sl < cooldown_min and cooldown_min > 0
-    )
+    # NEW — call service functions, no duplicated logic
+    _tp = paper_service.get_trade_plan_dict(sel_iso)
+    trade_plan = TradePlan(**_tp)
 
-    trade_plan = TradePlan(
-        max_trades_per_day=max_per_day,
-        trades_taken=trades_taken,
-        trades_remaining=max(0, max_per_day - trades_taken) if max_per_day else 0,
-        daily_sl_hit=sl_hits,
-        max_sl_per_day=cb_max_sl,
-        cooldown_active=cooldown_active,
-        same_strike_sl_count=same_strike_count,
-    )
-
-    reentry_status = ReentryStatus(
-        cooldown_minutes=cooldown_min,
-        minutes_since_last_sl=minutes_since_sl,
-        same_strike_kill_enabled=get_bool("re_entry.same_strike_kill_after_2_sl", False),
-        strikes_locked_today=paper_service.strikes_locked_today() if sel_iso == today_ist().isoformat() else [],
-    )
+    _rs = paper_service.get_reentry_status_dict(sel_iso)
+    reentry_status = ReentryStatus(**_rs)
 
     return Overview(
         feed=feed,

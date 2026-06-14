@@ -224,6 +224,8 @@ Open http://localhost:5173/. Vite proxies `/api` to :8000.
 | GET    | `/api/paper/episodes?date_from&date_to&status&symbol&option_type` | `{episodes:[{episode_id, date, time, symbol, option_type, strike, relation, selection, skip_reason, entry_price, sl, tp1, tp2, qty_lots, outcome, r_multiple, paper_pnl, mfe_r, mae_r, max_drawdown_r, echo_count, echoes, is_overridden}]}` | Groups `paper_trades.jsonl` by `episode_id`. Default date = today. |
 | GET    | `/api/paper/overrides` | `{rows:[…], columns:[…]}` | Read-only view of `logs/paper_overrides.csv`. Empty payload if file absent. |
 | GET    | `/api/reports/performance?date_from&date_to&agg=daily\|weekly\|monthly` | Performance report (KPIs, cumulative, underlying, weekday, winners/losers, outcome distribution, duration, monthly) | Default range = This Month IST; prev-period deltas for KPIs. |
+| GET    | `/api/reports/conditions?date_from&date_to` | Condition pass rates, funnel, bottleneck, C5 shadow analysis, DI alignment | IST; default = This Month. |
+| GET    | `/api/reports/risk?date_from&date_to` | R-distribution, equity curve, drawdown, streaks, MFE/MAE, risk adherence, payoff | IST; default = This Month. |
 
 ### `/api/overview` payload — Overview v2
 
@@ -286,7 +288,7 @@ These never fabricate values — the UI renders "—" with a tooltip.
 | Alerts & Telegram        | `/alerts-telegram`     | **Done**   |
 | Paper Trading            | `/paper-trading`       | **Done** (F7) |
 | Trades & Performance     | `/trades-performance`  | **Done** (Phase F6) — KPI row, live `OpenPositionTracker`, filter bar with date presets, Today's Trades table, Daily P&L (₹/% toggle), Trade History grouped by Day/Week/Month with expandable rows |
-| Dashboard & Reports      | `/dashboard-reports`   | **Done** (F7a) — Performance Overview tab functional; other 5 tabs pending |
+| Dashboard & Reports      | `/dashboard-reports`   | **Done** (F7b) — Performance Overview, Condition Analysis (C0–C5), Risk Analysis tabs functional; 3 other tabs pending |
 | Logs                     | `/logs`                | Pending    |
 | Bot Status               | `/bot-status`          | Pending    |
 | Settings                 | `/settings`            | Pending    |
@@ -528,6 +530,102 @@ instead of recomputing inline.
    directly." Empty → "No manual overrides."
 5. **Footer** — "All times are IST (Asia/Kolkata). Paper P&L; positions
    update each 5-min scan, outcomes finalize at EOD."
+
+**Read-only guarantee**: no file writes anywhere in this phase.
+
+### Phase F7b — Dashboard & Reports: Conditions + Risk Analysis
+
+Read-only visualization phase. Two new tabs on the existing Dashboard & Reports page, 
+powered by re-readable `signals.jsonl` and `paper_trades.jsonl`.
+
+**New API endpoints** (see table above):
+`/api/reports/conditions`, `/api/reports/risk`. Both accept optional
+`date_from` and `date_to` query params (IST YYYY-MM-DD format); defaults to 
+This Month when omitted. All reads wrapped in defensive try/except — 
+missing or locked files degrade to empty payloads, never 500.
+
+**New service modules** under `frontend/api/app/services/`:
+
+* `conditions_service.py` — reads `signals.jsonl` (up to 20K lines) and computes:
+  - **Pass Rates** — per-condition (C0–C5) count of scans where the condition 
+    passed, pass rate (%), and status flag (`active` / `shadow` / `off`).
+  - **Funnel** — histogram of "how many conditions passed?" (0/5 to 5/5 buckets 
+    plus an "Alerted" bucket for `all_passed=true AND event_type="alert"`).
+  - **Bottleneck** — top 5 conditions that block near-miss scans (4/5 scans where 
+    the condition was the blocker).
+  - **C5 Shadow Analysis** — joins C5-present alerts to `paper_trades.jsonl` TAKEN 
+    episodes. Computes win rate and average R separately for "when C5 passed" vs 
+    "when C5 failed". If join is incomplete (< 80% coverage), adds a join_note.
+  - **DI Alignment** (optional) — spot and option DI alignment percentages. 
+    Informational only; does not affect C5 pass/fail.
+
+* `risk_service.py` — reads `paper_trades.jsonl` (up to 20K lines) and computes:
+  - **R-Distribution** — histogram buckets: `<-1.0`, `-1.0 to 0`, `0 to 1.0`, 
+    `1.0 to 1.5`, `1.5 to 2.5`, `>2.5` (finalized TAKEN trades only).
+  - **Equity Curve** — cumulative paper P&L by date with running max drawdown.
+  - **Streaks** — current (W5 / L3 / —), max win, max loss.
+  - **MFE/MAE** (optional) — average max favorable / adverse excursions in R.
+  - **Risk Adherence** — target + range from config; % within range; distribution 
+    histogram (`<2500`, `2500–3000`, `3000–3500`, `>3500`) of actual risk per trade.
+  - **Payoff** — avg R per winner, avg R per loser, payoff ratio (avg_win / |avg_loss|).
+
+**New routers** `frontend/api/app/routers/conditions.py` and `risk.py`:
+
+* `GET /api/reports/conditions?date_from&date_to` — returns ConditionsReport JSON.
+* `GET /api/reports/risk?date_from&date_to` — returns RiskReport JSON.
+
+Both wrap service calls in try/except and return safe defaults on error.
+
+**New chart component**: `web/src/components/charts/Histogram.tsx` — 
+recharts BarChart with configurable buckets, colors, axis labels. 
+Accepts data with `bucket` / `r_bucket` / `risk_bucket` keys (normalizes 
+to a shared `label` key for recharts).
+
+**New types** in `web/src/lib/api.ts`:
+
+* `ConditionPassRate`, `FunnelBucket`, `BottleneckItem`, `C5ShadowStats`, 
+  `C5ShadowReport`, `DIAlignment`, `ConditionsReport`.
+* `RBucket`, `EquityCurvePoint`, `MaxDrawdown`, `Streaks`, `MfeMAE`, 
+  `RiskBucket`, `RiskAdherence`, `Payoff`, `RiskReport`.
+* `api.reportsConditions(...)` and `api.reportsRisk(...)` methods.
+
+**New page content** in `web/src/pages/DashboardReports.tsx`:
+
+1. **Condition Analysis (C0–C5) tab**:
+   - Condition Pass Rates table (7 rows: condition, label, status badge, 
+     scans, passes, pass rate %).
+   - Signal Funnel histogram (0/5 through 5/5, plus Alerted).
+   - Blocking Conditions ranked list (top 5 near-miss blockers with bar 
+     indicators).
+   - C5 ADX Shadow Analysis highlight card (amber border): C5 pass rate 
+     among fired alerts %; side-by-side comparison (when C5 passed vs failed) 
+     with n, win_rate %, avg_R stats; optional join_note for incomplete joins.
+   - DI Alignment summary (optional): spot & option DI aligned % with 
+     informational note.
+
+2. **Risk Analysis tab**:
+   - R-Multiple Distribution histogram.
+   - Equity Curve & Drawdown line chart + max drawdown (₹ and R) sub-stats.
+   - Current Streaks 3-tile layout (current / max win / max loss).
+   - Payoff Metrics 3-tile layout (avg_win_r, avg_loss_r, ratio).
+   - MFE / MAE 2-tile layout (optional, only if mfe_R and mae_R fields present).
+   - Risk Adherence vs Config: target, range, within-range %; distribution 
+     histogram of actual risk amounts.
+
+**Polling and state management**:
+- Date range persists across tab switches.
+- Both endpoints fetched in parallel when date range changes.
+- Polls every 60s (same as existing Performance tab).
+- Skeletons while first response is in flight.
+- Stale banner on error; last good payload kept visible.
+
+**IST always**: all timestamp parsing and date range filtering use IST.
+
+**Honest join limitation**: C5 → paper trade matching uses 
+(symbol, strike, option_type, candle_timestamp) key. If join coverage 
+< 80%, service returns an optional `join_note` explaining the limitation 
+(e.g., "Limited join coverage: 42% of C5 alerts matched to paper trades"). 
+UI displays this note; never fabricates comparison stats.
 
 **Read-only guarantee**: no file writes anywhere in this phase.
 `paper_overrides.csv` is displayed read-only; the user edits it

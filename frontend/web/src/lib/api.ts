@@ -405,6 +405,76 @@ export type PerformanceReport = {
   };
 };
 
+// ---- Dashboard & Reports F7b: Conditions + Risk ----
+
+export type ConditionPassRate = {
+  condition: string;
+  label: string;
+  status: "active" | "shadow" | "off";
+  scans: number;
+  passes: number;
+  pass_rate: number;
+};
+
+export type FunnelBucket = { bucket: string; count: number };
+
+export type BottleneckItem = { condition: string; blocked_count: number };
+
+export type C5ShadowStats = {
+  n: number;
+  win_rate: number;
+  avg_r: number;
+};
+
+export type C5ShadowReport = {
+  alerts_total: number;
+  c5_passed: number;
+  c5_failed: number;
+  c5_pass_rate: number;
+  when_c5_passed: C5ShadowStats;
+  when_c5_failed: C5ShadowStats;
+  join_note?: string;
+};
+
+export type DIAlignment = {
+  spot_aligned_pct: number;
+  option_aligned_pct: number;
+  note: string;
+};
+
+export type ConditionsReport = {
+  pass_rates: ConditionPassRate[];
+  funnel: FunnelBucket[];
+  bottleneck: BottleneckItem[];
+  c5_shadow: C5ShadowReport;
+  di_alignment?: DIAlignment;
+};
+
+export type RBucket = { r_bucket: string; count: number };
+export type EquityCurvePoint = { date: string; equity: number; drawdown: number };
+export type MaxDrawdown = { rupees: number; r: number };
+export type Streaks = { current: number; max_win: number; max_loss: number };
+export type MfeMAE = { avg_mfe_r: number; avg_mae_r: number };
+export type RiskBucket = { risk_bucket: string; count: number };
+export type RiskAdherence = {
+  target: number;
+  range_min: number;
+  range_max: number;
+  within_range_pct: number;
+  distribution: RiskBucket[];
+};
+export type Payoff = { avg_win_r: number; avg_loss_r: number; ratio: number | null };
+
+export type RiskReport = {
+  r_distribution: RBucket[];
+  equity_curve: EquityCurvePoint[];
+  max_drawdown: MaxDrawdown;
+  streaks: Streaks;
+  mfe_mae?: MfeMAE;
+  risk_adherence: RiskAdherence;
+  payoff: Payoff;
+};
+
 function buildQuery(params: Record<string, string | undefined | null>): string {
   const usp = new URLSearchParams();
   Object.entries(params).forEach(([k, v]) => {
@@ -441,4 +511,8 @@ export const api = {
   paperOverrides: () => getJSON<PaperOverridesResponse>("/api/paper/overrides"),
   reportsPerformance: (params: { date_from?: string; date_to?: string; agg?: string } = {}) =>
     getJSON<PerformanceReport>(`/api/reports/performance${buildQuery(params as Record<string, string | undefined | null>)}`),
+  reportsConditions: (params: { date_from?: string; date_to?: string } = {}) =>
+    getJSON<ConditionsReport>(`/api/reports/conditions${buildQuery(params as Record<string, string | undefined | null>)}`),
+  reportsRisk: (params: { date_from?: string; date_to?: string } = {}) =>
+    getJSON<RiskReport>(`/api/reports/risk${buildQuery(params as Record<string, string | undefined | null>)}`),
 };

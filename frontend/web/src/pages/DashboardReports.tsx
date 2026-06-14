@@ -5,6 +5,7 @@ import PnLChart from "../components/charts/PnLChart";
 import WeekdayBarChart from "../components/charts/WeekdayBarChart";
 import SimpleDonut from "../components/charts/SimpleDonut";
 import KpiSparkline from "../components/charts/KpiSparkline";
+import Histogram from "../components/charts/Histogram";
 import {
   api,
   type PerformanceReport,
@@ -12,6 +13,8 @@ import {
   type ReportTopTrade,
   type ReportMonthly,
   type ReportDuration,
+  type ConditionsReport,
+  type RiskReport,
 } from "../lib/api";
 import { inr, inrSigned } from "../lib/format";
 
@@ -437,6 +440,8 @@ export default function DashboardReportsPage() {
 
   // Data
   const [data, setData] = useState<PerformanceReport | null>(null);
+  const [conditionsData, setConditionsData] = useState<ConditionsReport | null>(null);
+  const [riskData, setRiskData] = useState<RiskReport | null>(null);
   const [stale, setStale] = useState(false);
   const [lastSynced, setLastSynced] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
@@ -447,9 +452,15 @@ export default function DashboardReportsPage() {
   const fetchData = useCallback(
     async (df: string, dt: string, ag: string) => {
       try {
-        const result = await api.reportsPerformance({ date_from: df, date_to: dt, agg: ag });
+        const [perfResult, condResult, riskResult] = await Promise.all([
+          api.reportsPerformance({ date_from: df, date_to: dt, agg: ag }),
+          api.reportsConditions({ date_from: df, date_to: dt }),
+          api.reportsRisk({ date_from: df, date_to: dt }),
+        ]);
         if (!aliveRef.current) return;
-        setData(result);
+        setData(perfResult);
+        setConditionsData(condResult);
+        setRiskData(riskResult);
         setStale(false);
         setLastSynced(nowISTHHMM());
       } catch {
@@ -644,9 +655,7 @@ export default function DashboardReportsPage() {
       </div>
 
       {/* ---- Tab content ---- */}
-      {activeTab !== "performance" ? (
-        <ComingSoonTab label={TABS.find((t) => t.id === activeTab)?.label ?? ""} />
-      ) : (
+      {activeTab === "performance" && (
         <div className="space-y-4">
           {/* 1. KPI row */}
           {loading && !data ? (
@@ -784,6 +793,425 @@ export default function DashboardReportsPage() {
             )}
           </Card>
         </div>
+      )}
+
+      {/* ---- Condition Analysis tab ---- */}
+      {activeTab === "conditions" && (
+        <div className="space-y-4">
+          {/* 1. Condition Pass Rates */}
+          <Card>
+            <CardTitle>Condition Pass Rates</CardTitle>
+            {loading && !conditionsData ? (
+              <Skeleton className="h-[200px] w-full" />
+            ) : conditionsData?.pass_rates && conditionsData.pass_rates.length > 0 ? (
+              <div className="overflow-x-auto">
+                <table className="w-full text-xs">
+                  <thead className="text-left text-[10px] uppercase text-muted">
+                    <tr className="border-b border-line">
+                      <th className="py-2 pr-3">Condition</th>
+                      <th className="py-2 pr-3">Label</th>
+                      <th className="py-2 pr-3">Status</th>
+                      <th className="py-2 pr-3">Scans</th>
+                      <th className="py-2 pr-3">Passes</th>
+                      <th className="py-2">Pass Rate</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {conditionsData.pass_rates.map((r, i) => (
+                      <tr key={i} className="border-b border-line2 last:border-0">
+                        <td className="py-2 pr-3 font-mono text-ink">{r.condition}</td>
+                        <td className="py-2 pr-3 text-ink">{r.label}</td>
+                        <td className="py-2 pr-3">
+                          <span
+                            className={`inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-semibold text-white ${
+                              r.status === "active"
+                                ? "bg-emerald-600"
+                                : r.status === "shadow"
+                                ? "bg-amber-600"
+                                : "bg-slate-400"
+                            }`}
+                          >
+                            {r.status}
+                          </span>
+                        </td>
+                        <td className="py-2 pr-3 text-ink">{r.scans}</td>
+                        <td className="py-2 pr-3 text-ink">{r.passes}</td>
+                        <td className="py-2 font-semibold text-emerald-600 dark:text-emerald-400">
+                          {r.pass_rate.toFixed(1)}%
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            ) : (
+              <div className="py-6 text-center text-sm text-muted">No condition data.</div>
+            )}
+          </Card>
+
+          {/* 2. Signal Funnel */}
+          <Card>
+            <CardTitle>Signal Funnel</CardTitle>
+            {loading && !conditionsData ? (
+              <Skeleton className="h-[200px] w-full" />
+            ) : conditionsData?.funnel && conditionsData.funnel.length > 0 ? (
+              <Histogram
+                data={conditionsData.funnel.map((f) => ({
+                  bucket: f.bucket,
+                  count: f.count,
+                }))}
+                xLabel="Conditions Passed"
+                yLabel="Count"
+                height={200}
+              />
+            ) : (
+              <div className="flex h-[200px] items-center justify-center text-sm text-muted">
+                No funnel data.
+              </div>
+            )}
+          </Card>
+
+          {/* 3. Blocking Conditions */}
+          <Card>
+            <CardTitle>Blocking Conditions (Top 5 Near-Misses)</CardTitle>
+            {loading && !conditionsData ? (
+              <Skeleton className="h-[160px] w-full" />
+            ) : conditionsData?.bottleneck && conditionsData.bottleneck.length > 0 ? (
+              <div className="space-y-2">
+                {conditionsData.bottleneck.map((b, i) => {
+                  const maxCount = Math.max(...conditionsData.bottleneck.map((x) => x.blocked_count));
+                  const width = maxCount > 0 ? (b.blocked_count / maxCount) * 100 : 0;
+                  return (
+                    <div key={i} className="flex items-center gap-3">
+                      <div className="w-12 font-mono font-semibold text-ink">{b.condition}</div>
+                      <div className="flex-1">
+                        <div className="h-6 overflow-hidden rounded-md bg-line2">
+                          <div
+                            className="h-full bg-amber-500 transition-all"
+                            style={{ width: `${width}%` }}
+                          />
+                        </div>
+                      </div>
+                      <div className="w-16 text-right text-xs font-medium text-ink">
+                        {b.blocked_count}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            ) : (
+              <div className="py-6 text-center text-sm text-muted">No bottleneck data.</div>
+            )}
+          </Card>
+
+          {/* 4. C5 ADX Shadow Analysis */}
+          <Card className="border-amber-300 dark:border-amber-700">
+            <CardTitle className="text-amber-900 dark:text-amber-200">C5 ADX Shadow Analysis</CardTitle>
+            {loading && !conditionsData ? (
+              <Skeleton className="h-[200px] w-full" />
+            ) : conditionsData?.c5_shadow ? (
+              <div className="space-y-4">
+                <div className="rounded-md bg-amber-50 p-3 dark:bg-amber-950/20">
+                  <div className="text-sm font-semibold text-amber-900 dark:text-amber-100">
+                    {conditionsData.c5_shadow.c5_pass_rate.toFixed(1)}% of {conditionsData.c5_shadow.alerts_total} alerts
+                    had C5 passed
+                  </div>
+                  <div className="mt-1 text-xs text-amber-700 dark:text-amber-300">
+                    Use this data to decide whether to promote C5 from shadow to gating.
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-2 gap-3">
+                  {/* When C5 Passed */}
+                  <div className="rounded-md border border-emerald-200 bg-emerald-50 p-3 dark:border-emerald-800 dark:bg-emerald-950/20">
+                    <div className="text-[10px] uppercase tracking-wide text-emerald-700 dark:text-emerald-300">
+                      When C5 Passed
+                    </div>
+                    <div className="mt-2 space-y-1">
+                      <div className="text-sm font-semibold text-emerald-900 dark:text-emerald-100">
+                        n = {conditionsData.c5_shadow.when_c5_passed.n}
+                      </div>
+                      <div className="text-xs text-emerald-700 dark:text-emerald-300">
+                        Win Rate: {conditionsData.c5_shadow.when_c5_passed.win_rate.toFixed(1)}%
+                      </div>
+                      <div className="text-xs text-emerald-700 dark:text-emerald-300">
+                        Avg R: {conditionsData.c5_shadow.when_c5_passed.avg_r.toFixed(2)}R
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* When C5 Failed */}
+                  <div className="rounded-md border border-rose-200 bg-rose-50 p-3 dark:border-rose-800 dark:bg-rose-950/20">
+                    <div className="text-[10px] uppercase tracking-wide text-rose-700 dark:text-rose-300">
+                      When C5 Failed
+                    </div>
+                    <div className="mt-2 space-y-1">
+                      <div className="text-sm font-semibold text-rose-900 dark:text-rose-100">
+                        n = {conditionsData.c5_shadow.when_c5_failed.n}
+                      </div>
+                      <div className="text-xs text-rose-700 dark:text-rose-300">
+                        Win Rate: {conditionsData.c5_shadow.when_c5_failed.win_rate.toFixed(1)}%
+                      </div>
+                      <div className="text-xs text-rose-700 dark:text-rose-300">
+                        Avg R: {conditionsData.c5_shadow.when_c5_failed.avg_r.toFixed(2)}R
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                {conditionsData.c5_shadow.join_note && (
+                  <div className="rounded-md bg-slate-100 p-2 text-xs text-slate-600 dark:bg-slate-800 dark:text-slate-300">
+                    {conditionsData.c5_shadow.join_note}
+                  </div>
+                )}
+              </div>
+            ) : (
+              <div className="py-6 text-center text-sm text-muted">No C5 shadow data.</div>
+            )}
+          </Card>
+
+          {/* 5. DI Alignment (optional) */}
+          {conditionsData?.di_alignment && (
+            <Card>
+              <CardTitle>DI Alignment (Informational)</CardTitle>
+              <div className="grid grid-cols-2 gap-3">
+                <div className="rounded-md border border-slate-200 bg-slate-50 p-3 dark:border-slate-700 dark:bg-slate-800">
+                  <div className="text-[10px] uppercase tracking-wide text-slate-600 dark:text-slate-400">
+                    Spot DI Aligned
+                  </div>
+                  <div className="mt-2 text-2xl font-semibold text-slate-900 dark:text-slate-100">
+                    {conditionsData.di_alignment.spot_aligned_pct.toFixed(1)}%
+                  </div>
+                </div>
+                <div className="rounded-md border border-slate-200 bg-slate-50 p-3 dark:border-slate-700 dark:bg-slate-800">
+                  <div className="text-[10px] uppercase tracking-wide text-slate-600 dark:text-slate-400">
+                    Option DI Aligned
+                  </div>
+                  <div className="mt-2 text-2xl font-semibold text-slate-900 dark:text-slate-100">
+                    {conditionsData.di_alignment.option_aligned_pct.toFixed(1)}%
+                  </div>
+                </div>
+              </div>
+              <p className="mt-3 text-xs text-muted">{conditionsData.di_alignment.note}</p>
+            </Card>
+          )}
+        </div>
+      )}
+
+      {/* ---- Risk Analysis tab ---- */}
+      {activeTab === "risk" && (
+        <div className="space-y-4">
+          {/* 1. R-Multiple Distribution */}
+          <Card>
+            <CardTitle>R-Multiple Distribution (TAKEN Trades)</CardTitle>
+            {loading && !riskData ? (
+              <Skeleton className="h-[200px] w-full" />
+            ) : riskData?.r_distribution && riskData.r_distribution.length > 0 ? (
+              <Histogram
+                data={riskData.r_distribution}
+                xLabel="R Multiple"
+                yLabel="Count"
+                height={200}
+              />
+            ) : (
+              <div className="flex h-[200px] items-center justify-center text-sm text-muted">
+                No R-distribution data.
+              </div>
+            )}
+          </Card>
+
+          {/* 2. Equity Curve & Drawdown */}
+          <Card>
+            <CardTitle>Equity Curve & Drawdown</CardTitle>
+            {loading && !riskData ? (
+              <Skeleton className="h-[300px] w-full" />
+            ) : riskData?.equity_curve && riskData.equity_curve.length > 0 ? (
+              <div>
+                <PnLChart
+                  days={riskData.equity_curve.map((p) => ({
+                    date: p.date,
+                    realized_pnl: p.equity,
+                    is_profit: p.equity >= 0,
+                  }))}
+                  cumulative={riskData.equity_curve.map((p) => ({
+                    date: p.date,
+                    net: p.equity,
+                  }))}
+                  height={240}
+                />
+                <div className="mt-3 grid grid-cols-2 gap-2">
+                  <div className="rounded-md bg-slate-50 p-2 dark:bg-slate-800">
+                    <div className="text-[10px] uppercase text-muted">Max Drawdown (₹)</div>
+                    <div className="text-lg font-semibold text-rose-600 dark:text-rose-400">
+                      {riskData.max_drawdown.rupees.toLocaleString("en-IN", {
+                        style: "currency",
+                        currency: "INR",
+                        minimumFractionDigits: 0,
+                      })}
+                    </div>
+                  </div>
+                  <div className="rounded-md bg-slate-50 p-2 dark:bg-slate-800">
+                    <div className="text-[10px] uppercase text-muted">Max Drawdown (R)</div>
+                    <div className="text-lg font-semibold text-rose-600 dark:text-rose-400">
+                      {riskData.max_drawdown.r.toFixed(2)}R
+                    </div>
+                  </div>
+                </div>
+              </div>
+            ) : (
+              <div className="flex h-[300px] items-center justify-center text-sm text-muted">
+                No equity curve data.
+              </div>
+            )}
+          </Card>
+
+          {/* 3. Streaks */}
+          <Card>
+            <CardTitle>Current Streaks</CardTitle>
+            {loading && !riskData ? (
+              <Skeleton className="h-[120px] w-full" />
+            ) : riskData?.streaks ? (
+              <div className="grid grid-cols-3 gap-3">
+                <div className="rounded-md border border-slate-200 bg-slate-50 p-4 dark:border-slate-700 dark:bg-slate-800">
+                  <div className="text-[10px] uppercase tracking-wide text-muted">Current</div>
+                  <div className="mt-2 text-2xl font-semibold text-ink">
+                    {riskData.streaks.current === 0
+                      ? "—"
+                      : riskData.streaks.current > 0
+                      ? `W${riskData.streaks.current}`
+                      : `L${Math.abs(riskData.streaks.current)}`}
+                  </div>
+                </div>
+                <div className="rounded-md border border-emerald-200 bg-emerald-50 p-4 dark:border-emerald-800 dark:bg-emerald-950/20">
+                  <div className="text-[10px] uppercase tracking-wide text-emerald-700 dark:text-emerald-300">
+                    Max Win
+                  </div>
+                  <div className="mt-2 text-2xl font-semibold text-emerald-700 dark:text-emerald-300">
+                    {riskData.streaks.max_win > 0 ? `W${riskData.streaks.max_win}` : "—"}
+                  </div>
+                </div>
+                <div className="rounded-md border border-rose-200 bg-rose-50 p-4 dark:border-rose-800 dark:bg-rose-950/20">
+                  <div className="text-[10px] uppercase tracking-wide text-rose-700 dark:text-rose-300">
+                    Max Loss
+                  </div>
+                  <div className="mt-2 text-2xl font-semibold text-rose-700 dark:text-rose-300">
+                    {riskData.streaks.max_loss > 0 ? `L${riskData.streaks.max_loss}` : "—"}
+                  </div>
+                </div>
+              </div>
+            ) : (
+              <div className="py-6 text-center text-sm text-muted">No streak data.</div>
+            )}
+          </Card>
+
+          {/* 4. Payoff Metrics */}
+          <Card>
+            <CardTitle>Payoff Metrics</CardTitle>
+            {loading && !riskData ? (
+              <Skeleton className="h-[120px] w-full" />
+            ) : riskData?.payoff ? (
+              <div className="grid grid-cols-3 gap-3">
+                <div className="rounded-md border border-emerald-200 bg-emerald-50 p-4 dark:border-emerald-800 dark:bg-emerald-950/20">
+                  <div className="text-[10px] uppercase tracking-wide text-emerald-700 dark:text-emerald-300">
+                    Avg Win
+                  </div>
+                  <div className="mt-2 text-2xl font-semibold text-emerald-700 dark:text-emerald-300">
+                    {riskData.payoff.avg_win_r.toFixed(2)}R
+                  </div>
+                </div>
+                <div className="rounded-md border border-rose-200 bg-rose-50 p-4 dark:border-rose-800 dark:bg-rose-950/20">
+                  <div className="text-[10px] uppercase tracking-wide text-rose-700 dark:text-rose-300">
+                    Avg Loss
+                  </div>
+                  <div className="mt-2 text-2xl font-semibold text-rose-700 dark:text-rose-300">
+                    {riskData.payoff.avg_loss_r.toFixed(2)}R
+                  </div>
+                </div>
+                <div className="rounded-md border border-slate-200 bg-slate-50 p-4 dark:border-slate-700 dark:bg-slate-800">
+                  <div className="text-[10px] uppercase tracking-wide text-muted">Payoff Ratio</div>
+                  <div className="mt-2 text-2xl font-semibold text-ink">
+                    {riskData.payoff.ratio != null ? `${riskData.payoff.ratio.toFixed(2)}×` : "—"}
+                  </div>
+                </div>
+              </div>
+            ) : (
+              <div className="py-6 text-center text-sm text-muted">No payoff data.</div>
+            )}
+          </Card>
+
+          {/* 5. MFE / MAE (optional) */}
+          {riskData?.mfe_mae && (
+            <Card>
+              <CardTitle>MFE / MAE (Max Favorable / Adverse Excursion in R)</CardTitle>
+              <div className="grid grid-cols-2 gap-3">
+                <div className="rounded-md border border-emerald-200 bg-emerald-50 p-3 dark:border-emerald-800 dark:bg-emerald-950/20">
+                  <div className="text-[10px] uppercase tracking-wide text-emerald-700 dark:text-emerald-300">
+                    Avg Favorable Excursion
+                  </div>
+                  <div className="mt-2 text-lg font-semibold text-emerald-700 dark:text-emerald-300">
+                    {riskData.mfe_mae.avg_mfe_r.toFixed(2)}R
+                  </div>
+                </div>
+                <div className="rounded-md border border-rose-200 bg-rose-50 p-3 dark:border-rose-800 dark:bg-rose-950/20">
+                  <div className="text-[10px] uppercase tracking-wide text-rose-700 dark:text-rose-300">
+                    Avg Adverse Excursion
+                  </div>
+                  <div className="mt-2 text-lg font-semibold text-rose-700 dark:text-rose-300">
+                    {riskData.mfe_mae.avg_mae_r.toFixed(2)}R
+                  </div>
+                </div>
+              </div>
+            </Card>
+          )}
+
+          {/* 6. Risk Adherence */}
+          <Card>
+            <CardTitle>Risk Adherence vs Config</CardTitle>
+            {loading && !riskData ? (
+              <Skeleton className="h-[260px] w-full" />
+            ) : riskData?.risk_adherence ? (
+              <div className="space-y-3">
+                <div className="rounded-md bg-slate-50 p-3 dark:bg-slate-800">
+                  <div className="grid grid-cols-3 gap-2 text-xs">
+                    <div>
+                      <div className="text-muted">Target</div>
+                      <div className="font-semibold text-ink">
+                        ₹{riskData.risk_adherence.target.toLocaleString("en-IN")}
+                      </div>
+                    </div>
+                    <div>
+                      <div className="text-muted">Range</div>
+                      <div className="font-semibold text-ink">
+                        ₹{riskData.risk_adherence.range_min.toLocaleString("en-IN")}–₹
+                        {riskData.risk_adherence.range_max.toLocaleString("en-IN")}
+                      </div>
+                    </div>
+                    <div>
+                      <div className="text-muted">Within Range</div>
+                      <div className="font-semibold text-emerald-600 dark:text-emerald-400">
+                        {riskData.risk_adherence.within_range_pct.toFixed(1)}%
+                      </div>
+                    </div>
+                  </div>
+                </div>
+                {riskData.risk_adherence.distribution.length > 0 && (
+                  <Histogram
+                    data={riskData.risk_adherence.distribution}
+                    xLabel="Risk Amount"
+                    yLabel="Count"
+                    height={180}
+                  />
+                )}
+              </div>
+            ) : (
+              <div className="py-6 text-center text-sm text-muted">No risk adherence data.</div>
+            )}
+          </Card>
+        </div>
+      )}
+
+      {activeTab !== "performance" && activeTab !== "conditions" && activeTab !== "risk" && (
+        <ComingSoonTab label={TABS.find((t) => t.id === activeTab)?.label ?? ""} />
       )}
 
       {/* Footer */}

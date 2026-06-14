@@ -474,11 +474,11 @@ def test_paper_trades_sheet_keeps_no_data_rows_visible() -> None:
 
 def test_paper_trades_sheet_day_total_pnl_column() -> None:
     """``day_total_pnl`` lives between ``outcome`` and ``result_chip`` on
-    the Paper Trades sheet. Its value on every row is the sum of
-    ``paper_pnl`` across every TAKEN row sharing the same date (NO_DATA
-    rows carry paper_pnl == 0 so they don't move the total).
+    the Paper Trades sheet. Same-date rows are merged into a single cell
+    showing the sum of ``paper_pnl`` for that day (NO_DATA contributes 0).
     """
     from openpyxl import Workbook
+    from openpyxl.utils import get_column_letter
     from src.dashboard.paper_sheets import (
         PAPER_TRADE_COLUMNS,
         PAPER_TRADES_HEADER_ROW,
@@ -510,13 +510,17 @@ def test_paper_trades_sheet_day_total_pnl_column() -> None:
     written = build_paper_trades_sheet(ws, df)
     assert written == 5
 
-    day_col = cols.index("day_total_pnl") + 1
-    expected_by_date = {
-        "2026-06-05": 5925.0,
-        "2026-06-06": 2400.0,
-    }
-    date_col_idx = cols.index("date") + 1
-    for r in range(PAPER_TRADES_HEADER_ROW + 1, PAPER_TRADES_HEADER_ROW + 1 + written):
-        date_val = ws.cell(row=r, column=date_col_idx).value
-        day_val = ws.cell(row=r, column=day_col).value
-        assert day_val == pytest.approx(expected_by_date[date_val])
+    day_col_idx = cols.index("day_total_pnl") + 1
+    day_letter = get_column_letter(day_col_idx)
+    h = PAPER_TRADES_HEADER_ROW
+    # Top row of each date carries the day total; rows merged below it
+    # read back as None.
+    assert ws.cell(row=h + 1, column=day_col_idx).value == pytest.approx(5925.0)
+    assert ws.cell(row=h + 2, column=day_col_idx).value is None
+    assert ws.cell(row=h + 3, column=day_col_idx).value is None
+    assert ws.cell(row=h + 4, column=day_col_idx).value == pytest.approx(2400.0)
+    assert ws.cell(row=h + 5, column=day_col_idx).value is None
+    # The two date groups are merged ranges on the day_total_pnl column.
+    ranges = {str(r) for r in ws.merged_cells.ranges}
+    assert f"{day_letter}{h + 1}:{day_letter}{h + 3}" in ranges
+    assert f"{day_letter}{h + 4}:{day_letter}{h + 5}" in ranges

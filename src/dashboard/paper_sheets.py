@@ -78,7 +78,7 @@ PAPER_SHEET_BANNER = (
 
 # Row where the Paper Trades column headers live (data starts at +1).
 # Paired constants — update both if the help/banner block changes size.
-PAPER_TRADES_HEADER_ROW = 11
+PAPER_TRADES_HEADER_ROW = 10
 PAPER_TRADES_DATA_START = PAPER_TRADES_HEADER_ROW + 1
 
 
@@ -226,7 +226,6 @@ def build_paper_trades_sheet(
     help_title.font = Font(name="Calibri", bold=True, color="2E7D32", size=11)
     help_lines = [
         "• Trade #  →  trade number for the day (cap is 3 per config).",
-        "• Day's Total P&L  →  sum of paper_pnl for every TAKEN trade on the same date, repeated on every row of that day.",
         "• result_chip  →  🟢 TP2 / TP1   🟡 TP1→BE   🔴 SL / Hard   ⏹ SqOff (3:00 PM)   · N/A (no data yet).",
         "• intrabar_ambiguous (in JSONL, not shown)  →  same 5-min candle hit BOTH SL and TP.",
         "    e.g. entry ₹100, SL ₹90, TP ₹110; candle low ₹85, high ₹115 → can't tell which side hit first from OHLC.",
@@ -238,7 +237,7 @@ def build_paper_trades_sheet(
         cell = ws.cell(row=r, column=1, value=line)
         cell.font = Font(name="Calibri", italic=True, color="595959", size=10)
 
-    # Headers live at row 11 (1 title + 1 banner + 1 help-title + 6 help + 1 blank).
+    # Headers live at row 10 (1 title + 1 banner + 1 help-title + 5 help + 1 blank).
     header_row = PAPER_TRADES_HEADER_ROW
 
     if paper_trades_df is None or paper_trades_df.empty:
@@ -283,7 +282,6 @@ def build_paper_trades_sheet(
     _set_paper_headers(ws, headers, row=header_row)
 
     written = 0
-    day_total_bold = Font(name="Calibri", size=11, bold=True)
     for offset, (_, row) in enumerate(df.iterrows()):
         excel_row = header_row + 1 + offset
         for col_idx, col in enumerate(df.columns, start=1):
@@ -294,10 +292,8 @@ def build_paper_trades_sheet(
                 v = None
             cell = ws.cell(row=excel_row, column=col_idx, value=v)
             cell.font = PAPER_BODY_FONT
-            if col == "day_total_pnl":
-                cell.font = day_total_bold
-                if v is not None:
-                    cell.number_format = '₹#,##0;[Red]-₹#,##0'
+            if col == "day_total_pnl" and v is not None:
+                cell.number_format = '₹#,##0;[Red]-₹#,##0'
         written += 1
 
     _autofit(ws, df, header_row=header_row)
@@ -305,6 +301,7 @@ def build_paper_trades_sheet(
     # ---------------- per-row fills by outcome / decision ----------------
     col_index = {name: idx + 1 for idx, name in enumerate(df.columns)}
     n_cols = len(df.columns)
+    day_pnl_col_idx = col_index.get("day_total_pnl")
 
     for offset, (_, row) in enumerate(df.iterrows()):
         excel_row = header_row + 1 + offset
@@ -319,11 +316,31 @@ def build_paper_trades_sheet(
             fill = PAPER_OUTCOME_FILLS.get(outcome)
         if fill is not None:
             for c in range(1, n_cols + 1):
+                if c == day_pnl_col_idx:
+                    continue  # day rollup stays neutral so the merge looks clean
                 ws.cell(row=excel_row, column=c).fill = fill
         if strikethrough:
             for c in range(1, n_cols + 1):
                 cell = ws.cell(row=excel_row, column=c)
                 cell.font = Font(name="Calibri", size=11, strike=True)
+
+    # ---------------- merge day_total_pnl across same-date rows ---------
+    if day_pnl_col_idx is not None and written > 0:
+        day_letter = get_column_letter(day_pnl_col_idx)
+        dates_list = df["date"].tolist()
+        i = 0
+        while i < written:
+            j = i + 1
+            while j < written and dates_list[j] == dates_list[i]:
+                j += 1
+            if j - i > 1:
+                top = header_row + 1 + i
+                bot = header_row + j
+                ws.merge_cells(f"{day_letter}{top}:{day_letter}{bot}")
+                ws.cell(row=top, column=day_pnl_col_idx).alignment = Alignment(
+                    horizontal="center", vertical="center",
+                )
+            i = j
 
     # ---------------- data bars on realized_R + paper_pnl ----------------
     if written > 0:

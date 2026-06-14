@@ -156,8 +156,9 @@ frontend/
 │       │   └── ToastContext.tsx        # NEW — global toasts
 │       ├── components/
 │       │   ├── Sidebar, Header, Card, ProgressBar, ComingSoon
-│       │   ├── charts/                 # NEW — PnLChart, ConditionDonut,
+│       │   ├── charts/                 # PnLChart, ConditionDonut,
 │       │   │                           #       StatPanel, PriceSparkline
+│       │   ├── positions/              # F6 — OpenPositionTracker (reusable)
 │       │   └── config/                 # reusable config primitives (F1)
 │       ├── pages/
 │       │   ├── Overview.tsx            # v2 design
@@ -165,7 +166,8 @@ frontend/
 │       │   ├── Instruments.tsx         # F1
 │       │   ├── StrikeScanning.tsx      # Phase 4 — wraps StrikeScanningSection
 │       │   ├── StopLoss.tsx            # Phase 4 — wraps StopLossSection
-│       │   └── RiskMoney.tsx           # Phase 4 — wraps RiskMoneySection
+│       │   ├── RiskMoney.tsx           # Phase 4 — wraps RiskMoneySection
+│       │   └── TradesPerformance.tsx   # F6 — KPIs + live tracker + history
 │       └── lib/                        # api.ts (typed fetch), format.ts
 ├── docs/FRONTEND_PLAN.md               # this file
 └── run_ui.bat
@@ -215,6 +217,9 @@ Open http://localhost:5173/. Vite proxies `/api` to :8000.
 | GET    | `/api/overview?date=YYYY-MM-DD` | Aggregated Overview payload (see below). | Single round-trip; `date` defaults to today IST. |
 | GET    | `/api/config`    | Full `config.yaml` as JSON. | |
 | PUT    | `/api/config`    | `{ok, updated, restart_required, message}` | 422 on validation error. |
+| GET    | `/api/positions/open` | `{as_of, positions:[…]}` | Live read of open paper episodes. LTP / running P&L derived from the most recent matching `signals.jsonl` scan. Never fabricates a price — missing → `null`. |
+| GET    | `/api/trades?date_from&date_to&symbol&option_type&status&outcome` | `{filters, kpis, trades:[…], daily_series:[…]}` | Defaults to today IST. Unrealized P&L is the sum of `running_pnl` across currently-open positions. |
+| GET    | `/api/trades/history?group_by=day\|week\|month&…` | `{group_by, filters, groups:[{period_label, period_start, total_trades, win_rate, total_pnl, realized_pnl, unrealized_pnl, max_profit, max_loss, trades:[…]}]}` | Default window = last 30 days IST when neither `date_from` nor `date_to` supplied. |
 
 ### `/api/overview` payload — Overview v2
 
@@ -266,7 +271,7 @@ These never fabricate values — the UI renders "—" with a tooltip.
 |--------------------------|------------------------|------------|
 | Overview                 | `/overview`            | **v2 done** |
 | Configuration            | `/configuration`       | **Done** (all 11 tabs live) |
-| Instruments              | `/instruments`         | **Done**   |
+| Instruments              | `/instruments`         | **Done** — `nifty_lot_size` / `banknifty_lot_size` are display-only (read from config, note "Auto-verified from broker at 09:15 IST"); only `nifty_enabled` / `banknifty_enabled` are editable |
 | Strike & Scanning        | `/strike-scanning`     | **Done**   |
 | Stop Loss                | `/stop-loss`           | **Done**   |
 | Risk & Money             | `/risk-money`          | **Done**   |
@@ -276,7 +281,7 @@ These never fabricate values — the UI renders "—" with a tooltip.
 | Re-entry Rules           | `/reentry-rules`       | **Done**   |
 | Alerts & Telegram        | `/alerts-telegram`     | **Done**   |
 | Paper Trading            | `/paper-trading`       | Pending    |
-| Trades & Performance     | `/trades-performance`  | Pending    |
+| Trades & Performance     | `/trades-performance`  | **Done** (Phase F6) — KPI row, live `OpenPositionTracker`, filter bar with date presets, Today's Trades table, Daily P&L (₹/% toggle), Trade History grouped by Day/Week/Month with expandable rows |
 | Dashboard & Reports      | `/dashboard-reports`   | Pending    |
 | Logs                     | `/logs`                | Pending    |
 | Bot Status               | `/bot-status`          | Pending    |
@@ -373,7 +378,85 @@ in double quotes if the new value is a bare string. This prevents
 PyYAML (YAML 1.1, used by the bot) from misinterpreting bare
 colon-containing strings like `10:00` as sexagesimal integers.
 
-### Housekeeping — consolidated frontend/requirements.txt
+### Phase F6 — Trades & Performance + reusable OpenPositionTracker
+
+Read-only visualization phase. No bot source touched, no broker calls.
+
+**New API endpoints** (see table above): `/api/positions/open`,
+`/api/trades`, `/api/trades/history`. All three are wrapped in
+defensive try/except so locked, missing or partial JSONL files degrade
+to empty payloads — never 500.
+
+**New service modules** under `frontend/api/app/services/`:
+
+* `positions_service.py` — joins paper episodes (`decision=="TAKEN"
+  AND outcome=="NO_DATA"`) with the latest matching `signals.jsonl`
+  scan to derive `last_ltp`, `last_ltp_time`, `running_pnl`
+  (`(last_ltp - entry) * lots * lot_size`) and `running_pnl_r`
+  (`(last_ltp - entry) / |entry - sl|`). Builds the entry-day price
+  series for the sparkline. Returns `null` when no scan matches —
+  no fabricated price.
+* `trades_service.py` — implements `list_trades(...)` and
+  `history(...)`. KPIs split realized (finalized trades) from
+  unrealized (sum of `running_pnl` across open positions). History
+  groups by day / week / month with stable period labels and a
+  per-period stats block plus its full trade rows for the expandable
+  row UI.
+
+**New reusable component**:
+`web/src/components/positions/OpenPositionTracker.tsx` — polls
+`/api/positions/open` every 15s, renders one card per open episode
+(symbol + strike + relation + RUNNING badge; entry time, lots, buy
+price, LTP with `as of HH:MM` label, SL/TP1/TP2, running P&L in ₹
+and R, horizontal SL→entry→TP1→TP2 track with an LTP triangle, and
+a recharts sparkline of the day's price series). Empty state:
+"No open paper positions." This component will also be mounted on
+the Paper Trading page (F7) and can later replace Overview's static
+Open Position card.
+
+**New page**: `web/src/pages/TradesPerformance.tsx` (route
+`/trades-performance` in `App.tsx`). Layout, top to bottom:
+
+1. **KPI row** (8 tiles) — Total Trades, Winning (+ %), Losing
+   (+ %), Total P&L, Realized, Unrealized, Max Daily Profit, Max
+   Daily Loss.
+2. **OpenPositionTracker** — mounted directly under the KPIs.
+3. **Filter bar** — date-range presets (Today, This Week, This
+   Month, Last Week, Last Month, Custom) + From/To inputs +
+   Symbol/Type/Status/Outcome selects + Apply / Reset. Presets are
+   computed in IST (Monday-start ISO weeks).
+4. **Today's Trades table** — Time / Symbol / Type / Strike (+ rel)
+   / Qty / Buy / Sell / SL / TP1 / TP2 / P&L / Status / Outcome
+   with colored outcome badges (TP2 HIT, TP1 HIT, SL HIT, PARTIAL,
+   RUN, SKIPPED). Totals row + legend.
+5. **Daily P&L Overview** — reuses the Overview `PnLChart`
+   (`ComposedChart` bars + line) with a ₹ / % toggle (% view is a
+   relative bar chart since this layer has no fixed `target_risk`
+   context). Side `StatPanel` shows Total / Realized / Unrealized /
+   Max Profit / Max Loss.
+6. **Trade History** — Group By Day / Week / Month with
+   expandable rows. Each row collapses to label + total P&L; expand
+   shows a 6-stat strip (Total Trades, Win Rate, Total P&L, Realized,
+   Unrealized, Max Day Profit) and the period's full trade rows.
+7. **Footer** — "All times are IST (Asia/Kolkata). Paper P&L;
+   updates each 5-min scan, outcomes finalized at EOD."
+
+**Live-data reality rules** (enforced server-side, surfaced
+client-side):
+
+* LTP is `signals.jsonl::option_close` from the latest matching
+  scan. No scan → `last_ltp = null`, `running_pnl = null`. UI
+  renders `—`, never a fake number.
+* `as_of` and `last_ltp_time` are real IST timestamps from the JSONL
+  rows — the user sees exactly when the bot last priced the option.
+* All values change only on the bot's natural 5-min scan cadence;
+  the 15s UI poll just keeps the screen fresh.
+
+**Polling**: open positions + today's trades refetch every 15s.
+History refetches only on filter / Group By changes.
+
+**Skeletons** show while the first response is in flight. Subsequent
+errors keep the last good payload visible — the UI never blocks.
 
 * `frontend/requirements.txt` created at the frontend root (canonical
   location). Contains: `fastapi>=0.110.0`, `uvicorn[standard]>=0.27.0`,

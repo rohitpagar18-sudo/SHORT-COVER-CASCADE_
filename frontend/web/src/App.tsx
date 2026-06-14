@@ -14,6 +14,7 @@ import TimeRulesPage from "./pages/TimeRules";
 import ReEntryPage from "./pages/ReEntry";
 import AlertsTelegramPage from "./pages/AlertsTelegram";
 import OrdersPage from "./pages/Orders";
+import TradesPerformancePage from "./pages/TradesPerformance";
 import { api, type BotStatus, type Overview } from "./lib/api";
 import { useToast } from "./context/ToastContext";
 
@@ -112,6 +113,7 @@ export default function App() {
             <Route path="/reentry-rules" element={<ReEntryPage />} />
             <Route path="/alerts-telegram" element={<AlertsTelegramPage />} />
             <Route path="/orders" element={<OrdersPage />} />
+            <Route path="/trades-performance" element={<TradesPerformancePage />} />
             {MENU.filter(
               (m) =>
                 m.to !== "/overview" &&
@@ -124,7 +126,8 @@ export default function App() {
                 m.to !== "/time-rules" &&
                 m.to !== "/reentry-rules" &&
                 m.to !== "/alerts-telegram" &&
-                m.to !== "/orders",
+                m.to !== "/orders" &&
+                m.to !== "/trades-performance",
             ).map((m) => (
               <Route key={m.to} path={m.to} element={<ComingSoon />} />
             ))}

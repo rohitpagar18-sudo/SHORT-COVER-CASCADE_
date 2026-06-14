@@ -337,12 +337,6 @@ def validate_changes(doc: Any, changes: Dict[str, Any]) -> List[str]:
         if not isinstance(hts, (int, float)) or isinstance(hts, bool) or hts <= 0:
             errors.append("feeds.healthcheck_timeout_seconds must be a positive number.")
 
-    for sym in ("nifty", "banknifty"):
-        ls = _nested_get(changes, f"instruments.{sym}_lot_size")
-        if ls is not None:
-            if not isinstance(ls, int) or isinstance(ls, bool) or ls <= 0:
-                errors.append(f"instruments.{sym}_lot_size must be a positive integer.")
-
     _validate_strike(doc, changes, errors)
     _validate_stop_loss(changes, errors)
     _validate_risk_reward(changes, errors)

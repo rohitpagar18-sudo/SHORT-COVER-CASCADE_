@@ -164,6 +164,128 @@ async function putJSON<T>(path: string, body: unknown): Promise<T> {
   return (await r.json()) as T;
 }
 
+// ---- Trades & Performance + live open-position tracker (Phase F6) ----
+
+export type LivePosition = {
+  episode_id: string | null;
+  alert_id: string | null;
+  symbol: string | null;
+  option_type: string | null;
+  strike: number | null;
+  relation: string | null;
+  expiry: string | null;
+  entry_time: string | null;
+  qty_lots: number | null;
+  lot_size: number | null;
+  buy_price: number | null;
+  sl: number | null;
+  tp1: number | null;
+  tp2: number | null;
+  last_ltp: number | null;
+  last_ltp_time: string | null;
+  running_pnl: number | null;
+  running_pnl_r: number | null;
+  status: string | null;
+  price_series: Array<{ time: string; price: number }>;
+  bot_remark: string | null;
+};
+
+export type OpenPositionsResponse = {
+  as_of: string | null;
+  positions: LivePosition[];
+};
+
+export type TradeRow = {
+  alert_id: string | null;
+  episode_id: string | null;
+  date: string | null;
+  time: string | null;
+  candle_timestamp: string | null;
+  symbol: string | null;
+  option_type: string | null;
+  strike: number | null;
+  relation: string | null;
+  expiry: string | null;
+  qty_lots: number | null;
+  lot_size: number | null;
+  buy_price: number | null;
+  sell_price: number | null;
+  sl: number | null;
+  tp1: number | null;
+  tp2: number | null;
+  pnl: number | null;
+  realized_R: number | null;
+  status: string | null;
+  outcome: string | null;
+  exit_time: string | null;
+  exit_reason: string | null;
+  bot_remark: string | null;
+};
+
+export type TradesKpis = {
+  total_trades: number;
+  winning_trades: number;
+  winning_pct: number;
+  losing_trades: number;
+  losing_pct: number;
+  total_pnl: number;
+  realized_pnl: number;
+  unrealized_pnl: number;
+  max_daily_profit: number;
+  max_daily_loss: number;
+};
+
+export type DailySeriesPoint = {
+  date: string;
+  realized_pnl: number;
+  is_profit: boolean;
+  net: number;
+};
+
+export type TradeFilters = {
+  date_from: string | null;
+  date_to: string | null;
+  symbol: string | null;
+  option_type: string | null;
+  status: string | null;
+  outcome: string | null;
+};
+
+export type TradesResponse = {
+  filters: TradeFilters;
+  kpis: TradesKpis;
+  trades: TradeRow[];
+  daily_series: DailySeriesPoint[];
+};
+
+export type HistoryGroup = {
+  period_label: string;
+  period_start: string;
+  total_trades: number;
+  win_rate: number;
+  total_pnl: number;
+  realized_pnl: number;
+  unrealized_pnl: number;
+  max_profit: number;
+  max_loss: number;
+  trades: TradeRow[];
+};
+
+export type TradesHistoryResponse = {
+  group_by: "day" | "week" | "month";
+  filters: TradeFilters;
+  groups: HistoryGroup[];
+};
+
+function buildQuery(params: Record<string, string | undefined | null>): string {
+  const usp = new URLSearchParams();
+  Object.entries(params).forEach(([k, v]) => {
+    if (v != null && v !== "") usp.set(k, v);
+  });
+  const s = usp.toString();
+  return s ? `?${s}` : "";
+}
+
 export const api = {
   overview: (date?: string) =>
     getJSON<Overview>(`/api/overview${date ? `?date=${encodeURIComponent(date)}` : ""}`),
@@ -171,4 +293,13 @@ export const api = {
   getConfig: () => getJSON<ConfigData>("/api/config"),
   putConfig: (changes: Record<string, unknown>) =>
     putJSON<PutConfigResult>("/api/config", changes),
+  openPositions: () => getJSON<OpenPositionsResponse>("/api/positions/open"),
+  trades: (params: Partial<TradeFilters> = {}) =>
+    getJSON<TradesResponse>(`/api/trades${buildQuery(params as Record<string, string | undefined | null>)}`),
+  tradesHistory: (
+    params: Partial<TradeFilters> & { group_by?: "day" | "week" | "month" } = {},
+  ) =>
+    getJSON<TradesHistoryResponse>(
+      `/api/trades/history${buildQuery(params as Record<string, string | undefined | null>)}`,
+    ),
 };

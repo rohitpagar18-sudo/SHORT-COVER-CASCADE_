@@ -1,12 +1,10 @@
 import { useEffect, useState } from "react";
 import { useConfig } from "../../../context/ConfigContext";
-import { SectionShell, Toggle, NumberField } from "../index";
+import { SectionShell, Toggle } from "../index";
 
 type InstrumentsLocal = {
   nifty_enabled: boolean;
   banknifty_enabled: boolean;
-  nifty_lot_size: number;
-  banknifty_lot_size: number;
 };
 
 function fromConfig(config: Record<string, unknown> | null): InstrumentsLocal {
@@ -15,9 +13,21 @@ function fromConfig(config: Record<string, unknown> | null): InstrumentsLocal {
   return {
     nifty_enabled: i.nifty_enabled ?? true,
     banknifty_enabled: i.banknifty_enabled ?? true,
-    nifty_lot_size: i.nifty_lot_size ?? 75,
-    banknifty_lot_size: i.banknifty_lot_size ?? 30,
   };
+}
+
+function LotSizeDisplay({ label, value }: { label: string; value: number | null }) {
+  return (
+    <div className="flex flex-col gap-1 py-3 border-b border-line2 last:border-0">
+      <div className="flex items-center justify-between">
+        <span className="text-sm font-medium text-fg1">{label}</span>
+        <span className="text-sm font-mono text-fg1 bg-bg2 border border-line2 rounded px-2 py-0.5 select-none">
+          {value ?? "—"} units
+        </span>
+      </div>
+      <p className="text-xs text-fg3">Auto-verified from broker at 09:15 IST</p>
+    </div>
+  );
 }
 
 export function InstrumentsSection() {
@@ -27,6 +37,11 @@ export function InstrumentsSection() {
   useEffect(() => {
     setLocal(fromConfig(config));
   }, [config]);
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const instruments: any = (config as any)?.instruments ?? {};
+  const niftyLotSize: number | null = instruments.nifty_lot_size ?? null;
+  const bankniftyLotSize: number | null = instruments.banknifty_lot_size ?? null;
 
   const remote = fromConfig(config);
   const isDirty = JSON.stringify(local) !== JSON.stringify(remote);
@@ -45,7 +60,7 @@ export function InstrumentsSection() {
   return (
     <SectionShell
       title="Instruments"
-      subtitle="Which underlyings the bot watches. Lot sizes are auto-verified against the broker at 9:15 AM."
+      subtitle="Which underlyings the bot watches. Lot sizes are read from config and auto-verified against the broker at 09:15 IST."
       onSave={handleSave}
       isDirty={isDirty}
       onReload={handleReload}
@@ -56,28 +71,14 @@ export function InstrumentsSection() {
         value={local.nifty_enabled}
         onChange={(v) => set({ nifty_enabled: v })}
       />
-      <NumberField
-        label="NIFTY Lot Size"
-        helper="Bot warns and uses broker value if mismatch detected at 9:15 AM"
-        value={local.nifty_lot_size}
-        min={1}
-        onChange={(v) => set({ nifty_lot_size: v })}
-        suffix="units"
-      />
+      <LotSizeDisplay label="NIFTY Lot Size" value={niftyLotSize} />
       <Toggle
         label="BankNifty Enabled"
         helper="Scan BankNifty options on every 5-min candle close"
         value={local.banknifty_enabled}
         onChange={(v) => set({ banknifty_enabled: v })}
       />
-      <NumberField
-        label="BankNifty Lot Size"
-        helper="Bot warns and uses broker value if mismatch detected at 9:15 AM"
-        value={local.banknifty_lot_size}
-        min={1}
-        onChange={(v) => set({ banknifty_lot_size: v })}
-        suffix="units"
-      />
+      <LotSizeDisplay label="BankNifty Lot Size" value={bankniftyLotSize} />
     </SectionShell>
   );
 }

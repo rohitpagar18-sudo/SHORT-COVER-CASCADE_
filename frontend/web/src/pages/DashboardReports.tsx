@@ -15,8 +15,14 @@ import {
   type ReportDuration,
   type ConditionsReport,
   type RiskReport,
+  type InsightsReport,
+  type InsightsBreakdownRow,
+  type MonthlyReport,
+  type MonthlyDetailRow,
+  type SystemHealth,
 } from "../lib/api";
 import { inr, inrSigned } from "../lib/format";
+import CalendarHeatmap from "../components/charts/CalendarHeatmap";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -442,6 +448,9 @@ export default function DashboardReportsPage() {
   const [data, setData] = useState<PerformanceReport | null>(null);
   const [conditionsData, setConditionsData] = useState<ConditionsReport | null>(null);
   const [riskData, setRiskData] = useState<RiskReport | null>(null);
+  const [insightsData, setInsightsData] = useState<InsightsReport | null>(null);
+  const [monthlyData, setMonthlyData] = useState<MonthlyReport | null>(null);
+  const [healthData, setHealthData] = useState<SystemHealth | null>(null);
   const [stale, setStale] = useState(false);
   const [lastSynced, setLastSynced] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
@@ -452,15 +461,19 @@ export default function DashboardReportsPage() {
   const fetchData = useCallback(
     async (df: string, dt: string, ag: string) => {
       try {
-        const [perfResult, condResult, riskResult] = await Promise.all([
+        const [perfResult, condResult, riskResult, insightsResult, monthlyResult] = await Promise.all([
           api.reportsPerformance({ date_from: df, date_to: dt, agg: ag }),
           api.reportsConditions({ date_from: df, date_to: dt }),
           api.reportsRisk({ date_from: df, date_to: dt }),
+          api.reportsInsights({ date_from: df, date_to: dt }),
+          api.reportsMonthly({ date_from: df, date_to: dt }),
         ]);
         if (!aliveRef.current) return;
         setData(perfResult);
         setConditionsData(condResult);
         setRiskData(riskResult);
+        setInsightsData(insightsResult);
+        setMonthlyData(monthlyResult);
         setStale(false);
         setLastSynced(nowISTHHMM());
       } catch {
@@ -492,6 +505,29 @@ export default function DashboardReportsPage() {
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [appliedFrom, appliedTo, agg]);
+
+  // Health polling — independent 30s loop, no date params
+  const HEALTH_POLL_MS = 30_000;
+  const healthAliveRef = useRef(true);
+  const healthTimerRef = useRef<number | undefined>(undefined);
+
+  useEffect(() => {
+    healthAliveRef.current = true;
+    const tick = async () => {
+      try {
+        const h = await api.systemHealth();
+        if (healthAliveRef.current) setHealthData(h);
+      } catch { /* keep last */ }
+      if (healthAliveRef.current) {
+        healthTimerRef.current = window.setTimeout(tick, HEALTH_POLL_MS);
+      }
+    };
+    tick();
+    return () => {
+      healthAliveRef.current = false;
+      if (healthTimerRef.current) window.clearTimeout(healthTimerRef.current);
+    };
+  }, []);
 
   const onPickPreset = useCallback((p: DatePreset) => {
     setPreset(p);
@@ -1210,13 +1246,336 @@ export default function DashboardReportsPage() {
         </div>
       )}
 
-      {activeTab !== "performance" && activeTab !== "conditions" && activeTab !== "risk" && (
-        <ComingSoonTab label={TABS.find((t) => t.id === activeTab)?.label ?? ""} />
+      {/* ---- Strategy Insights tab ---- */}
+      {activeTab === "strategy" && (
+        <div className="space-y-4">
+          {/* Key Insights card */}
+          <Card>
+            <CardTitle>Key Insights</CardTitle>
+            {loading && !insightsData ? (
+              <Skeleton className="h-[80px] w-full" />
+            ) : insightsData?.key_insights && insightsData.key_insights.length > 0 ? (
+              <ul className="space-y-2">
+                {insightsData.key_insights.map((insight, i) => (
+                  <li key={i} className="flex items-start gap-2 text-sm text-ink">
+                    <span className="mt-0.5 h-2 w-2 shrink-0 rounded-full bg-emerald-500" />
+                    {insight}
+                  </li>
+                ))}
+              </ul>
+            ) : (
+              <div className="rounded-md bg-slate-50 p-3 text-sm text-muted dark:bg-slate-800">
+                {insightsData?.note ?? "Not enough data yet for reliable insights."}
+                {insightsData?.total_n != null && insightsData.total_n > 0 && insightsData.key_insights.length === 0 && (
+                  <span className="ml-1">
+                    (need ≥ {insightsData.min_sample} trades per dimension; showing breakdowns only)
+                  </span>
+                )}
+              </div>
+            )}
+          </Card>
+
+          {/* Breakdown panels grid — 2 columns on md+ */}
+          {insightsData?.breakdowns && (() => {
+            const sections: Array<{ key: keyof typeof insightsData.breakdowns; label: string }> = [
+              { key: "by_time_of_day", label: "Time of Day (30-min buckets)" },
+              { key: "by_weekday",     label: "Day of Week" },
+              { key: "by_symbol",      label: "Symbol" },
+              { key: "by_relation",    label: "Strike Relation" },
+              { key: "by_option_type", label: "Option Type (CE / PE)" },
+            ];
+            if (insightsData.breakdowns.by_day_type) {
+              sections.push({ key: "by_day_type", label: "Day Type (Expiry vs Normal)" });
+            }
+
+            return (
+              <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+                {sections.map(({ key, label }) => {
+                  const rows = insightsData.breakdowns[key] as InsightsBreakdownRow[] | undefined;
+                  if (!rows || rows.length === 0) return null;
+                  return (
+                    <Card key={key}>
+                      <CardTitle>{label}</CardTitle>
+                      <div className="overflow-x-auto">
+                        <table className="w-full text-xs">
+                          <thead className="text-left text-[10px] uppercase text-muted">
+                            <tr className="border-b border-line">
+                              <th className="py-2 pr-3">Bucket</th>
+                              <th className="py-2 pr-3">n</th>
+                              <th className="py-2 pr-3">Win Rate</th>
+                              <th className="py-2 pr-3">Avg R</th>
+                              <th className="py-2">Total P&L</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {rows.map((r, i) => (
+                              <tr key={i} className="border-b border-line2 last:border-0">
+                                <td className="py-1.5 pr-3 font-medium text-ink">{r.key}</td>
+                                <td className="py-1.5 pr-3 text-muted">{r.n}</td>
+                                <td className={`py-1.5 pr-3 font-semibold ${r.win_rate >= 50 ? "text-emerald-600 dark:text-emerald-400" : "text-rose-600 dark:text-rose-400"}`}>
+                                  {r.win_rate.toFixed(1)}%
+                                </td>
+                                <td className={`py-1.5 pr-3 ${r.avg_r >= 0 ? "text-emerald-600 dark:text-emerald-400" : "text-rose-600 dark:text-rose-400"}`}>
+                                  {r.avg_r >= 0 ? "+" : ""}{r.avg_r.toFixed(2)}R
+                                </td>
+                                <td className={`py-1.5 font-semibold ${r.total_pnl >= 0 ? "text-emerald-600 dark:text-emerald-400" : "text-rose-600 dark:text-rose-400"}`}>
+                                  {inrSigned(r.total_pnl)}
+                                </td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    </Card>
+                  );
+                })}
+              </div>
+            );
+          })()}
+        </div>
+      )}
+
+      {/* ---- Monthly Summary tab ---- */}
+      {activeTab === "monthly" && (
+        <div className="space-y-4">
+          {/* Monthly detail table */}
+          <Card>
+            <CardTitle>Monthly Performance</CardTitle>
+            {loading && !monthlyData ? (
+              <Skeleton className="h-[200px] w-full" />
+            ) : !monthlyData?.months || monthlyData.months.length === 0 ? (
+              <div className="py-6 text-center text-sm text-muted">No monthly data.</div>
+            ) : (
+              <div className="overflow-x-auto">
+                <table className="w-full text-xs">
+                  <thead className="text-left text-[10px] uppercase text-muted">
+                    <tr className="border-b border-line">
+                      <th className="py-2 pr-3">Month</th>
+                      <th className="py-2 pr-3">Trades</th>
+                      <th className="py-2 pr-3">Win Rate</th>
+                      <th className="py-2 pr-3">Total P&L</th>
+                      <th className="py-2 pr-3">Realized</th>
+                      <th className="py-2 pr-3">Unrealized</th>
+                      <th className="py-2 pr-3">Prof. Factor</th>
+                      <th className="py-2 pr-3">Max Profit</th>
+                      <th className="py-2 pr-3">Max Loss</th>
+                      <th className="py-2 pr-3">Best Day</th>
+                      <th className="py-2">Worst Day</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {monthlyData.months.map((r: MonthlyDetailRow) => (
+                      <tr key={r.month_key} className="border-b border-line2 last:border-0">
+                        <td className="py-2 pr-3 font-medium text-ink">{r.month}</td>
+                        <td className="py-2 pr-3 text-ink">{r.total_trades}</td>
+                        <td className="py-2 pr-3 text-ink">{r.win_rate.toFixed(1)}%</td>
+                        <td className={`py-2 pr-3 font-semibold ${r.total_pnl >= 0 ? "text-emerald-600 dark:text-emerald-400" : "text-rose-600 dark:text-rose-400"}`}>
+                          {inrSigned(r.total_pnl)}
+                        </td>
+                        <td className={`py-2 pr-3 ${r.realized_pnl >= 0 ? "text-emerald-600 dark:text-emerald-400" : "text-rose-600 dark:text-rose-400"}`}>
+                          {inrSigned(r.realized_pnl)}
+                        </td>
+                        <td className="py-2 pr-3 text-ink">{inrSigned(r.unrealized_pnl)}</td>
+                        <td className="py-2 pr-3 text-ink">{r.profit_factor != null ? `${r.profit_factor.toFixed(2)}×` : "—"}</td>
+                        <td className="py-2 pr-3 text-emerald-600 dark:text-emerald-400">{inrSigned(r.max_profit)}</td>
+                        <td className="py-2 pr-3 text-rose-600 dark:text-rose-400">{inrSigned(r.max_loss)}</td>
+                        <td className="py-2 pr-3 text-xs text-muted">{r.best_day ? `${r.best_day.date} (${inrSigned(r.best_day.pnl)})` : "—"}</td>
+                        <td className="py-2 text-xs text-muted">{r.worst_day ? `${r.worst_day.date} (${inrSigned(r.worst_day.pnl)})` : "—"}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </Card>
+
+          {/* Calendar Heatmap */}
+          <Card>
+            <CardTitle>Daily P&L Calendar</CardTitle>
+            {loading && !monthlyData ? (
+              <Skeleton className="h-[300px] w-full" />
+            ) : (
+              <CalendarHeatmap data={monthlyData?.calendar ?? []} />
+            )}
+          </Card>
+        </div>
+      )}
+
+      {/* ---- System Health tab ---- */}
+      {activeTab === "health" && (
+        <div className="space-y-4">
+          {/* Feed + Bot status row */}
+          <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+            <Card>
+              <CardTitle>Feed</CardTitle>
+              {!healthData ? <Skeleton className="h-[80px] w-full" /> : (
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs text-muted">Active Feed</span>
+                    <span className="font-mono text-sm font-semibold uppercase text-ink">{healthData.feed.active_feed || "—"}</span>
+                  </div>
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs text-muted">Status</span>
+                    <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-semibold text-white ${healthData.feed.status === "connected" ? "bg-emerald-500" : "bg-rose-500"}`}>
+                      {healthData.feed.status?.toUpperCase() ?? "UNKNOWN"}
+                    </span>
+                  </div>
+                </div>
+              )}
+            </Card>
+
+            <Card>
+              <CardTitle>Bot</CardTitle>
+              {!healthData ? <Skeleton className="h-[80px] w-full" /> : (
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs text-muted">Status</span>
+                    <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-semibold text-white ${healthData.bot.status === "RUNNING" ? "bg-emerald-500" : "bg-rose-500"}`}>
+                      {healthData.bot.status}
+                    </span>
+                  </div>
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs text-muted">Last Activity</span>
+                    <span className="text-xs font-mono text-ink">{healthData.bot.last_activity_ist ? healthData.bot.last_activity_ist.slice(0, 19).replace("T", " ") : "—"}</span>
+                  </div>
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs text-muted">Uptime</span>
+                    <span className="text-xs text-ink">{healthData.bot.uptime_seconds != null ? `${Math.floor(healthData.bot.uptime_seconds / 3600)}h ${Math.floor((healthData.bot.uptime_seconds % 3600) / 60)}m` : "—"}</span>
+                  </div>
+                </div>
+              )}
+            </Card>
+          </div>
+
+          {/* Scan Cadence */}
+          <Card>
+            <CardTitle>Scan Cadence</CardTitle>
+            {!healthData ? <Skeleton className="h-[100px] w-full" /> : (
+              <div className="space-y-3">
+                <div className="flex items-center gap-3">
+                  <span className={`inline-flex items-center rounded-full px-2.5 py-1 text-xs font-semibold text-white ${healthData.scan_cadence.healthy ? "bg-emerald-500" : "bg-amber-500"}`}>
+                    {healthData.scan_cadence.healthy ? "HEALTHY" : "GAPS DETECTED"}
+                  </span>
+                  <span className="text-xs text-muted">Expected interval: {healthData.scan_cadence.expected_interval_min} min</span>
+                </div>
+                <p className="text-xs text-muted">{healthData.scan_cadence.note}</p>
+                {healthData.scan_cadence.recent_gaps.length > 0 && (
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-xs">
+                      <thead className="text-left text-[10px] uppercase text-muted">
+                        <tr className="border-b border-line">
+                          <th className="py-1 pr-3">From</th>
+                          <th className="py-1 pr-3">To</th>
+                          <th className="py-1">Gap (min)</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {healthData.scan_cadence.recent_gaps.map((g, i) => (
+                          <tr key={i} className="border-b border-line2 last:border-0">
+                            <td className="py-1 pr-3 font-mono text-ink">{g.from.slice(11, 19)}</td>
+                            <td className="py-1 pr-3 font-mono text-ink">{g.to.slice(11, 19)}</td>
+                            <td className="py-1 font-semibold text-amber-600">{g.gap_min}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </div>
+            )}
+          </Card>
+
+          {/* Log Files */}
+          <Card>
+            <CardTitle>Log Files</CardTitle>
+            {!healthData ? <Skeleton className="h-[120px] w-full" /> : (
+              <div className="overflow-x-auto">
+                <table className="w-full text-xs">
+                  <thead className="text-left text-[10px] uppercase text-muted">
+                    <tr className="border-b border-line">
+                      <th className="py-2 pr-3">File</th>
+                      <th className="py-2 pr-3">Last Modified</th>
+                      <th className="py-2 pr-3">Size</th>
+                      <th className="py-2">Status</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {healthData.files.map((f, i) => (
+                      <tr key={i} className="border-b border-line2 last:border-0">
+                        <td className="py-2 pr-3 font-mono text-ink">{f.name}</td>
+                        <td className="py-2 pr-3 font-mono text-muted">{f.last_modified_ist ? f.last_modified_ist.slice(0, 19).replace("T", " ") : "—"}</td>
+                        <td className="py-2 pr-3 text-muted">{f.size_kb != null ? `${f.size_kb} KB` : "—"}</td>
+                        <td className="py-2">
+                          <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-semibold ${f.fresh ? "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300" : "bg-rose-100 text-rose-700 dark:bg-rose-900/40 dark:text-rose-300"}`}>
+                            {f.fresh ? "FRESH" : "STALE"}
+                          </span>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </Card>
+
+          {/* Data Issues */}
+          <Card>
+            <CardTitle>
+              Data Issues
+              {healthData?.data_issues.count != null && healthData.data_issues.count > 0 && (
+                <span className="ml-2 inline-flex items-center rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-semibold text-amber-700 dark:bg-amber-900/40 dark:text-amber-300">
+                  {healthData.data_issues.count}
+                </span>
+              )}
+            </CardTitle>
+            {!healthData ? <Skeleton className="h-[80px] w-full" /> : healthData.data_issues.count === 0 ? (
+              <div className="py-4 text-center text-sm text-muted">No data issues detected.</div>
+            ) : (
+              <div className="overflow-x-auto">
+                <table className="w-full text-xs">
+                  <thead className="text-left text-[10px] uppercase text-muted">
+                    <tr className="border-b border-line">
+                      <th className="py-1 pr-3">Time</th>
+                      <th className="py-1 pr-3">Type</th>
+                      <th className="py-1">Detail</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {healthData.data_issues.recent.map((iss, i) => (
+                      <tr key={i} className="border-b border-line2 last:border-0">
+                        <td className="py-1 pr-3 font-mono text-muted">{iss.time ? String(iss.time).slice(11, 19) : "—"}</td>
+                        <td className="py-1 pr-3 font-semibold text-amber-700 dark:text-amber-400">{iss.issue_type}</td>
+                        <td className="py-1 text-muted">{iss.detail || "—"}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </Card>
+
+          {/* Config Reload + Dashboard Sync */}
+          <Card>
+            <CardTitle>System Timestamps</CardTitle>
+            {!healthData ? <Skeleton className="h-[60px] w-full" /> : (
+              <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                <div className="flex items-center justify-between rounded-md bg-slate-50 px-3 py-2 dark:bg-slate-800">
+                  <span className="text-xs text-muted">Last Config Reload</span>
+                  <span className="font-mono text-xs text-ink">{healthData.last_config_reload_ist ? healthData.last_config_reload_ist.slice(0, 19).replace("T", " ") : "—"}</span>
+                </div>
+                <div className="flex items-center justify-between rounded-md bg-slate-50 px-3 py-2 dark:bg-slate-800">
+                  <span className="text-xs text-muted">Last Dashboard Sync</span>
+                  <span className="font-mono text-xs text-ink">{healthData.last_dashboard_sync_ist ? healthData.last_dashboard_sync_ist.slice(0, 19).replace("T", " ") : "—"}</span>
+                </div>
+              </div>
+            )}
+          </Card>
+        </div>
       )}
 
       {/* Footer */}
       <div className="pb-4 pt-2 text-center text-xs text-muted">
-        All times are IST (Asia/Kolkata). Paper P&L; outcomes finalize at EOD.
+        All times are IST (Asia/Kolkata). Paper P&L; health inferred from file activity.
       </div>
     </div>
   );

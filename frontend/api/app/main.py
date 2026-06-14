@@ -26,6 +26,9 @@ from .routers import paper as paper_router
 from .routers import reports as reports_router
 from .routers import conditions as conditions_router
 from .routers import risk as risk_router
+from .routers import insights as insights_router
+from .routers import monthly as monthly_router
+from .routers import system_health as system_health_router
 
 
 def create_app() -> FastAPI:
@@ -55,6 +58,9 @@ def create_app() -> FastAPI:
     app.include_router(reports_router.router, prefix="/api")
     app.include_router(conditions_router.router, prefix="/api")
     app.include_router(risk_router.router, prefix="/api")
+    app.include_router(insights_router.router, prefix="/api")
+    app.include_router(monthly_router.router, prefix="/api")
+    app.include_router(system_health_router.router, prefix="/api")
 
     # Serve the built SPA (single-port mode). In dev (Vite), this dir
     # may be empty and that's fine — Vite is on 5173.

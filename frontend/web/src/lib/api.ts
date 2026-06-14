@@ -475,6 +475,88 @@ export type RiskReport = {
   payoff: Payoff;
 };
 
+// ---- Dashboard & Reports F7c: Insights + Monthly Summary + System Health ----
+
+export type InsightsBreakdownRow = {
+  key: string;
+  n: number;
+  win_rate: number;
+  avg_r: number;
+  total_pnl: number;
+};
+
+export type InsightsBreakdowns = {
+  by_time_of_day: InsightsBreakdownRow[];
+  by_weekday: InsightsBreakdownRow[];
+  by_symbol: InsightsBreakdownRow[];
+  by_relation: InsightsBreakdownRow[];
+  by_option_type: InsightsBreakdownRow[];
+  by_day_type?: InsightsBreakdownRow[];
+  by_gap_type?: InsightsBreakdownRow[];
+};
+
+export type InsightsReport = {
+  breakdowns: InsightsBreakdowns;
+  key_insights: string[];
+  total_n: number;
+  min_sample: number;
+  note: string | null;
+  meta: { date_from: string; date_to: string };
+};
+
+export type MonthlyBestDay = { date: string | null; pnl: number };
+
+export type MonthlyDetailRow = {
+  month: string;
+  month_key: string;
+  total_trades: number;
+  win_rate: number;
+  total_pnl: number;
+  realized_pnl: number;
+  unrealized_pnl: number;
+  profit_factor: number | null;
+  max_profit: number;
+  max_loss: number;
+  best_day: MonthlyBestDay | null;
+  worst_day: MonthlyBestDay | null;
+};
+
+export type CalendarDay = { date: string; pnl: number; trades: number };
+
+export type MonthlyReport = {
+  months: MonthlyDetailRow[];
+  calendar: CalendarDay[];
+  meta: { date_from: string; date_to: string };
+};
+
+export type SystemHealthFile = {
+  name: string;
+  last_modified_ist: string | null;
+  size_kb: number | null;
+  fresh: boolean;
+};
+
+export type ScanGap = { from: string; to: string; gap_min: number };
+
+export type ScanCadence = {
+  expected_interval_min: number;
+  recent_gaps: ScanGap[];
+  healthy: boolean;
+  note: string;
+};
+
+export type DataIssue = { time: string | null; issue_type: string; detail: string };
+
+export type SystemHealth = {
+  feed: { active_feed: string; status: string };
+  bot: { status: string; last_activity_ist: string | null; uptime_seconds: number | null };
+  scan_cadence: ScanCadence;
+  files: SystemHealthFile[];
+  data_issues: { count: number; recent: DataIssue[] };
+  last_config_reload_ist: string | null;
+  last_dashboard_sync_ist: string | null;
+};
+
 function buildQuery(params: Record<string, string | undefined | null>): string {
   const usp = new URLSearchParams();
   Object.entries(params).forEach(([k, v]) => {
@@ -515,4 +597,9 @@ export const api = {
     getJSON<ConditionsReport>(`/api/reports/conditions${buildQuery(params as Record<string, string | undefined | null>)}`),
   reportsRisk: (params: { date_from?: string; date_to?: string } = {}) =>
     getJSON<RiskReport>(`/api/reports/risk${buildQuery(params as Record<string, string | undefined | null>)}`),
+  reportsInsights: (params: { date_from?: string; date_to?: string } = {}) =>
+    getJSON<InsightsReport>(`/api/reports/insights${buildQuery(params as Record<string, string | undefined | null>)}`),
+  reportsMonthly: (params: { date_from?: string; date_to?: string } = {}) =>
+    getJSON<MonthlyReport>(`/api/reports/monthly${buildQuery(params as Record<string, string | undefined | null>)}`),
+  systemHealth: () => getJSON<SystemHealth>("/api/system/health"),
 };

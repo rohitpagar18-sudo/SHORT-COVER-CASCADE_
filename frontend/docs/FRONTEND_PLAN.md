@@ -226,6 +226,9 @@ Open http://localhost:5173/. Vite proxies `/api` to :8000.
 | GET    | `/api/reports/performance?date_from&date_to&agg=daily\|weekly\|monthly` | Performance report (KPIs, cumulative, underlying, weekday, winners/losers, outcome distribution, duration, monthly) | Default range = This Month IST; prev-period deltas for KPIs. |
 | GET    | `/api/reports/conditions?date_from&date_to` | Condition pass rates, funnel, bottleneck, C5 shadow analysis, DI alignment | IST; default = This Month. |
 | GET    | `/api/reports/risk?date_from&date_to` | R-distribution, equity curve, drawdown, streaks, MFE/MAE, risk adherence, payoff | IST; default = This Month. |
+| GET    | `/api/reports/insights?date_from&date_to` | Strategy-level breakdowns (time-of-day, weekday, symbol, relation, CE/PE, day-type) + rule-based key_insights (guarded by MIN_SAMPLE=10) | IST; default = This Month. |
+| GET    | `/api/reports/monthly?date_from&date_to` | Monthly aggregates (all-time, newest-first) + per-day calendar heatmap data (date-range filtered). best_day/worst_day per month. | IST; default = This Month for calendar. |
+| GET    | `/api/system/health` | **SHARED — F7c + F8 Bot Status.** Feed, bot (RUNNING/STOPPED + last activity + uptime), scan cadence (gap analysis on signals.jsonl), log file sizes/mtimes/fresh, data_issues, last_config_reload_ist, last_dashboard_sync_ist. | Polled every 30s. No date params. |
 
 ### `/api/overview` payload — Overview v2
 
@@ -288,7 +291,7 @@ These never fabricate values — the UI renders "—" with a tooltip.
 | Alerts & Telegram        | `/alerts-telegram`     | **Done**   |
 | Paper Trading            | `/paper-trading`       | **Done** (F7) |
 | Trades & Performance     | `/trades-performance`  | **Done** (Phase F6) — KPI row, live `OpenPositionTracker`, filter bar with date presets, Today's Trades table, Daily P&L (₹/% toggle), Trade History grouped by Day/Week/Month with expandable rows |
-| Dashboard & Reports      | `/dashboard-reports`   | **Done** (F7b) — Performance Overview, Condition Analysis (C0–C5), Risk Analysis tabs functional; 3 other tabs pending |
+| Dashboard & Reports      | `/dashboard-reports`   | **COMPLETE** (F7c) — All 6 tabs done: Performance Overview, Strategy Insights, Condition Analysis (C0–C5), Risk Analysis, Monthly Summary, System Health. |
 | Logs                     | `/logs`                | Pending    |
 | Bot Status               | `/bot-status`          | Pending    |
 | Settings                 | `/settings`            | Pending    |
@@ -532,6 +535,79 @@ instead of recomputing inline.
    update each 5-min scan, outcomes finalize at EOD."
 
 **Read-only guarantee**: no file writes anywhere in this phase.
+
+### Phase F7c — Dashboard & Reports: Strategy Insights + Monthly Summary + System Health
+
+Read-only visualization phase. Completes all 6 tabs on the Dashboard & Reports page.
+No bot source touched, no broker calls, no writes to `logs/` or `data/`.
+
+**New API endpoints** (see table above):
+`/api/reports/insights`, `/api/reports/monthly`, `/api/system/health`.
+All reads wrapped in defensive try/except — missing or locked files degrade to
+empty payloads, never 500. No `secrets.env` read anywhere.
+
+**New service modules** under `frontend/api/app/services/`:
+
+* `insights_service.py` — reads `paper_trades.jsonl` (max 20k lines), filters to
+  TAKEN + representative rows in the date range, computes 5 (or 6) breakdowns:
+  `by_time_of_day` (30-min buckets), `by_weekday` (Mon–Fri), `by_symbol`,
+  `by_relation` (ITM3..OTM3 ordered), `by_option_type` (CE/PE), and optionally
+  `by_day_type` (Expiry/Normal — only included when `is_expiry_day` field is
+  present in the data). `by_gap_type` is intentionally absent — no gap_type field
+  in `paper_trades.jsonl`.
+  `key_insights` is a rule-based list generated **only** for dimensions whose
+  n ≥ `MIN_SAMPLE` (= 10). Smaller samples appear in the breakdown table but
+  produce no insight string — guarding against false conclusions from small N.
+
+* `monthly_service.py` — reads `paper_trades.jsonl`. Produces two outputs:
+  - `months`: all-time aggregation (newest-first) with best_day/worst_day per month
+    (absent from the earlier Performance Overview monthly table).
+  - `calendar`: per-day `{date, pnl, trades}` filtered to the query date range,
+    used by the CalendarHeatmap component.
+
+* `health_service.py` — derives a real-time operational snapshot:
+  - `feed`: active_feed name (from config.yaml) + connected/disconnected (from bot.log mtime).
+  - `bot`: status, last_activity_ist, uptime_seconds (all from `botstatus_service`).
+  - `scan_cadence`: parses `timestamp_ist` from `signals.jsonl`, filters to
+    Mon–Fri 09:15–15:30 IST, finds consecutive gaps > 7 min. Returns last 10 gaps
+    + `healthy` bool. Empty signals.jsonl → healthy=True, no gaps.
+  - `files`: `os.stat` on signals.jsonl / alerts.jsonl / paper_trades.jsonl /
+    state.json / bot.log. Each row: `{name, last_modified_ist, size_kb, fresh}`.
+    fresh = modified within 86,400 s. OSError → all null/False.
+  - `data_issues`: scans `signals.jsonl` for rows with `event_type=="data_issue"`
+    or a non-null `issue_type` field (e.g., C5_ADX). Returns count + last 10.
+  - `last_config_reload_ist`: config.yaml mtime via `botstatus_service`.
+  - `last_dashboard_sync_ist`: reversed scan of `bot.log` for lines containing
+    "dashboard" or "sync"; extracts loguru timestamp. None if not found.
+
+  **SHARED**: this endpoint is explicitly designed for reuse by F8 Bot Status page —
+  no duplication of health logic will be needed there.
+
+**New routers** `frontend/api/app/routers/insights.py`, `monthly.py`,
+`system_health.py`. All follow the thin-wrapper pattern.
+
+**New chart component** `web/src/components/charts/CalendarHeatmap.tsx`:
+* Accepts `data: CalendarDay[]` (`{date, pnl, trades}`).
+* Groups by YYYY-MM, renders one calendar grid per month.
+* Mon-first week layout using `(getDay() + 6) % 7` ISO weekday arithmetic.
+* 3-intensity colour scaling: light/medium/dark × green/red based on |pnl| / max(|pnl|).
+* Fixed-position hover tooltip showing date, INR P&L (with sign), and trade count.
+* Entirely self-contained — no recharts dependency.
+* Empty data → "No data for this period." placeholder.
+* Exports `CalendarDay` type for consumers.
+
+**MIN_SAMPLE insight guard** (`MIN_SAMPLE = 10`):
+Key insights are asserted ONLY when the relevant dimension has ≥ 10 trades.
+Below that threshold, breakdowns are shown in the table (with n clearly visible)
+but no claim is made in `key_insights`. A `note` field in the payload explains
+the silence when total_n is between 1 and MIN_SAMPLE.
+
+**Polling**: insights + monthly every 60s (shared main fetch), system health every
+30s (independent effect with its own abort refs). Date range persists across tabs.
+
+**Read-only guarantee**: no file writes anywhere in this phase.
+
+---
 
 ### Phase F7b — Dashboard & Reports: Conditions + Risk Analysis
 

@@ -220,6 +220,10 @@ Open http://localhost:5173/. Vite proxies `/api` to :8000.
 | GET    | `/api/positions/open` | `{as_of, positions:[…]}` | Live read of open paper episodes. LTP / running P&L derived from the most recent matching `signals.jsonl` scan. Never fabricates a price — missing → `null`. |
 | GET    | `/api/trades?date_from&date_to&symbol&option_type&status&outcome` | `{filters, kpis, trades:[…], daily_series:[…]}` | Defaults to today IST. Unrealized P&L is the sum of `running_pnl` across currently-open positions. |
 | GET    | `/api/trades/history?group_by=day\|week\|month&…` | `{group_by, filters, groups:[{period_label, period_start, total_trades, win_rate, total_pnl, realized_pnl, unrealized_pnl, max_profit, max_loss, trades:[…]}]}` | Default window = last 30 days IST when neither `date_from` nor `date_to` supplied. |
+| GET    | `/api/paper/today` | `{selection:{max_trades_per_day, trades_taken, trades_remaining, daily_sl_hit, max_sl_per_day, cooldown_active, same_strike_sl_count}, reentry:{cooldown_minutes, minutes_since_last_sl, same_strike_kill_enabled, strikes_locked_today}}` | Reuses `paper_service.get_trade_plan_dict()` and `get_reentry_status_dict()` — no duplicated logic. |
+| GET    | `/api/paper/episodes?date_from&date_to&status&symbol&option_type` | `{episodes:[{episode_id, date, time, symbol, option_type, strike, relation, selection, skip_reason, entry_price, sl, tp1, tp2, qty_lots, outcome, r_multiple, paper_pnl, mfe_r, mae_r, max_drawdown_r, echo_count, echoes, is_overridden}]}` | Groups `paper_trades.jsonl` by `episode_id`. Default date = today. |
+| GET    | `/api/paper/overrides` | `{rows:[…], columns:[…]}` | Read-only view of `logs/paper_overrides.csv`. Empty payload if file absent. |
+| GET    | `/api/reports/performance?date_from&date_to&agg=daily\|weekly\|monthly` | Performance report (KPIs, cumulative, underlying, weekday, winners/losers, outcome distribution, duration, monthly) | Default range = This Month IST; prev-period deltas for KPIs. |
 
 ### `/api/overview` payload — Overview v2
 
@@ -280,9 +284,9 @@ These never fabricate values — the UI renders "—" with a tooltip.
 | Time Rules               | `/time-rules`          | **Done**   |
 | Re-entry Rules           | `/reentry-rules`       | **Done**   |
 | Alerts & Telegram        | `/alerts-telegram`     | **Done**   |
-| Paper Trading            | `/paper-trading`       | Pending    |
+| Paper Trading            | `/paper-trading`       | **Done** (F7) |
 | Trades & Performance     | `/trades-performance`  | **Done** (Phase F6) — KPI row, live `OpenPositionTracker`, filter bar with date presets, Today's Trades table, Daily P&L (₹/% toggle), Trade History grouped by Day/Week/Month with expandable rows |
-| Dashboard & Reports      | `/dashboard-reports`   | Pending    |
+| Dashboard & Reports      | `/dashboard-reports`   | **Done** (F7a) — Performance Overview tab functional; other 5 tabs pending |
 | Logs                     | `/logs`                | Pending    |
 | Bot Status               | `/bot-status`          | Pending    |
 | Settings                 | `/settings`            | Pending    |
@@ -465,6 +469,141 @@ errors keep the last good payload visible — the UI never blocks.
 * `run_ui.bat` updated: `pip install -r "%~dp0requirements.txt"` instead
   of inlining the package list.
 * Bot's root `requirements.txt` is untouched.
+
+### Phase F7 — Paper Trading
+
+Read-only visualization phase. No bot source touched, no broker calls,
+no writes to `logs/` or `data/`.
+
+**New API endpoints** (see table above):
+`/api/paper/today`, `/api/paper/episodes`, `/api/paper/overrides`.
+All three are wrapped in defensive try/except — locked, missing or
+partial files degrade to empty payloads, never 500.
+
+**Refactoring: TradePlan / ReentryStatus logic extracted to service.**
+`paper_service.get_trade_plan_dict(date_iso)` and
+`paper_service.get_reentry_status_dict(date_iso)` are the single source
+of truth for both `/api/overview` and `/api/paper/today` — no duplicated
+config-reading logic. `overview.py` now calls these service functions
+instead of recomputing inline.
+
+**New path constant** in `paths.py`: `PAPER_OVERRIDES_CSV` pointing to
+`logs/paper_overrides.csv`.
+
+**New router** `frontend/api/app/routers/paper.py`:
+
+* `GET /api/paper/today` — today's trade-plan + reentry status snapshot.
+  Reuses `get_trade_plan_dict()` and `get_reentry_status_dict()`.
+* `GET /api/paper/episodes` — groups `paper_trades.jsonl` rows by
+  `episode_id`, separates representative row from echoes, applies
+  date/status/symbol/option_type filters. Marks rows whose `alert_id`
+  appears in `paper_overrides.csv` with `is_overridden: true`.
+  Sorted date-desc, time-desc.
+* `GET /api/paper/overrides` — returns columns + rows from
+  `paper_overrides.csv` verbatim. Empty payload when file absent.
+
+**Reused components** (mounted as-is, no internals copied):
+
+* `OpenPositionTracker` — polls `/api/positions/open` every 15s; shows
+  live OPEN / OPEN(stale) cards. Mounted with `showTitle={true}`.
+
+**New page** `web/src/pages/PaperTrading.tsx` (route `/paper-trading` in
+`App.tsx`). Layout, top to bottom:
+
+1. **Today's Paper Plan** (Card) — 7 compact `StatTile`s from
+   `/api/paper/today`, polls every 60s: Max Trades/Day, Taken,
+   Remaining, Daily SL Hit (count/max), Cooldown Active (YES/NO with
+   color), Same-Strike Kill (ON/OFF), Strikes Locked Today
+   (comma-joined numbers or "None").
+2. **Open Positions (Live)** — `<OpenPositionTracker showTitle />`.
+3. **Paper Episodes** — filter bar (Today / This Week / Custom presets,
+   date-from/to, TAKEN/SKIPPED/All, Symbol input, CE/PE/All).
+   Expandable rows reveal: price levels, R-metrics (only when at least
+   one is non-null), Echoes (only when echo_count > 0).
+   Outcome badges: TP2_HIT=emerald-600, TP1_HIT=emerald-400,
+   SL_HIT=rose-500, PARTIAL=amber-500, NO_DATA=slate-400 ("RUNNING"),
+   WOULD_SKIP=slate-300. Override marker: amber "OVR" pill.
+4. **Manual Overrides** (collapsible Card) — lazy-loads on first expand.
+   Note: "Manual overrides are user-owned and always win; edit the CSV
+   directly." Empty → "No manual overrides."
+5. **Footer** — "All times are IST (Asia/Kolkata). Paper P&L; positions
+   update each 5-min scan, outcomes finalize at EOD."
+
+**Read-only guarantee**: no file writes anywhere in this phase.
+`paper_overrides.csv` is displayed read-only; the user edits it
+directly outside the UI.
+
+### Phase F7a — Dashboard & Reports (Performance Overview tab)
+
+Read-only analytics phase. No bot source touched, no broker calls, no
+writes to `logs/` or `data/`.
+
+**New API endpoint**: `GET /api/reports/performance` (see table above).
+All file I/O wrapped in defensive try/except — degraded gracefully on
+missing or partial JSONL.
+
+**New router**: `frontend/api/app/routers/reports.py`
+* `GET /api/reports/performance?date_from&date_to&agg=daily|weekly|monthly`
+  — returns the full performance report. Default range = current IST
+  month (start-of-month to today). On any unhandled exception the router
+  returns an empty-but-valid payload — never 500.
+
+**New service**: `frontend/api/app/services/reports_service.py`
+* Only TAKEN + `paper_role=="representative"` rows are counted (echoes excluded).
+* Finalized = outcome not in (None, "NO_DATA"). Open = outcome == "NO_DATA".
+* Winners = TP2_HIT | TP1_HIT | PARTIAL. Losers = SL_HIT.
+* KPI deltas compare the immediately preceding equal-length window.
+* Spark series = list of daily_pnl values over the current period (same
+  for all 7 KPIs — it's the daily P&L series).
+* Monthly table covers ALL historical TAKEN+representative rows,
+  regardless of the selected date range.
+* Duration section is `null` when no `exit_time` data is present.
+
+**New chart components** under `web/src/components/charts/`:
+* `WeekdayBarChart.tsx` — recharts BarChart of Mon–Fri P&L. Green bars
+  for positive days, red for negative. Currency tooltip. Empty state.
+* `SimpleDonut.tsx` — generic reusable recharts PieChart donut with
+  center total count + legend (name · count (pct%)). Empty state.
+* `KpiSparkline.tsx` — tiny 80×32 px recharts LineChart (no axes, no
+  tooltip, no grid) for inline KPI cards. Returns null when data < 2.
+
+**New page**: `web/src/pages/DashboardReports.tsx` (route
+`/dashboard-reports` in `App.tsx`). Layout, top to bottom:
+
+1. **Page header** — title, description, "Last synced HH:MM" + manual
+   Refresh button, disabled Export button (Coming soon).
+2. **Date-range bar** — presets: This Week / This Month / This Quarter
+   / Last 30 Days / Last 90 Days / Custom (default: This Month). Custom
+   reveals From/To date inputs. Apply button triggers re-fetch.
+3. **Stale banner** — amber ribbon when last fetch failed but old data
+   is still showing.
+4. **Tab bar** — Performance Overview (functional) | Strategy Insights
+   | Condition Analysis (C0–C5) | Risk Analysis | Monthly Summary
+   | System Health. Non-functional tabs show a "Coming in a later phase"
+   placeholder.
+5. **Performance Overview tab**:
+   - 7 KPI cards (Total P&L, Total Trades, Win Rate, Profit Factor,
+     Avg Win, Avg Loss, Expectancy) with delta badge vs prev period and
+     mini KpiSparkline.
+   - Cumulative P&L card with Daily / Weekly / Monthly toggle — reuses
+     `PnLChart` (ComposedChart bars + line).
+   - Two-column row: P&L by Underlying (SimpleDonut) | P&L by Weekday
+     (WeekdayBarChart). NIFTY=#2563EB, BANKNIFTY=#7C3AED.
+   - Two-column row: Top Winning Trades table | Top Losing Trades table
+     (top 5 each). Time / Symbol / Type / Strike+Rel / P&L / Outcome.
+   - Two-column row: Outcome Distribution (SimpleDonut) | Trade Duration
+     table (if exit_time data present). Outcome colors: TP2_HIT=#16A34A,
+     TP1_HIT=#65A30D, SL_HIT=#DC2626, PARTIAL=#F59E0B, WOULD_SKIP=#94A3B8,
+     Running=#64748B.
+   - Monthly Performance Overview wide table (all-time, sorted month
+     desc): Month | Total Trades | Win Rate | Total P&L | Realized |
+     Unrealized | Profit Factor | Max Profit | Max Loss.
+6. **Footer** — "All times are IST (Asia/Kolkata). Paper P&L; outcomes
+   finalize at EOD."
+
+**Polling**: auto-refresh every 60s. Stale-data safety: on fetch error,
+keep last good data visible with amber stale banner — never blank.
+Skeletons shown while first response is in flight.
 
 ---
 

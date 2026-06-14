@@ -6,6 +6,8 @@ import ComingSoon from "./components/ComingSoon";
 import OverviewPage from "./pages/Overview";
 import ConfigurationPage from "./pages/Configuration";
 import TradesPerformancePage from "./pages/TradesPerformance";
+import PaperTradingPage from "./pages/PaperTrading";
+import DashboardReportsPage from "./pages/DashboardReports";
 import { api, type BotStatus, type Overview } from "./lib/api";
 import { useToast } from "./context/ToastContext";
 
@@ -96,11 +98,15 @@ export default function App() {
             />
             <Route path="/configuration" element={<ConfigurationPage />} />
             <Route path="/trades-performance" element={<TradesPerformancePage />} />
+            <Route path="/paper-trading" element={<PaperTradingPage />} />
+            <Route path="/dashboard-reports" element={<DashboardReportsPage />} />
             {MENU.filter(
               (m) =>
                 m.to !== "/overview" &&
                 m.to !== "/configuration" &&
-                m.to !== "/trades-performance",
+                m.to !== "/trades-performance" &&
+                m.to !== "/paper-trading" &&
+                m.to !== "/dashboard-reports",
             ).map((m) => (
               <Route key={m.to} path={m.to} element={<ComingSoon />} />
             ))}

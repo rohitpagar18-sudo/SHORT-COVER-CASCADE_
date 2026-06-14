@@ -277,6 +277,134 @@ export type TradesHistoryResponse = {
   groups: HistoryGroup[];
 };
 
+// ---- Paper Trading (F7) ----
+
+export type PaperSelectionStatus = {
+  max_trades_per_day: number;
+  trades_taken: number;
+  trades_remaining: number;
+  daily_sl_hit: number;
+  max_sl_per_day: number;
+  cooldown_active: boolean;
+  same_strike_sl_count: number;
+};
+
+export type PaperReentryStatus = {
+  cooldown_minutes: number;
+  minutes_since_last_sl: number | null;
+  same_strike_kill_enabled: boolean;
+  strikes_locked_today: number[];
+};
+
+export type PaperTodayResponse = {
+  selection: PaperSelectionStatus;
+  reentry: PaperReentryStatus;
+};
+
+export type EchoItem = {
+  time: string | null;
+  relation: string | null;
+  price: number | null;
+};
+
+export type PaperEpisode = {
+  episode_id: string | null;
+  date: string | null;
+  time: string | null;
+  symbol: string | null;
+  option_type: string | null;
+  strike: number | null;
+  relation: string | null;
+  selection: "TAKEN" | "SKIPPED" | null;
+  skip_reason: string | null;
+  entry_price: number | null;
+  sl: number | null;
+  tp1: number | null;
+  tp2: number | null;
+  qty_lots: number | null;
+  outcome: string | null;
+  r_multiple: number | null;
+  paper_pnl: number | null;
+  mfe_r: number | null;
+  mae_r: number | null;
+  max_drawdown_r: number | null;
+  echo_count: number;
+  echoes: EchoItem[];
+  is_overridden: boolean;
+};
+
+export type PaperEpisodesResponse = { episodes: PaperEpisode[] };
+
+export type PaperOverridesResponse = {
+  rows: Record<string, string>[];
+  columns: string[];
+};
+
+// ---- Dashboard & Reports (F7a) ----
+
+export type ReportKpi = {
+  value: number | null;
+  prev_value: number | null;
+  delta_pct: number | null;
+  spark: number[];
+};
+
+export type ReportKpis = {
+  total_pnl: ReportKpi;
+  total_trades: ReportKpi;
+  win_rate: ReportKpi;
+  profit_factor: ReportKpi;
+  avg_win: ReportKpi;
+  avg_loss: ReportKpi;
+  expectancy: ReportKpi;
+};
+
+export type ReportCumulativePoint = { period: string; daily_pnl: number; cumulative_pnl: number };
+export type ReportUnderlying = { symbol: string; pnl: number; pct: number };
+export type ReportWeekday = { weekday: string; pnl: number };
+export type ReportTopTrade = {
+  date: string;
+  time: string;
+  symbol: string;
+  option_type: string;
+  strike: number | null;
+  relation: string;
+  pnl: number;
+  outcome: string;
+};
+export type ReportOutcome = { outcome: string; count: number; pct: number };
+export type ReportDuration = { bucket: string; trades: number; win_rate: number };
+export type ReportMonthly = {
+  month: string;
+  total_trades: number;
+  win_rate: number;
+  total_pnl: number;
+  realized_pnl: number;
+  unrealized_pnl: number;
+  profit_factor: number | null;
+  max_profit: number;
+  max_loss: number;
+};
+
+export type PerformanceReport = {
+  kpis: ReportKpis;
+  cumulative: ReportCumulativePoint[];
+  pnl_by_underlying: ReportUnderlying[];
+  pnl_by_weekday: ReportWeekday[];
+  top_winners: ReportTopTrade[];
+  top_losers: ReportTopTrade[];
+  outcome_distribution: ReportOutcome[];
+  trade_duration: ReportDuration[] | null;
+  monthly: ReportMonthly[];
+  meta: {
+    date_from: string;
+    date_to: string;
+    prev_from: string | null;
+    prev_to: string | null;
+    agg: string;
+  };
+};
+
 function buildQuery(params: Record<string, string | undefined | null>): string {
   const usp = new URLSearchParams();
   Object.entries(params).forEach(([k, v]) => {
@@ -302,4 +430,15 @@ export const api = {
     getJSON<TradesHistoryResponse>(
       `/api/trades/history${buildQuery(params as Record<string, string | undefined | null>)}`,
     ),
+  paperToday: () => getJSON<PaperTodayResponse>("/api/paper/today"),
+  paperEpisodes: (params: {
+    date_from?: string;
+    date_to?: string;
+    status?: string;
+    symbol?: string;
+    option_type?: string;
+  } = {}) => getJSON<PaperEpisodesResponse>(`/api/paper/episodes${buildQuery(params as Record<string, string | undefined | null>)}`),
+  paperOverrides: () => getJSON<PaperOverridesResponse>("/api/paper/overrides"),
+  reportsPerformance: (params: { date_from?: string; date_to?: string; agg?: string } = {}) =>
+    getJSON<PerformanceReport>(`/api/reports/performance${buildQuery(params as Record<string, string | undefined | null>)}`),
 };

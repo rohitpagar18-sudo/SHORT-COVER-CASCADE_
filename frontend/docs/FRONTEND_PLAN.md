@@ -229,6 +229,8 @@ Open http://localhost:5173/. Vite proxies `/api` to :8000.
 | GET    | `/api/reports/insights?date_from&date_to` | Strategy-level breakdowns (time-of-day, weekday, symbol, relation, CE/PE, day-type) + rule-based key_insights (guarded by MIN_SAMPLE=10) | IST; default = This Month. |
 | GET    | `/api/reports/monthly?date_from&date_to` | Monthly aggregates (all-time, newest-first) + per-day calendar heatmap data (date-range filtered). best_day/worst_day per month. | IST; default = This Month for calendar. |
 | GET    | `/api/system/health` | **SHARED — F7c + F8 Bot Status.** Feed, bot (RUNNING/STOPPED + last activity + uptime), scan cadence (gap analysis on signals.jsonl), log file sizes/mtimes/fresh, data_issues, last_config_reload_ist, last_dashboard_sync_ist. | Polled every 30s. No date params. |
+| GET    | `/api/logs/files` | `{files:[{name, path_label, size_kb, last_modified_ist}]}` | Stats for the 5 allowlisted log files (bot.log, signals.jsonl, alerts.jsonl, paper_trades.jsonl, state.json). |
+| GET    | `/api/logs/tail?file&lines&level&search` | `{file, type, rows, filtered_count, total_read, ...}` | **Allowlist-only `file` param** (422 on anything else). Reads efficiently from EOF (walks backwards in 8 KB chunks — large files never load fully). `bot.log` returns text rows parsed into `{time, level, message}`; `*.jsonl` returns parsed JSON objects; `state.json` returns the single doc as a one-row table. `level` filter applies only to bot.log; `search` is a case-insensitive substring filter applied AFTER tailing. |
 
 ### `/api/overview` payload — Overview v2
 
@@ -292,12 +294,12 @@ These never fabricate values — the UI renders "—" with a tooltip.
 | Paper Trading            | `/paper-trading`       | **Done** (F7) |
 | Trades & Performance     | `/trades-performance`  | **Done** (Phase F6) — KPI row, live `OpenPositionTracker`, filter bar with date presets, Today's Trades table, Daily P&L (₹/% toggle), Trade History grouped by Day/Week/Month with expandable rows |
 | Dashboard & Reports      | `/dashboard-reports`   | **COMPLETE** (F7c) — All 6 tabs done: Performance Overview, Strategy Insights, Condition Analysis (C0–C5), Risk Analysis, Monthly Summary, System Health. |
-| Logs                     | `/logs`                | Pending    |
-| Bot Status               | `/bot-status`          | Pending    |
-| Settings                 | `/settings`            | Pending    |
-| About                    | `/about`               | Pending    |
+| Logs                     | `/logs`                | **Done** (F8) — file selector (allowlist), lines/level/search filters, auto-refresh ON 10–60s, bot.log monospace + JSONL table renderers |
+| Bot Status               | `/bot-status`          | **Done** (F8) — renders shared `/api/system/health` snapshot + Next Key Events from `config.yaml`; polls per Settings.pollInterval |
+| Settings                 | `/settings`            | **Done** (F8) — localStorage-only UI prefs (theme synced with sidebar; default date range; poll interval; currency; reset). Never writes config.yaml |
+| About                    | `/about`               | **Done** (F8) — app name, version, phase, disclaimers, live `/api/health` indicator |
 
-Pending routes render the shared "Coming soon" placeholder.
+All sidebar pages are now COMPLETE. No routes render the "Coming soon" placeholder anymore.
 
 ### Phase 4 section components (config editor)
 
@@ -405,6 +407,14 @@ to empty payloads — never 500.
   (`(last_ltp - entry) / |entry - sl|`). Builds the entry-day price
   series for the sparkline. Returns `null` when no scan matches —
   no fabricated price.
+  **Live-position eligibility** (two gates): an episode is counted as a
+  live open position only when (a) `sl`, `tp1`, and `tp2` are all
+  present (non-null / non-NA) **and** (b) `entry_time >= TRACKING_START`
+  (`"2026-06-05T13:25:00+05:30"` — the date SL/TP tracking data began).
+  Episodes that fail either gate are excluded and counted as
+  `untracked_count` in the response. `OpenPositionTracker` renders a
+  muted "N earlier entries hidden (no exit data)" note when
+  `untracked_count > 0`.
 * `trades_service.py` — implements `list_trades(...)` and
   `history(...)`. KPIs split realized (finalized trades) from
   unrealized (sum of `running_pnl` across open positions). History
@@ -535,6 +545,106 @@ instead of recomputing inline.
    update each 5-min scan, outcomes finalize at EOD."
 
 **Read-only guarantee**: no file writes anywhere in this phase.
+
+### Phase F8 — Final pages: Logs Viewer, Bot Status, Settings, About
+
+Read-only visualization phase. Completes the last four sidebar pages.
+No bot source touched, no broker calls, no `secrets.env` read, no writes
+to `logs/` or `data/`. **All pages are now COMPLETE.**
+
+**New API endpoints** (see table above):
+`/api/logs/files`, `/api/logs/tail`. Both wrapped in defensive try/except.
+The `file` query is validated against an explicit allowlist
+(`bot.log, signals.jsonl, alerts.jsonl, paper_trades.jsonl, state.json`);
+anything else returns 422 — we never tail an arbitrary path.
+
+**New service** `frontend/api/app/services/logs_service.py`:
+* `ALLOWED_FILES` — the dict that the router validates against.
+* `list_files()` — `os.stat` over the allowlist. Missing files return
+  `last_modified_ist = null`, `size_kb = null`.
+* `_tail_lines(path, n)` — walks the file **backwards in 8 KB chunks**
+  from EOF, stops as soon as `n+1` newlines are collected. Multi-GB
+  log files only ever cost the last few KB. UTF-8 decoded with
+  `errors="replace"` to handle partial multibyte sequences at chunk
+  boundaries.
+* `tail_text(...)` — for `bot.log`. Parses the loguru pattern
+  `"YYYY-MM-DD HH:MM:SS.mmm | LEVEL | rest"` into
+  `{time, level, message}`. Applies optional `level` (one of
+  DEBUG/INFO/WARNING/ERROR/CRITICAL or `all`) and free-text `search`
+  filters AFTER tailing — filters never expand what's read.
+* `tail_jsonl(...)` — for `signals.jsonl`, `alerts.jsonl`,
+  `paper_trades.jsonl`. Parses each line; malformed lines are counted
+  and skipped, never crash. Search is applied to the raw line for
+  cross-field matching.
+* `tail_state_json(...)` — `state.json` is a single JSON document, so
+  it is read fully (the file is always small) and surfaced as a
+  one-row table for consistency with the JSONL renderer.
+
+**Reused** `/api/system/health` (F7c) — Bot Status page polls this
+endpoint; **no duplicated health logic**. The `system_health_router`
+already wraps `health_service.get_health()` in defensive try/except.
+
+**Reused** `/api/health` — About page calls this every 15 s for the
+API-up indicator.
+
+**Reused** `/api/config` — Bot Status reads `time_rules` +
+`dashboard.auto_trigger_at_1535` + `telegram.send_eod_summary` to
+render Next Key Events. Read-only — no PUT calls from these pages.
+
+**New context** `web/src/context/SettingsContext.tsx`:
+* `UiSettings` — `{defaultDateRange, pollIntervalSeconds, currencyDisplay,
+  compactNumbers}`. Persisted to localStorage under
+  `scc.uiSettings.v1`. Defaults: `This Month`, `15s`, `₹`, off.
+* `usePollIntervalMs()` helper used by Logs and Bot Status to honor
+  the user's chosen poll cadence.
+* This context is purely UI state; **it never writes config.yaml** and
+  the bot does not read it.
+
+**New pages** (route → file):
+
+1. **`/logs` → `pages/Logs.tsx`** — file selector (allowlist), lines
+   (100/200/500), level (All/DEBUG/INFO/WARNING/ERROR — only shown
+   when `bot.log` is selected), search box, auto-refresh toggle
+   (default ON; respects Settings.pollInterval, min 5 s). bot.log
+   renders as a monospace block with color-coded levels and
+   auto-scroll-to-bottom when the user is at the bottom. JSONL files
+   render as a compact table picking columns from the first 12
+   rows' union of keys (up to 14 cols; overflow is noted). state.json
+   surfaces as a one-row table.
+
+2. **`/bot-status` → `pages/BotStatus.tsx`** — polls `/api/system/health`
+   (and `/api/config` for time rules) on Settings.pollInterval.
+   Renders: 4 top-level StatTiles (Bot, Feed, Uptime, Scan Cadence) +
+   Scan Cadence card with recent gaps table + Next Key Events card
+   (Last Entry, Soft Squareoff, Hard Squareoff, EOD Summary,
+   Dashboard Sync) + Log Files freshness table + Data Issues panel +
+   Recent Activity (last config reload, last dashboard sync, last bot
+   activity). Stale-data amber banner when a fetch fails. Heartbeat
+   fields show "—" with a tooltip — never fabricated.
+
+3. **`/settings` → `pages/Settings.tsx`** — pure UI preferences:
+   theme (synced with the sidebar toggle), default date range,
+   poll interval, currency display, compact-numbers toggle, and a
+   Reset button. Every change persists to localStorage; **no
+   `config.yaml` write path exists**. Includes a prominent blue info
+   banner: "These settings control the dashboard UI only — they do
+   not change the bot's config."
+
+4. **`/about` → `pages/About.tsx`** — app name (Short Cover Cascade
+   Bot — Dashboard), frontend version (`1.0.0-F8`), bot phase
+   (`Phase 6 — live alert-only validation`), short description,
+   honest disclaimers (paper P&L; updates every 5 min; outcomes
+   finalize at EOD; dashboard does not place orders), and a live
+   API-health pulse calling `/api/health` every 15 s. Shows green ✓
+   + server time when reachable, red ✗ + error message when not.
+
+**Provider wiring** (`web/src/main.tsx`): `<SettingsProvider>` is
+mounted **inside** `<ThemeProvider>` and **outside** `<ToastProvider>`
+so that toasts can show "settings reset" notifications.
+
+**Read-only guarantee**: no file writes anywhere in this phase. The
+only writes performed by the whole frontend continue to be config.yaml
+edits via `PUT /api/config`. `secrets.env` is never read.
 
 ### Phase F7c — Dashboard & Reports: Strategy Insights + Monthly Summary + System Health
 

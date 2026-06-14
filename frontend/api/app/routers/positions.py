@@ -23,4 +23,4 @@ def get_open_positions() -> Dict[str, Any]:
         return positions_service.open_positions()
     except Exception:
         # Defensive: never 500 on locked/partial files.
-        return {"as_of": fmt_ist(now_ist()), "positions": []}
+        return {"as_of": fmt_ist(now_ist()), "positions": [], "untracked_count": 0}

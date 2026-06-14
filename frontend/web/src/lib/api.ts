@@ -193,6 +193,7 @@ export type LivePosition = {
 export type OpenPositionsResponse = {
   as_of: string | null;
   positions: LivePosition[];
+  untracked_count: number;
 };
 
 export type TradeRow = {
@@ -557,6 +558,51 @@ export type SystemHealth = {
   last_dashboard_sync_ist: string | null;
 };
 
+// ---- F8: Logs Viewer ----
+
+export type LogFileInfo = {
+  name: string;
+  path_label: string;
+  size_kb: number | null;
+  last_modified_ist: string | null;
+};
+
+export type LogTextRow = {
+  raw: string;
+  time: string | null;
+  level: string | null;
+  message: string;
+};
+
+export type LogTailText = {
+  file: string;
+  type: "text";
+  rows: LogTextRow[];
+  filtered_count: number;
+  total_read: number;
+};
+
+export type LogTailJsonl = {
+  file: string;
+  type: "jsonl" | "json";
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  rows: Array<Record<string, any>>;
+  filtered_count: number;
+  total_read: number;
+  skipped_malformed?: number;
+};
+
+export type LogTailResponse = LogTailText | LogTailJsonl;
+
+// ---- F8: Health / Liveness ----
+
+export type ApiHealth = {
+  ok: boolean;
+  now_ist: string | null;
+  project_root: string | null;
+  config_present: boolean;
+};
+
 function buildQuery(params: Record<string, string | undefined | null>): string {
   const usp = new URLSearchParams();
   Object.entries(params).forEach(([k, v]) => {
@@ -602,4 +648,15 @@ export const api = {
   reportsMonthly: (params: { date_from?: string; date_to?: string } = {}) =>
     getJSON<MonthlyReport>(`/api/reports/monthly${buildQuery(params as Record<string, string | undefined | null>)}`),
   systemHealth: () => getJSON<SystemHealth>("/api/system/health"),
+  apiHealth: () => getJSON<ApiHealth>("/api/health"),
+  logFiles: () => getJSON<{ files: LogFileInfo[] }>("/api/logs/files"),
+  logTail: (params: { file: string; lines?: number; level?: string; search?: string }) =>
+    getJSON<LogTailResponse>(
+      `/api/logs/tail${buildQuery({
+        file: params.file,
+        lines: params.lines != null ? String(params.lines) : undefined,
+        level: params.level,
+        search: params.search,
+      })}`,
+    ),
 };

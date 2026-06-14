@@ -59,6 +59,7 @@ export default function OpenPositionTracker({
 
   const positions = data?.positions ?? [];
   const asOf = data?.as_of ?? null;
+  const untrackedCount = data?.untracked_count ?? 0;
 
   const body = (() => {
     if (!data && err) {
@@ -88,7 +89,13 @@ export default function OpenPositionTracker({
     );
   })();
 
-  if (!showTitle) return <div className="space-y-3">{body}</div>;
+  const untrackedNote = untrackedCount > 0 ? (
+    <p className="mt-2 text-xs text-muted">
+      {untrackedCount} earlier {untrackedCount === 1 ? "entry" : "entries"} hidden (no exit data)
+    </p>
+  ) : null;
+
+  if (!showTitle) return <div className="space-y-3">{body}{untrackedNote}</div>;
 
   return (
     <Card>
@@ -106,6 +113,7 @@ export default function OpenPositionTracker({
         </span>
       </CardTitle>
       {body}
+      {untrackedNote}
     </Card>
   );
 }

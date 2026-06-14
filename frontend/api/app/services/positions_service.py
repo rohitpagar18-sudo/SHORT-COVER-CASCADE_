@@ -35,11 +35,28 @@ recorded. If no scan exists for that key, last_ltp/running_pnl are null
 """
 from __future__ import annotations
 
+import math
 from typing import Any, Dict, List, Optional
 
 from ..paths import PAPER_TRADES_JSONL, SIGNALS_JSONL
 from ..time_utils import fmt_ist, now_ist, parse_ist
 from .jsonl_reader import read_jsonl
+
+# Earliest entry_time eligible for the live Open Positions panel.
+# SL/TP tracking data only exists from this point onwards; episodes logged
+# before this timestamp have no exit-level data and must not appear as RUNNING.
+TRACKING_START = "2026-06-05T13:25:00+05:30"
+
+
+def _has_value(v: Any) -> bool:
+    """Return True when v is a real numeric/string value (not None/NA/NaN)."""
+    if v is None:
+        return False
+    if isinstance(v, float):
+        return not math.isnan(v)
+    if isinstance(v, str):
+        return v.upper() not in ("NA", "NAN", "NULL", "NONE", "")
+    return True
 
 
 def _matches(row: Dict[str, Any], symbol: Any, strike: Any, option_type: Any) -> bool:
@@ -132,6 +149,7 @@ def open_positions() -> Dict[str, Any]:
         signals = []
 
     positions: List[Dict[str, Any]] = []
+    untracked_count = 0
     for t in trades:
         if t.get("decision") != "TAKEN" or t.get("outcome") != "NO_DATA":
             continue
@@ -141,8 +159,18 @@ def open_positions() -> Dict[str, Any]:
         entry_iso = t.get("candle_timestamp")
         entry = t.get("entry")
         sl = t.get("sl")
+        tp1 = t.get("tp1")
+        tp2 = t.get("tp2")
         lots = t.get("lots")
         lot_size = t.get("lot_size")
+
+        # Eligibility: must have real SL/TP data AND entry after tracking started.
+        if not (_has_value(sl) and _has_value(tp1) and _has_value(tp2)):
+            untracked_count += 1
+            continue
+        if entry_iso and entry_iso < TRACKING_START:
+            untracked_count += 1
+            continue
 
         scan = _latest_scan_price(signals, symbol, strike, option_type, entry_iso)
         pnl_block = _running_pnl(entry, sl, scan["last_ltp"], lots, lot_size)
@@ -160,8 +188,8 @@ def open_positions() -> Dict[str, Any]:
             "lot_size": lot_size,
             "buy_price": entry,
             "sl": sl,
-            "tp1": t.get("tp1"),
-            "tp2": t.get("tp2"),
+            "tp1": tp1,
+            "tp2": tp2,
             "last_ltp": scan["last_ltp"],
             "last_ltp_time": scan["last_ltp_time"],
             "running_pnl": pnl_block["running_pnl"],
@@ -176,6 +204,7 @@ def open_positions() -> Dict[str, Any]:
     return {
         "as_of": fmt_ist(now_ist()),
         "positions": positions,
+        "untracked_count": untracked_count,
     }
 
 

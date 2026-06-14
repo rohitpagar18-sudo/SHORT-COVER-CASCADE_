@@ -8,6 +8,10 @@ import ConfigurationPage from "./pages/Configuration";
 import TradesPerformancePage from "./pages/TradesPerformance";
 import PaperTradingPage from "./pages/PaperTrading";
 import DashboardReportsPage from "./pages/DashboardReports";
+import LogsPage from "./pages/Logs";
+import BotStatusPage from "./pages/BotStatus";
+import SettingsPage from "./pages/Settings";
+import AboutPage from "./pages/About";
 import { api, type BotStatus, type Overview } from "./lib/api";
 import { useToast } from "./context/ToastContext";
 
@@ -100,13 +104,21 @@ export default function App() {
             <Route path="/trades-performance" element={<TradesPerformancePage />} />
             <Route path="/paper-trading" element={<PaperTradingPage />} />
             <Route path="/dashboard-reports" element={<DashboardReportsPage />} />
+            <Route path="/logs" element={<LogsPage />} />
+            <Route path="/bot-status" element={<BotStatusPage />} />
+            <Route path="/settings" element={<SettingsPage />} />
+            <Route path="/about" element={<AboutPage />} />
             {MENU.filter(
               (m) =>
                 m.to !== "/overview" &&
                 m.to !== "/configuration" &&
                 m.to !== "/trades-performance" &&
                 m.to !== "/paper-trading" &&
-                m.to !== "/dashboard-reports",
+                m.to !== "/dashboard-reports" &&
+                m.to !== "/logs" &&
+                m.to !== "/bot-status" &&
+                m.to !== "/settings" &&
+                m.to !== "/about",
             ).map((m) => (
               <Route key={m.to} path={m.to} element={<ComingSoon />} />
             ))}

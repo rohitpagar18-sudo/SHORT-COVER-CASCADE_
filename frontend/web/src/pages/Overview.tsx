@@ -240,17 +240,17 @@ export default function OverviewPage({ selectedDate, reloadTick, onData }: Props
       {/* Quick Actions */}
       <Card>
         <CardTitle>Quick Actions</CardTitle>
-        <div className="flex flex-wrap gap-2">
+        <div className="flex flex-col gap-2">
           <button
             onClick={() => toast.push("Config auto-reloads on the bot's next scan", "info")}
-            className="flex items-center gap-2 rounded-md border border-line bg-card px-3 py-2 text-sm hover:bg-line2"
+            className="flex w-full items-center gap-2 rounded-md border border-line bg-card px-3 py-2 text-sm hover:bg-line2"
           >
             <RefreshCw className="h-4 w-4" />
             Reload Config Now
           </button>
           <button
             onClick={() => nav("/logs")}
-            className="flex items-center gap-2 rounded-md border border-line bg-card px-3 py-2 text-sm hover:bg-line2"
+            className="flex w-full items-center gap-2 rounded-md border border-line bg-card px-3 py-2 text-sm hover:bg-line2"
           >
             <FileText className="h-4 w-4" />
             View Today's Logs
@@ -380,7 +380,7 @@ function DisabledAction({ icon, label }: { icon: React.ReactNode; label: string 
     <button
       disabled
       title="Coming in a later phase"
-      className="flex cursor-not-allowed items-center gap-2 rounded-md border border-dashed border-line bg-line2 px-3 py-2 text-sm text-muted"
+      className="flex w-full cursor-not-allowed items-center gap-2 rounded-md border border-dashed border-line bg-line2 px-3 py-2 text-sm text-muted"
     >
       {icon}
       {label}

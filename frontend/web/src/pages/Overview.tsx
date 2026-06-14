@@ -1,24 +1,42 @@
 import { useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import {
-  Wifi, BellRing, ShoppingCart, FileText, TrendingUp, AlertTriangle,
-  Calendar, RefreshCw, FileBarChart, Send, Boxes, ListChecks, Activity,
-  ShieldAlert, LockKeyhole, CheckCircle2, XCircle,
+  AlertTriangle, RefreshCw, FileBarChart, Send, ListChecks, Activity,
+  ShieldAlert, LockKeyhole, CheckCircle2, XCircle, FileText,
 } from "lucide-react";
 import { api, type Overview as OverviewT } from "../lib/api";
-import { Card, CardTitle, StatTile, Skeleton } from "../components/Card";
+import { Card, CardTitle, Skeleton } from "../components/Card";
 import ProgressBar from "../components/ProgressBar";
 import PnLChart from "../components/charts/PnLChart";
 import ConditionDonut from "../components/charts/ConditionDonut";
 import StatPanel from "../components/charts/StatPanel";
 import PriceSparkline from "../components/charts/PriceSparkline";
 import { useToast } from "../context/ToastContext";
-import { inr, inrSigned, pct, hhmm, fmtDateLong } from "../lib/format";
+import { inr, inrSigned, pct, hhmm } from "../lib/format";
 
 const POLL_MS = 15_000;
 
 function onOff(v: boolean) {
   return v ? "ON" : "OFF";
+}
+
+function StatusChip({
+  label, value, sub, tone,
+}: { label: string; value: string; sub: string; tone: "ok" | "warn" | "bad" | "off" | "neutral" }) {
+  const valCls = {
+    ok: "text-emerald-600 dark:text-emerald-400",
+    warn: "text-amber-600 dark:text-amber-400",
+    bad: "text-rose-600 dark:text-rose-400",
+    off: "text-slate-400 dark:text-slate-500",
+    neutral: "text-ink",
+  }[tone];
+  return (
+    <div className="flex min-w-[80px] flex-col gap-0.5 px-4 py-3">
+      <div className="text-[10px] uppercase tracking-wide text-muted">{label}</div>
+      <div className={`text-sm font-bold ${valCls}`}>{value}</div>
+      <div className="text-[10px] text-muted">{sub}</div>
+    </div>
+  );
 }
 
 type Props = {
@@ -86,80 +104,65 @@ export default function OverviewPage({ selectedDate, reloadTick, onData }: Props
 
   return (
     <div className="space-y-4">
-      {/* Row 1 — 8 status cards */}
-      <div className="grid grid-cols-2 gap-3 md:grid-cols-4 2xl:grid-cols-8">
-        <StatTile
-          icon={<Wifi className="h-4 w-4" />}
-          label="Active Feed"
-          value={d.feed.active_feed.toUpperCase()}
-          tone={d.feed.status === "RUNNING" ? "ok" : "neutral"}
-          sub={d.feed.status === "RUNNING" ? "Connected" : "Disconnected"}
-        />
-        <StatTile
-          icon={<BellRing className="h-4 w-4" />}
-          label="Alert Mode"
-          value={onOff(d.modes.alert_mode)}
-          tone={d.modes.alert_mode ? "ok" : "off"}
-          sub={d.modes.alert_mode ? "Telegram on" : "Disabled"}
-        />
-        <StatTile
-          icon={<ShoppingCart className="h-4 w-4" />}
-          label="Order Place Mode"
-          value={onOff(d.modes.order_place_mode)}
-          tone={d.modes.order_place_mode ? "warn" : "off"}
-          sub={d.modes.order_place_mode ? "live orders" : "Safe Mode"}
-        />
-        <StatTile
-          icon={<FileText className="h-4 w-4" />}
-          label="Paper Trade Mode"
-          value={onOff(d.modes.paper_trade_mode)}
-          tone={d.modes.paper_trade_mode ? "ok" : "off"}
-          sub={d.modes.paper_trade_mode ? "simulating" : "off"}
-        />
-        <StatTile
-          icon={<Boxes className="h-4 w-4" />}
-          label="NIFTY"
-          value={onOff(d.instruments.nifty_enabled)}
-          tone={d.instruments.nifty_enabled ? "ok" : "off"}
-          sub={`Lot size: ${d.instruments.nifty_lot_size ?? "—"}`}
-        />
-        <StatTile
-          icon={<Boxes className="h-4 w-4" />}
-          label="BANKNIFTY"
-          value={onOff(d.instruments.banknifty_enabled)}
-          tone={d.instruments.banknifty_enabled ? "ok" : "off"}
-          sub={`Lot size: ${d.instruments.banknifty_lot_size ?? "—"}`}
-        />
-        <StatTile
-          icon={<TrendingUp className="h-4 w-4" />}
-          label="Today's P&L (Paper)"
-          value={inrSigned(d.today.paper_pnl_today)}
-          tone={pnlIsPos ? "ok" : "bad"}
-          sub={`${pnlIsPos ? "+" : ""}${d.today.paper_pnl_pct_today.toFixed(2)}%`}
-        />
-        <StatTile
-          icon={<Activity className="h-4 w-4" />}
-          label="Open Positions"
-          value={d.today.open_positions_count}
-          tone={d.today.open_positions_count > 0 ? "ok" : "neutral"}
-          sub={d.feed.status === "RUNNING" ? "Running" : "Idle"}
-        />
+      {/* Row 1 — compact status strip */}
+      <div className="rounded-xl border border-line bg-card">
+        <div className="flex flex-wrap divide-x divide-line">
+          <StatusChip
+            label="Active Feed"
+            value={d.feed.active_feed.toUpperCase()}
+            sub={d.feed.status === "RUNNING" ? "Connected" : "Disconnected"}
+            tone={d.feed.status === "RUNNING" ? "ok" : "neutral"}
+          />
+          <StatusChip
+            label="Alert Mode"
+            value={onOff(d.modes.alert_mode)}
+            sub={d.modes.alert_mode ? "Telegram on" : "Disabled"}
+            tone={d.modes.alert_mode ? "ok" : "off"}
+          />
+          <StatusChip
+            label="Order Mode"
+            value={onOff(d.modes.order_place_mode)}
+            sub={d.modes.order_place_mode ? "Live orders" : "Safe Mode"}
+            tone={d.modes.order_place_mode ? "warn" : "off"}
+          />
+          <StatusChip
+            label="Paper Trade"
+            value={onOff(d.modes.paper_trade_mode)}
+            sub={d.modes.paper_trade_mode ? "Simulating" : "Off"}
+            tone={d.modes.paper_trade_mode ? "ok" : "off"}
+          />
+          <StatusChip
+            label="NIFTY"
+            value={onOff(d.instruments.nifty_enabled)}
+            sub={`Lot ${d.instruments.nifty_lot_size ?? "—"}`}
+            tone={d.instruments.nifty_enabled ? "ok" : "off"}
+          />
+          <StatusChip
+            label="BANKNIFTY"
+            value={onOff(d.instruments.banknifty_enabled)}
+            sub={`Lot ${d.instruments.banknifty_lot_size ?? "—"}`}
+            tone={d.instruments.banknifty_enabled ? "ok" : "off"}
+          />
+          <StatusChip
+            label="Today's P&L"
+            value={inrSigned(d.today.paper_pnl_today)}
+            sub={`${pnlIsPos ? "+" : ""}${d.today.paper_pnl_pct_today.toFixed(2)}%`}
+            tone={pnlIsPos ? "ok" : "bad"}
+          />
+          <StatusChip
+            label="Open Positions"
+            value={String(d.today.open_positions_count)}
+            sub={d.feed.status === "RUNNING" ? "Running" : "Idle"}
+            tone={d.today.open_positions_count > 0 ? "ok" : "neutral"}
+          />
+        </div>
       </div>
 
       {/* Row 2 */}
-      <div className="grid grid-cols-1 gap-3 lg:grid-cols-4">
-        <Card>
-          <CardTitle>Today's Status</CardTitle>
-          <ul className="space-y-2 text-sm">
-            <Row icon={<Calendar className="h-4 w-4 text-muted" />} label="Date (IST)" value={fmtDateLong(d.today.date_ist)} />
-            <Row label="Market" value={<Badge tone={d.today.market_status === "OPEN" ? "ok" : "neutral"}>{d.today.market_status}</Badge>} />
-            <Row label="Current Time" value={d.today.current_time_ist} />
-            <Row label="Gap Day" value={d.today.gap_day ? <Badge tone="warn">YES</Badge> : <span className="text-muted">No</span>} />
-            <Row label="Signals" value={d.today.signals_today} />
-            <Row label="Positions Open" value={d.today.positions_open} />
-          </ul>
-        </Card>
-
+      <div className={[
+        "grid grid-cols-1 gap-3",
+        d.today.market_status === "OPEN" ? "lg:grid-cols-3" : "lg:grid-cols-2",
+      ].join(" ")}>
         <Card>
           <CardTitle right={<Badge tone={cbTone(d.circuit_breakers.status)}>{d.circuit_breakers.status}</Badge>}>
             <span className="flex items-center gap-2">
@@ -185,16 +188,18 @@ export default function OverviewPage({ selectedDate, reloadTick, onData }: Props
           </div>
         </Card>
 
-        <Card>
-          <CardTitle>Next Key Events</CardTitle>
-          <ul className="space-y-2 text-sm">
-            <Row label="Last Entry" value={d.next_events.last_entry_time ?? "—"} />
-            <Row label="Soft Square-off" value={d.next_events.soft_squareoff_time ?? "—"} />
-            <Row label="Hard Square-off" value={d.next_events.hard_squareoff_time ?? "—"} />
-            <Row label="EOD Summary" value={d.next_events.eod_summary_time ?? "—"} />
-            <Row label="Dashboard Sync" value={d.next_events.dashboard_sync_time ?? "—"} />
-          </ul>
-        </Card>
+        {d.today.market_status === "OPEN" && (
+          <Card>
+            <CardTitle>Next Key Events</CardTitle>
+            <ul className="space-y-2 text-sm">
+              <Row label="Last Entry" value={d.next_events.last_entry_time ?? "—"} />
+              <Row label="Soft Square-off" value={d.next_events.soft_squareoff_time ?? "—"} />
+              <Row label="Hard Square-off" value={d.next_events.hard_squareoff_time ?? "—"} />
+              <Row label="EOD Summary" value={d.next_events.eod_summary_time ?? "—"} />
+              <Row label="Dashboard Sync" value={d.next_events.dashboard_sync_time ?? "—"} />
+            </ul>
+          </Card>
+        )}
 
         <Card>
           <CardTitle>Quick Actions</CardTitle>

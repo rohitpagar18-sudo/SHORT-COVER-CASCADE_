@@ -103,73 +103,51 @@ export function StopLossSection() {
         }
       />
 
-      {/* SMA Trail Panel — only active when method === 3 */}
-      <div className="py-3">
-        <div
-          className={[
-            "rounded-lg border p-4 transition-opacity",
-            trailEnabled
-              ? "border-slate-200 bg-slate-50"
-              : "border-slate-200 bg-slate-50 opacity-60",
-          ].join(" ")}
-        >
-          <div className="mb-1 flex items-center justify-between">
-            <div className="text-xs font-semibold uppercase tracking-wide text-muted">
+      {trailEnabled && (
+        <div className="py-3">
+          <div className="rounded-lg border border-slate-200 bg-slate-50 p-4">
+            <div className="mb-3 text-xs font-semibold uppercase tracking-wide text-muted">
               SMA Trail Settings (Method 3)
             </div>
-            {!trailEnabled && (
-              <span className="rounded-full bg-slate-200 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-muted">
-                Inactive
-              </span>
-            )}
-          </div>
-          {!trailEnabled && (
-            <div className="mb-2 text-xs italic text-muted">
-              Active only when Method 3 is selected.
+            <div className="divide-y divide-slate-200">
+              <NumberField
+                label="SMA Period"
+                helper="Period for the simple moving average on option close (default 19)"
+                value={local.sma_trail.sma_period}
+                min={1}
+                onChange={(v) => setSma({ sma_period: v })}
+                suffix="candles"
+              />
+              <NumberField
+                label="Activate After"
+                helper="First N minutes after entry uses the Method-1 SL, then convert to SMA trail"
+                value={local.sma_trail.activate_after_minutes}
+                min={1}
+                onChange={(v) => setSma({ activate_after_minutes: v })}
+                suffix="min"
+              />
+              <NumberField
+                label="Update Interval"
+                helper="Re-evaluate the trailing SL every N minutes"
+                value={local.sma_trail.update_interval_minutes}
+                min={1}
+                onChange={(v) => setSma({ update_interval_minutes: v })}
+                suffix="min"
+              />
+              <SelectField
+                label="Follow Direction"
+                helper="'Both' lets SL move up AND down with the SMA. 'Ratchet' is up-only."
+                value={local.sma_trail.follow_direction}
+                options={[
+                  { value: "both",    label: "Both (Up & Down)" },
+                  { value: "ratchet", label: "Ratchet (Up only)" },
+                ]}
+                onChange={(v) => setSma({ follow_direction: v })}
+              />
             </div>
-          )}
-          <div className="divide-y divide-slate-200">
-            <NumberField
-              label="SMA Period"
-              helper="Period for the simple moving average on option close (default 19)"
-              value={local.sma_trail.sma_period}
-              min={1}
-              disabled={!trailEnabled}
-              onChange={(v) => setSma({ sma_period: v })}
-              suffix="candles"
-            />
-            <NumberField
-              label="Activate After"
-              helper="First N minutes after entry uses the Method-1 SL, then convert to SMA trail"
-              value={local.sma_trail.activate_after_minutes}
-              min={1}
-              disabled={!trailEnabled}
-              onChange={(v) => setSma({ activate_after_minutes: v })}
-              suffix="min"
-            />
-            <NumberField
-              label="Update Interval"
-              helper="Re-evaluate the trailing SL every N minutes"
-              value={local.sma_trail.update_interval_minutes}
-              min={1}
-              disabled={!trailEnabled}
-              onChange={(v) => setSma({ update_interval_minutes: v })}
-              suffix="min"
-            />
-            <SelectField
-              label="Follow Direction"
-              helper="'Both' lets SL move up AND down with the SMA. 'Ratchet' is up-only."
-              value={local.sma_trail.follow_direction}
-              disabled={!trailEnabled}
-              options={[
-                { value: "both",    label: "Both (Up & Down)" },
-                { value: "ratchet", label: "Ratchet (Up only)" },
-              ]}
-              onChange={(v) => setSma({ follow_direction: v })}
-            />
           </div>
         </div>
-      </div>
+      )}
     </SectionShell>
   );
 }

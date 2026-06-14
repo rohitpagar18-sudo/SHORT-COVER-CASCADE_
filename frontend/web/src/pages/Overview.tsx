@@ -1,11 +1,12 @@
 import { useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import {
-  AlertTriangle, RefreshCw, FileBarChart, Send, ListChecks, Activity,
-  ShieldAlert, LockKeyhole, CheckCircle2, XCircle, FileText,
+  Wifi, BellRing, ShoppingCart, FileText, TrendingUp, AlertTriangle,
+  RefreshCw, FileBarChart, Send, Boxes, ListChecks, Activity,
+  ShieldAlert, LockKeyhole, CheckCircle2, XCircle,
 } from "lucide-react";
 import { api, type Overview as OverviewT } from "../lib/api";
-import { Card, CardTitle, Skeleton } from "../components/Card";
+import { Card, CardTitle, StatTile, Skeleton } from "../components/Card";
 import ProgressBar from "../components/ProgressBar";
 import PnLChart from "../components/charts/PnLChart";
 import ConditionDonut from "../components/charts/ConditionDonut";
@@ -18,25 +19,6 @@ const POLL_MS = 15_000;
 
 function onOff(v: boolean) {
   return v ? "ON" : "OFF";
-}
-
-function StatusChip({
-  label, value, sub, tone,
-}: { label: string; value: string; sub: string; tone: "ok" | "warn" | "bad" | "off" | "neutral" }) {
-  const valCls = {
-    ok: "text-emerald-600 dark:text-emerald-400",
-    warn: "text-amber-600 dark:text-amber-400",
-    bad: "text-rose-600 dark:text-rose-400",
-    off: "text-slate-400 dark:text-slate-500",
-    neutral: "text-ink",
-  }[tone];
-  return (
-    <div className="flex min-w-[80px] flex-col gap-0.5 px-4 py-3">
-      <div className="text-[10px] uppercase tracking-wide text-muted">{label}</div>
-      <div className={`text-sm font-bold ${valCls}`}>{value}</div>
-      <div className="text-[10px] text-muted">{sub}</div>
-    </div>
-  );
 }
 
 type Props = {
@@ -104,64 +86,70 @@ export default function OverviewPage({ selectedDate, reloadTick, onData }: Props
 
   return (
     <div className="space-y-4">
-      {/* Row 1 — compact status strip */}
-      <div className="rounded-xl border border-line bg-card">
-        <div className="flex flex-wrap divide-x divide-line">
-          <StatusChip
-            label="Active Feed"
-            value={d.feed.active_feed.toUpperCase()}
-            sub={d.feed.status === "RUNNING" ? "Connected" : "Disconnected"}
-            tone={d.feed.status === "RUNNING" ? "ok" : "neutral"}
-          />
-          <StatusChip
-            label="Alert Mode"
-            value={onOff(d.modes.alert_mode)}
-            sub={d.modes.alert_mode ? "Telegram on" : "Disabled"}
-            tone={d.modes.alert_mode ? "ok" : "off"}
-          />
-          <StatusChip
-            label="Order Mode"
-            value={onOff(d.modes.order_place_mode)}
-            sub={d.modes.order_place_mode ? "Live orders" : "Safe Mode"}
-            tone={d.modes.order_place_mode ? "warn" : "off"}
-          />
-          <StatusChip
-            label="Paper Trade"
-            value={onOff(d.modes.paper_trade_mode)}
-            sub={d.modes.paper_trade_mode ? "Simulating" : "Off"}
-            tone={d.modes.paper_trade_mode ? "ok" : "off"}
-          />
-          <StatusChip
-            label="NIFTY"
-            value={onOff(d.instruments.nifty_enabled)}
-            sub={`Lot ${d.instruments.nifty_lot_size ?? "—"}`}
-            tone={d.instruments.nifty_enabled ? "ok" : "off"}
-          />
-          <StatusChip
-            label="BANKNIFTY"
-            value={onOff(d.instruments.banknifty_enabled)}
-            sub={`Lot ${d.instruments.banknifty_lot_size ?? "—"}`}
-            tone={d.instruments.banknifty_enabled ? "ok" : "off"}
-          />
-          <StatusChip
-            label="Today's P&L"
-            value={inrSigned(d.today.paper_pnl_today)}
-            sub={`${pnlIsPos ? "+" : ""}${d.today.paper_pnl_pct_today.toFixed(2)}%`}
-            tone={pnlIsPos ? "ok" : "bad"}
-          />
-          <StatusChip
-            label="Open Positions"
-            value={String(d.today.open_positions_count)}
-            sub={d.feed.status === "RUNNING" ? "Running" : "Idle"}
-            tone={d.today.open_positions_count > 0 ? "ok" : "neutral"}
-          />
-        </div>
+      {/* Row 1 — 8 status tiles */}
+      <div className="grid grid-cols-2 gap-3 md:grid-cols-4 2xl:grid-cols-8">
+        <StatTile
+          icon={<Wifi className="h-4 w-4" />}
+          label="Active Feed"
+          value={d.feed.active_feed.toUpperCase()}
+          tone={d.feed.status === "RUNNING" ? "ok" : "neutral"}
+          sub={d.feed.status === "RUNNING" ? "Connected" : "Disconnected"}
+        />
+        <StatTile
+          icon={<BellRing className="h-4 w-4" />}
+          label="Alert Mode"
+          value={onOff(d.modes.alert_mode)}
+          tone={d.modes.alert_mode ? "ok" : "off"}
+          sub={d.modes.alert_mode ? "Telegram on" : "Disabled"}
+        />
+        <StatTile
+          icon={<ShoppingCart className="h-4 w-4" />}
+          label="Order Place Mode"
+          value={onOff(d.modes.order_place_mode)}
+          tone={d.modes.order_place_mode ? "warn" : "off"}
+          sub={d.modes.order_place_mode ? "Live orders" : "Safe Mode"}
+        />
+        <StatTile
+          icon={<FileText className="h-4 w-4" />}
+          label="Paper Trade Mode"
+          value={onOff(d.modes.paper_trade_mode)}
+          tone={d.modes.paper_trade_mode ? "ok" : "off"}
+          sub={d.modes.paper_trade_mode ? "Simulating" : "Off"}
+        />
+        <StatTile
+          icon={<Boxes className="h-4 w-4" />}
+          label="NIFTY"
+          value={onOff(d.instruments.nifty_enabled)}
+          tone={d.instruments.nifty_enabled ? "ok" : "off"}
+          sub={`Lot size: ${d.instruments.nifty_lot_size ?? "—"}`}
+        />
+        <StatTile
+          icon={<Boxes className="h-4 w-4" />}
+          label="BANKNIFTY"
+          value={onOff(d.instruments.banknifty_enabled)}
+          tone={d.instruments.banknifty_enabled ? "ok" : "off"}
+          sub={`Lot size: ${d.instruments.banknifty_lot_size ?? "—"}`}
+        />
+        <StatTile
+          icon={<TrendingUp className="h-4 w-4" />}
+          label="Today's P&L (Paper)"
+          value={inrSigned(d.today.paper_pnl_today)}
+          tone={pnlIsPos ? "ok" : "bad"}
+          sub={`${pnlIsPos ? "+" : ""}${d.today.paper_pnl_pct_today.toFixed(2)}%`}
+        />
+        <StatTile
+          icon={<Activity className="h-4 w-4" />}
+          label="Open Positions"
+          value={d.today.open_positions_count}
+          tone={d.today.open_positions_count > 0 ? "ok" : "neutral"}
+          sub={d.feed.status === "RUNNING" ? "Running" : "Idle"}
+        />
       </div>
 
-      {/* Row 2 — Circuit Breakers + Next Key Events (market-hours only) */}
+      {/* Row 2 — Circuit Breakers + Quick Actions + Next Key Events (market-hours only) */}
       <div className={[
         "grid grid-cols-1 gap-3",
-        d.today.market_status === "OPEN" ? "lg:grid-cols-2" : "lg:grid-cols-1 max-w-lg",
+        d.today.market_status === "OPEN" ? "lg:grid-cols-3" : "lg:grid-cols-2",
       ].join(" ")}>
         <Card>
           <CardTitle right={<Badge tone={cbTone(d.circuit_breakers.status)}>{d.circuit_breakers.status}</Badge>}>
@@ -185,6 +173,28 @@ export default function OverviewPage({ selectedDate, reloadTick, onData }: Props
               </div>
               <ProgressBar pct={lossPct} tone={lossPct >= 100 ? "bad" : lossPct >= 66 ? "warn" : "ok"} />
             </div>
+          </div>
+        </Card>
+
+        <Card>
+          <CardTitle>Quick Actions</CardTitle>
+          <div className="flex flex-col gap-2">
+            <button
+              onClick={() => toast.push("Config auto-reloads on the bot's next scan", "info")}
+              className="flex w-full items-center gap-2 rounded-md border border-line bg-card px-3 py-2 text-sm hover:bg-line2"
+            >
+              <RefreshCw className="h-4 w-4" />
+              Reload Config Now
+            </button>
+            <button
+              onClick={() => nav("/logs")}
+              className="flex w-full items-center gap-2 rounded-md border border-line bg-card px-3 py-2 text-sm hover:bg-line2"
+            >
+              <FileText className="h-4 w-4" />
+              View Today's Logs
+            </button>
+            <DisabledAction icon={<FileBarChart className="h-4 w-4" />} label="Open Dashboard (Excel)" />
+            <DisabledAction icon={<Send className="h-4 w-4" />} label="Send Test Telegram" />
           </div>
         </Card>
 
@@ -236,29 +246,6 @@ export default function OverviewPage({ selectedDate, reloadTick, onData }: Props
           </div>
         </Card>
       </div>
-
-      {/* Quick Actions */}
-      <Card>
-        <CardTitle>Quick Actions</CardTitle>
-        <div className="flex flex-col gap-2">
-          <button
-            onClick={() => toast.push("Config auto-reloads on the bot's next scan", "info")}
-            className="flex w-full items-center gap-2 rounded-md border border-line bg-card px-3 py-2 text-sm hover:bg-line2"
-          >
-            <RefreshCw className="h-4 w-4" />
-            Reload Config Now
-          </button>
-          <button
-            onClick={() => nav("/logs")}
-            className="flex w-full items-center gap-2 rounded-md border border-line bg-card px-3 py-2 text-sm hover:bg-line2"
-          >
-            <FileText className="h-4 w-4" />
-            View Today's Logs
-          </button>
-          <DisabledAction icon={<FileBarChart className="h-4 w-4" />} label="Open Dashboard (Excel)" />
-          <DisabledAction icon={<Send className="h-4 w-4" />} label="Send Test Telegram" />
-        </div>
-      </Card>
 
       {/* Row 4 */}
       <div className="grid grid-cols-1 gap-3 lg:grid-cols-2 xl:grid-cols-4">

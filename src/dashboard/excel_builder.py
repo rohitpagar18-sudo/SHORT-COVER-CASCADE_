@@ -3,7 +3,7 @@
 Reads the unified monthly Parquet files in ``data/`` and produces a
 human-facing workbook at ``logs/dashboards/dashboard_YYYY_QN.xlsx``.
 
-Seven sheets in order:
+Base sheets in order:
 
 1. Strategy Dashboard — KPI tiles + 4 charts (visual at-a-glance view)
 2. Daily Summary       — one row per trading day with the directional
@@ -13,10 +13,15 @@ Seven sheets in order:
 4. Order Place         — automatic columns + manual columns the user
                          fills in (order status, exit price, P&L,
                          user notes); coloured by outcome
-5. All Signals         — full audit including ``would_alert_extended``
-                         rows highlighted in light orange
-6. Gap History         — directional labels with colour swatches
-7. Config Snapshot     — current config values for this quarter
+5. Gap History         — directional labels with colour swatches
+6. Config Snapshot     — current config values for this quarter
+
+(The Phase 5D Paper Trades / Paper Dashboard / Echoes sheets are
+appended between Gap History and Config Snapshot when enabled.)
+
+The legacy "All Signals" sheet was removed: the raw, source-of-truth
+audit lives in ``logs/signals.jsonl`` and the monthly Parquet files —
+duplicating it inside the workbook was redundant.
 
 Idempotent: re-running ``update_dashboard`` will rebuild the workbook
 from scratch using the latest Parquet state.
@@ -85,33 +90,6 @@ GAP_FILLS = {
     "GAP_DAY": PatternFill("solid", fgColor="FFCDD2"),
     "GAP_DETECTED_BUT_DISABLED": PatternFill("solid", fgColor="FFE0B2"),
 }
-
-# Signal row colour by Relation. Depths share a family colour:
-# ITM = grey, ATM = yellow, OTM = purple. Deeper levels darken.
-_ITM_FILL = PatternFill("solid", fgColor="F4F4F4")
-_ITM2_FILL = PatternFill("solid", fgColor="E0E0E0")
-_ITM3_FILL = PatternFill("solid", fgColor="BDBDBD")
-_ATM_FILL = PatternFill("solid", fgColor="FFF9C4")
-_OTM_FILL = PatternFill("solid", fgColor="EDE7F6")
-_OTM2_FILL = PatternFill("solid", fgColor="D1C4E9")
-_OTM3_FILL = PatternFill("solid", fgColor="B39DDB")
-RELATION_FILLS = {
-    # Per-level (Phase 5B+)
-    "ITM1": _ITM_FILL,
-    "ITM2": _ITM2_FILL,
-    "ITM3": _ITM3_FILL,
-    "ATM":  _ATM_FILL,
-    "OTM1": _OTM_FILL,
-    "OTM2": _OTM2_FILL,
-    "OTM3": _OTM3_FILL,
-    # Legacy (pre-per-level signals.jsonl rows, before migration ran)
-    "ITM":  _ITM_FILL,
-    "OTM":  _OTM_FILL,
-}
-
-# would_alert_extended highlight
-EXTENDED_FILL = PatternFill("solid", fgColor="FFE0B2")
-ALL_PASSED_FILL = PatternFill("solid", fgColor="FFF59D")
 
 # KPI tile palette (Strategy Dashboard)
 KPI_FILLS = [
@@ -260,7 +238,7 @@ def _build_strategy_dashboard(
         column=1,
         value=(
             "Auto-generated from Parquet · refreshes at 15:35 IST · "
-            "filter the All Alerts / All Signals sheets for detail"
+            "filter the All Alerts sheet for detail"
         ),
     )
     subtitle.font = _SUBTITLE_FONT
@@ -646,62 +624,6 @@ def _build_order_place(ws: Worksheet, df: pd.DataFrame) -> int:
     return written
 
 
-def _build_all_signals(ws: Worksheet, df: pd.DataFrame) -> int:
-    if df.empty or "event_type" not in df.columns:
-        _set_headers(ws, ["(no signals yet)"])
-        return 0
-
-    signals = df[df["event_type"].isin(["scan", "alert", "would_alert_extended"])].copy()
-    if signals.empty:
-        _set_headers(ws, ["(no signals yet)"])
-        return 0
-
-    show_cols = [
-        "timestamp_ist", "date", "time", "event_type", "symbol", "strike",
-        "relation", "option_type", "spot_price", "spot_vwap",
-        "option_close", "option_vwap", "opt_above_vwap_pct",
-        "rsi", "rsi_ma", "oi", "oi_ma", "volume", "volume_ma",
-        "is_green", "all_passed", "summary",
-    ]
-    cols = [c for c in show_cols if c in signals.columns]
-    if "time" not in signals.columns and "timestamp_ist" in signals.columns:
-        signals["time"] = signals["timestamp_ist"].astype(str).str.slice(11, 16)
-        cols = [c for c in show_cols if c in signals.columns]
-
-    out = signals[cols].sort_values("timestamp_ist").reset_index(drop=True)
-    written = _write_dataframe(ws, out)
-
-    # Highlight all_passed → yellow; would_alert_extended → light orange.
-    if written:
-        all_passed_col = (
-            list(out.columns).index("all_passed") + 1 if "all_passed" in out.columns else None
-        )
-        event_col = list(out.columns).index("event_type") + 1
-        relation_col = (
-            list(out.columns).index("relation") + 1 if "relation" in out.columns else None
-        )
-        for i in range(written):
-            event_val = ws.cell(row=2 + i, column=event_col).value
-            if event_val == "would_alert_extended":
-                for c in range(1, len(out.columns) + 1):
-                    ws.cell(row=2 + i, column=c).fill = EXTENDED_FILL
-                continue
-            ap_val = ws.cell(row=2 + i, column=all_passed_col).value if all_passed_col else False
-            if ap_val is True or ap_val == "True":
-                for c in range(1, len(out.columns) + 1):
-                    ws.cell(row=2 + i, column=c).fill = ALL_PASSED_FILL
-                continue
-            if relation_col is not None:
-                rel = ws.cell(row=2 + i, column=relation_col).value
-                fill = RELATION_FILLS.get(str(rel)) if rel else None
-                if fill:
-                    for c in range(1, len(out.columns) + 1):
-                        ws.cell(row=2 + i, column=c).fill = fill
-    ws.freeze_panes = "A2"
-    return written
-
-
-
 def _build_gap_history(ws: Worksheet, df: pd.DataFrame) -> int:
     if df.empty or "event_type" not in df.columns:
         _set_headers(ws, ["(no gap history)"])
@@ -867,9 +789,6 @@ def _build_workbook(year: int, quarter: int, df: pd.DataFrame, feed: "Any | None
 
     order = wb.create_sheet("Order Place")
     _build_order_place(order, df)
-
-    signals = wb.create_sheet("All Signals")
-    _build_all_signals(signals, df)
 
     gaps = wb.create_sheet("Gap History")
     _build_gap_history(gaps, df)

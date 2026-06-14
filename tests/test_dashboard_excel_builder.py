@@ -164,7 +164,7 @@ _EXPECTED_SHEETS = [
     "Daily Summary",
     "All Alerts",
     "Order Place",
-    "All Signals",
+    # "All Signals" was removed: signals.jsonl is the source-of-truth audit.
     "Gap History",
     # Phase 5D — paper layer sheets sit between Gap History and the
     # config snapshot so Strategy Dashboard stays the default-open tab.
@@ -175,7 +175,7 @@ _EXPECTED_SHEETS = [
 ]
 
 
-def test_dashboard_creates_all_seven_sheets(isolated_paths) -> None:
+def test_dashboard_creates_expected_sheets(isolated_paths) -> None:
     logs, data, dashboards = isolated_paths
     _write_jsonl(logs / "alerts.jsonl", [_alert("2026-05-27T10:35:00+05:30")])
     _write_jsonl(logs / "gap_log.jsonl", [_gap("2026-05-27T09:16:00+05:30", "NORMAL")])
@@ -271,7 +271,11 @@ def test_order_place_outcome_coloring_applied(isolated_paths) -> None:
     assert cell.fill.fgColor.rgb is not None
 
 
-def test_all_signals_marks_extended_zone_rows(isolated_paths) -> None:
+def test_all_signals_sheet_removed(isolated_paths) -> None:
+    # The All Signals sheet was removed — signals.jsonl is the
+    # source-of-truth audit (duplicating it inside Excel was wasteful).
+    # Build a workbook with an extended-zone scan present to be sure the
+    # sheet really is gone (not just absent because of empty data).
     logs, data, dashboards = isolated_paths
     ext = _scan(
         "2026-05-27T11:00:00+05:30",
@@ -284,13 +288,7 @@ def test_all_signals_marks_extended_zone_rows(isolated_paths) -> None:
     sync_jsonl_to_parquet()
     result = update_dashboard()
     wb = load_workbook(Path(result["output_path"]))
-    ws = wb["All Signals"]
-    headers = [c.value for c in ws[1]]
-    event_col = headers.index("Event Type") + 1
-    # Row 2 should be the extended event with a fill applied.
-    cell = ws.cell(row=2, column=event_col)
-    assert cell.value == "would_alert_extended"
-    assert cell.fill is not None
+    assert "All Signals" not in wb.sheetnames
 
 
 def test_gap_history_colour_for_directional_label(isolated_paths) -> None:
@@ -344,3 +342,131 @@ def test_daily_summary_row_per_date(isolated_paths) -> None:
     ws = wb["Daily Summary"]
     # Header row + 2 dates.
     assert ws.max_row >= 3
+
+
+# ---------------------------------------------------------------------------
+# Paper Dashboard — NO_DATA exclusion contract
+#
+# Pins the rule that pre-tracking episodes (logged before SL/TP exit data
+# was captured) appear as NO_DATA on the Paper Trades sheet but never
+# inflate the headline "Trades Taken" count or pollute the P&L / win-rate
+# / profit-factor / R aggregates on the Paper Dashboard. NO_DATA is
+# reported as its own KPI ("Pending (NO_DATA)").
+# ---------------------------------------------------------------------------
+
+
+def _paper_row(date: str, outcome: str, paper_pnl: float, **kw) -> dict:
+    """Minimal paper-trades row — only the fields the dashboard reads."""
+    base = {
+        "alert_id": f"{date}|NIFTY|CE",
+        "episode_id": f"{date}T10:00:00+05:30|NIFTY|CE",
+        "paper_role": "representative",
+        "date": date,
+        "candle_timestamp": f"{date}T10:00:00+05:30",
+        "symbol": "NIFTY",
+        "strike": 24050,
+        "relation": "ATM",
+        "option_type": "CE",
+        "expiry": "2026-06-02",
+        "entry": 150.0,
+        "sl": 140.0,
+        "tp1": 165.0,
+        "tp2": 175.0,
+        "lots": 3,
+        "lot_size": 65,
+        "is_expiry_day": False,
+        "decision": "TAKEN",
+        "decision_reason": "taken (slot 1/3)",
+        "slot": 1,
+        "outcome": outcome,
+        "exit_price": None,
+        "exit_time": None,
+        "exit_reason": "",
+        "realized_R": 0.0,
+        "paper_pnl": paper_pnl,
+        "paper_pnl_per_unit": 0.0,
+        "mfe": 0.0, "mae": 0.0, "mfe_R": 0.0, "mae_R": 0.0,
+        "max_drawdown_R": 0.0,
+        "intrabar_ambiguous": False,
+        "fidelity": "ohlc",
+        "bot_remark": "",
+        "bot_tags": "",
+        "triggered_caps": [],
+    }
+    base.update(kw)
+    return base
+
+
+def test_paper_dashboard_excludes_no_data_from_trades_taken() -> None:
+    """Trades Taken (tracked) on the Paper Dashboard must subtract NO_DATA
+    rows so pre-tracking episodes (1–4 Jun) don't inflate the count.
+    NO_DATA is reported separately under "Pending (NO_DATA)".
+    """
+    from openpyxl import Workbook
+    from src.dashboard.paper_sheets import (
+        build_paper_dashboard_sheet,
+        build_paper_trades_sheet,
+    )
+
+    # 2 NO_DATA (pre-tracking) + 1 TP2 + 1 SL → tracked count should be 2.
+    rows = [
+        _paper_row("2026-06-01", "NO_DATA", 0.0),
+        _paper_row("2026-06-04", "NO_DATA", 0.0),
+        _paper_row("2026-06-05", "TP2_HIT", 4875.0, realized_R=2.5),
+        _paper_row("2026-06-06", "SL_HIT", -1950.0, realized_R=-1.0),
+    ]
+    df = pd.DataFrame(rows)
+    # The merge-overrides shape requires the manual_* columns to exist.
+    for c in ("manual_decision", "manual_reason", "manual_outcome",
+              "manual_exit", "user_notes"):
+        df[c] = None
+
+    wb = Workbook()
+    trades_ws = wb.active
+    trades_ws.title = "Paper Trades"
+    build_paper_trades_sheet(trades_ws, df)
+
+    dash_ws = wb.create_sheet("Paper Dashboard")
+    build_paper_dashboard_sheet(dash_ws, df)
+
+    # Walk column A to locate KPI labels, then check the formula on column B.
+    kpi_formulae: dict[str, str] = {}
+    for r in range(1, dash_ws.max_row + 1):
+        label = dash_ws.cell(row=r, column=1).value
+        if isinstance(label, str):
+            kpi_formulae[label] = dash_ws.cell(row=r, column=2).value
+
+    assert "Trades Taken (tracked)" in kpi_formulae
+    assert "Pending (NO_DATA)" in kpi_formulae
+    taken_f = kpi_formulae["Trades Taken (tracked)"]
+    # The formula must subtract the NO_DATA count from the total.
+    assert "NO_DATA" in taken_f and "-" in taken_f, taken_f
+    # Headline P&L / win-rate / etc. must exclude NO_DATA.
+    assert "NO_DATA" in kpi_formulae["Total Paper P&L (₹)"]
+    assert "<>NO_DATA" in kpi_formulae["Avg R per Trade"]
+    assert "NO_DATA" in kpi_formulae["Best Trade (₹)"]
+    assert "NO_DATA" in kpi_formulae["Worst Trade (₹)"]
+    assert "NO_DATA" in kpi_formulae["Profit Factor"]
+
+
+def test_paper_trades_sheet_keeps_no_data_rows_visible() -> None:
+    """NO_DATA reps must remain visible on the Paper Trades sheet — they
+    are excluded from aggregates, not deleted from the raw view.
+    """
+    from openpyxl import Workbook
+    from src.dashboard.paper_sheets import build_paper_trades_sheet
+
+    df = pd.DataFrame([
+        _paper_row("2026-06-01", "NO_DATA", 0.0),
+        _paper_row("2026-06-05", "TP2_HIT", 4875.0, realized_R=2.5),
+    ])
+    for c in ("manual_decision", "manual_reason", "manual_outcome",
+              "manual_exit", "user_notes"):
+        df[c] = None
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Paper Trades"
+    written = build_paper_trades_sheet(ws, df)
+    # Both TAKEN rows must be on the sheet (NO_DATA flagged, not hidden).
+    assert written == 2

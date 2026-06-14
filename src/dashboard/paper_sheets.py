@@ -429,13 +429,26 @@ def build_paper_dashboard_sheet(
     date_rng = rng(date_col)
     R_rng = rng(realized_R_col)
 
-    # Resolved = every TAKEN trade whose outcome is not pending (NO_DATA).
-    total_taken_f = f"=COUNTA({date_rng})"
-    resolved_f = f"=COUNTA({out_rng})-COUNTIF({out_rng},\"NO_DATA\")"
+    # "Trades Taken" = TAKEN reps whose outcome is tracked (SL/TP/HARD/
+    # OPEN_SQOFF). NO_DATA reps stay visible on the sheet (and as their
+    # own KPI below) but are excluded from every aggregate so pre-
+    # tracking-start episodes (1–4 Jun) don't pollute win-rate / P&L /
+    # profit-factor / R math. Same definition the frontend uses for its
+    # "all-time tracked" count. Echoes never reach this sheet — only
+    # representatives are written to paper_trades.jsonl.
+    no_data_count_f = f"=COUNTIF({out_rng},\"NO_DATA\")"
+    total_taken_f = (
+        f"=COUNTA({date_rng})-COUNTIF({out_rng},\"NO_DATA\")"
+    )
+    # resolved == total_taken under the new definition; kept as its own
+    # variable so the win-rate / SL-rate formulas read clearly.
+    resolved_f = total_taken_f
     wins_f = f"=COUNTIF({out_rng},\"TP2_HIT\")+COUNTIF({out_rng},\"TP1_HIT\")"
     sl_count_f = f"=COUNTIF({out_rng},\"SL_HIT\")"
-    no_data_count_f = f"=COUNTIF({out_rng},\"NO_DATA\")"
-    headline_pnl_f = f"=SUM({pnl_rng})"
+    # P&L / best / worst exclude NO_DATA explicitly — NO_DATA rows carry
+    # paper_pnl == 0, but using IFS variants makes the intent obvious and
+    # immune to any future schema change that gives NO_DATA a non-zero pnl.
+    headline_pnl_f = f"=SUMIFS({pnl_rng},{out_rng},\"<>NO_DATA\")"
     avg_R_f = (
         f"=IFERROR(AVERAGEIFS({R_rng},{out_rng},\"<>NO_DATA\"),0)"
     )
@@ -445,32 +458,43 @@ def build_paper_dashboard_sheet(
     sl_rate_f = (
         f"=IFERROR(({sl_count_f.lstrip('=')})/({resolved_f.lstrip('=')}),0)"
     )
-    best_pnl_f = f"=IFERROR(MAX({pnl_rng}),0)"
-    worst_pnl_f = f"=IFERROR(MIN({pnl_rng}),0)"
+    best_pnl_f = f"=IFERROR(MAXIFS({pnl_rng},{out_rng},\"<>NO_DATA\"),0)"
+    worst_pnl_f = f"=IFERROR(MINIFS({pnl_rng},{out_rng},\"<>NO_DATA\"),0)"
     best_detail_f = (
-        f"=IFERROR(INDEX({sym_rng},MATCH(MAX({pnl_rng}),{pnl_rng},0))"
-        f"&\" — \"&INDEX({date_rng},MATCH(MAX({pnl_rng}),{pnl_rng},0)),\"\")"
+        f"=IFERROR(INDEX({sym_rng},MATCH(MAXIFS({pnl_rng},{out_rng},"
+        f"\"<>NO_DATA\"),{pnl_rng},0))&\" — \"&INDEX({date_rng},"
+        f"MATCH(MAXIFS({pnl_rng},{out_rng},\"<>NO_DATA\"),{pnl_rng},0)),\"\")"
     )
     worst_detail_f = (
-        f"=IFERROR(INDEX({sym_rng},MATCH(MIN({pnl_rng}),{pnl_rng},0))"
-        f"&\" — \"&INDEX({date_rng},MATCH(MIN({pnl_rng}),{pnl_rng},0)),\"\")"
+        f"=IFERROR(INDEX({sym_rng},MATCH(MINIFS({pnl_rng},{out_rng},"
+        f"\"<>NO_DATA\"),{pnl_rng},0))&\" — \"&INDEX({date_rng},"
+        f"MATCH(MINIFS({pnl_rng},{out_rng},\"<>NO_DATA\"),{pnl_rng},0)),\"\")"
+    )
+    # Profit factor = sum(wins ₹) / |sum(losses ₹)|, both restricted to
+    # tracked rows so NO_DATA can't fold in (#DIV/0! when no losses yet).
+    profit_factor_f = (
+        f"=IFERROR(SUMIFS({pnl_rng},{out_rng},\"<>NO_DATA\",{pnl_rng},\">0\")/"
+        f"ABS(SUMIFS({pnl_rng},{out_rng},\"<>NO_DATA\",{pnl_rng},\"<0\")),\"—\")"
     )
 
     kpi_rows = [
-        ("Total Trades Taken",   total_taken_f,   None),
-        ("Win Rate",             win_rate_f,      None),
-        ("Total Paper P&L (₹)",  headline_pnl_f,  None),
-        ("Avg R per Trade",      avg_R_f,         None),
-        ("Best Trade (₹)",       best_pnl_f,      best_detail_f),
-        ("Worst Trade (₹)",      worst_pnl_f,     worst_detail_f),
-        ("SL Hit Rate",          sl_rate_f,       None),
-        ("Pending (NO_DATA)",    no_data_count_f, None),
+        ("Trades Taken (tracked)", total_taken_f,    None),
+        ("Win Rate",               win_rate_f,       None),
+        ("Total Paper P&L (₹)",    headline_pnl_f,   None),
+        ("Avg R per Trade",        avg_R_f,          None),
+        ("Profit Factor",          profit_factor_f,  None),
+        ("Best Trade (₹)",         best_pnl_f,       best_detail_f),
+        ("Worst Trade (₹)",        worst_pnl_f,      worst_detail_f),
+        ("SL Hit Rate",            sl_rate_f,        None),
+        ("Pending (NO_DATA)",      no_data_count_f,  None),
     ]
 
-    # Headline P&L (TAKEN only) — large + bold, deep green.
-    ws.cell(row=4, column=1, value="HEADLINE PAPER P&L (TAKEN ONLY)").font = Font(
-        bold=True, color="FFFFFF", size=11
-    )
+    # Headline P&L (TAKEN + tracked only) — large + bold, deep green.
+    # NO_DATA reps are excluded so pre-tracking episodes (1–4 Jun) don't
+    # pollute the headline number.
+    ws.cell(
+        row=4, column=1, value="HEADLINE PAPER P&L (TAKEN, TRACKED ONLY)",
+    ).font = Font(bold=True, color="FFFFFF", size=11)
     ws.cell(row=4, column=1).fill = PatternFill("solid", fgColor="2E7D32")
     ws.merge_cells("A4:C4")
 

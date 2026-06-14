@@ -90,19 +90,29 @@ def test_tp2_outcome_mapping(base_alert, config):
 
 
 def test_tp1_be_outcome_mapping(base_alert, config):
+    # Pin Method 1 — this test asserts the breakeven-after-TP1 path,
+    # which is Method 1/2 only. Under Method 3 the SMA trail owns SL.
+    cfg = config.model_copy(
+        update={"stop_loss": config.stop_loss.model_copy(update={"method": 1})}
+    )
     candles = pd.DataFrame(_prefix() + [
         _candle(10, 5, 150, 166, 149, 165),    # TP1
         _candle(10, 10, 165, 168, 149, 160),   # back to breakeven
     ])
-    po = compute_paper_outcome(base_alert, candles=candles, app_config=config)
-    kernel = replay_alert(base_alert, candles, config)
+    po = compute_paper_outcome(base_alert, candles=candles, app_config=cfg)
+    kernel = replay_alert(base_alert, candles, cfg)
     assert kernel.auto_order_status == PARTIAL
     assert po.outcome == OUTCOME_TP1_BE
     # Normal day → 0.5 × 1.5 = 0.75R inherited from risk_reward.
-    assert po.realized_R == pytest.approx(0.5 * config.risk_reward.normal_day_tp1_r)
+    assert po.realized_R == pytest.approx(0.5 * cfg.risk_reward.normal_day_tp1_r)
 
 
 def test_eod_flat_is_open_sqoff(base_alert, config):
+    # Pin Method 1 — the static-SL hover-band test. Under Method 3 the
+    # SMA trail walks SL up into the hover band and fires SL_HIT.
+    cfg = config.model_copy(
+        update={"stop_loss": config.stop_loss.model_copy(update={"method": 1})}
+    )
     # Hover band — never touches SL or TP1.
     rows = _prefix()
     for hh in range(10, 15):
@@ -111,7 +121,7 @@ def test_eod_flat_is_open_sqoff(base_alert, config):
                 continue
             rows.append(_candle(hh, mm, 152, 158, 148, 153))
     candles = pd.DataFrame(rows)
-    po = compute_paper_outcome(base_alert, candles=candles, app_config=config)
+    po = compute_paper_outcome(base_alert, candles=candles, app_config=cfg)
     assert po.outcome == OUTCOME_OPEN_SQOFF
     # OPEN_SQOFF computes R from actual P&L / R per unit.
     assert po.realized_R == pytest.approx(0.3)  # (153-150)/10

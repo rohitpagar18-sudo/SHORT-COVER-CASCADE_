@@ -311,7 +311,7 @@ function BotLogView({
   onScroll,
 }: {
   rows: LogTextRow[];
-  bodyRef: React.RefObject<HTMLDivElement | null>;
+  bodyRef: React.RefObject<HTMLDivElement>;
   onScroll: () => void;
 }) {
   if (rows.length === 0) {

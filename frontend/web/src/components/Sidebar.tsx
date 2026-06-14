@@ -1,8 +1,7 @@
 import { NavLink, useNavigate } from "react-router-dom";
 import {
-  LayoutDashboard, Sliders, Box, Target, ShieldAlert, Coins, Filter,
-  ShoppingCart, RotateCcw, Send, FileText, BarChart3, FileBarChart,
-  ScrollText, Activity, Settings, Info, Sun, Moon, ExternalLink,
+  LayoutDashboard, Sliders, BarChart3, FileBarChart,
+  ScrollText, Activity, Settings, Info, FileText, Sun, Moon, ExternalLink,
 } from "lucide-react";
 import type { BotStatus } from "../lib/api";
 import { useTheme } from "../context/ThemeContext";
@@ -10,27 +9,16 @@ import { timeAgoIST, fmtUptime, fmtClock } from "../lib/format";
 
 type Item = { to: string; label: string; icon: React.ElementType };
 
-// Canonical sidebar order per the v2 spec. Only pages with real
-// implementations route there; everything else lands on /coming-soon
-// (the ComingSoon component, mounted as a catch-all in App.tsx).
 export const MENU: Item[] = [
-  { to: "/overview",           label: "Overview",                icon: LayoutDashboard },
-  { to: "/trades-performance", label: "Trades & Performance",    icon: BarChart3 },
-  { to: "/configuration",      label: "Configuration",           icon: Sliders },
-  { to: "/instruments",        label: "Instruments",             icon: Box },
-  { to: "/strike-scanning",    label: "Strike & Scanning",       icon: Target },
-  { to: "/stop-loss",          label: "Stop Loss",               icon: ShieldAlert },
-  { to: "/risk-money",         label: "Risk & Money",            icon: Coins },
-  { to: "/conditions",         label: "Conditions",              icon: Filter },
-  { to: "/orders",             label: "Orders",                  icon: ShoppingCart },
-  { to: "/reentry-rules",      label: "Re-entry Rules",          icon: RotateCcw },
-  { to: "/alerts-telegram",    label: "Alerts & Telegram",       icon: Send },
-  { to: "/paper-trading",      label: "Paper Trading",           icon: FileText },
-  { to: "/dashboard-reports",  label: "Dashboard & Reports",     icon: FileBarChart },
-  { to: "/logs",               label: "Logs",                    icon: ScrollText },
-  { to: "/bot-status",         label: "Bot Status",              icon: Activity },
-  { to: "/settings",           label: "Settings",                icon: Settings },
-  { to: "/about",              label: "About",                   icon: Info },
+  { to: "/overview",           label: "Overview",             icon: LayoutDashboard },
+  { to: "/trades-performance", label: "Trades & Performance", icon: BarChart3 },
+  { to: "/configuration",      label: "Configuration",        icon: Sliders },
+  { to: "/paper-trading",      label: "Paper Trading",        icon: FileText },
+  { to: "/dashboard-reports",  label: "Dashboard & Reports",  icon: FileBarChart },
+  { to: "/logs",               label: "Logs",                 icon: ScrollText },
+  { to: "/bot-status",         label: "Bot Status",           icon: Activity },
+  { to: "/settings",           label: "Settings",             icon: Settings },
+  { to: "/about",              label: "About",                icon: Info },
 ];
 
 export default function Sidebar({ bot }: { bot: BotStatus | null }) {

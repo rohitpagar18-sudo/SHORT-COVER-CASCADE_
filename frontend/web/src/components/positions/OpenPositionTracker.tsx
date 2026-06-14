@@ -5,6 +5,18 @@ import PriceSparkline from "../charts/PriceSparkline";
 import { api, type LivePosition, type OpenPositionsResponse } from "../../lib/api";
 import { fmtClock, hhmm, inr, inrSigned } from "../../lib/format";
 
+function todayISTDate(): string {
+  const now = new Date();
+  return new Date(now.getTime() + (now.getTimezoneOffset() + 330) * 60_000)
+    .toISOString()
+    .slice(0, 10);
+}
+
+function entryDateIST(entry_time: string | null): string | null {
+  if (!entry_time) return null;
+  return entry_time.slice(0, 10);
+}
+
 type Props = {
   pollMs?: number;
   showTitle?: boolean;
@@ -104,6 +116,10 @@ function PositionCard({ pos }: { pos: LivePosition }) {
   const r = pos.running_pnl_r;
   const isUp = pnl != null && pnl >= 0;
 
+  const entryDate = entryDateIST(pos.entry_time);
+  const isToday = entryDate === todayISTDate();
+  const dateLabel = !isToday && entryDate ? entryDate.slice(5) : null; // MM-DD if not today
+
   return (
     <div className="rounded-lg border border-line bg-card p-3">
       <div className="flex items-start justify-between gap-2">
@@ -115,13 +131,19 @@ function PositionCard({ pos }: { pos: LivePosition }) {
             )}
           </div>
           <div className="text-xs text-muted">
+            {dateLabel && <span className="mr-1 font-medium text-amber-600">{dateLabel}</span>}
             Entry {hhmm(pos.entry_time)} · {pos.qty_lots ?? "—"} lot
             {pos.qty_lots === 1 ? "" : "s"}
           </div>
         </div>
-        <span className="inline-flex items-center gap-1 rounded-full bg-emerald-100 px-2 py-0.5 text-[10px] font-semibold text-emerald-700 ring-1 ring-emerald-200 dark:bg-emerald-950/40 dark:text-emerald-300 dark:ring-emerald-900">
-          <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-emerald-500" />
-          RUNNING
+        <span className={[
+          "inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-semibold ring-1",
+          isToday
+            ? "bg-emerald-100 text-emerald-700 ring-emerald-200 dark:bg-emerald-950/40 dark:text-emerald-300 dark:ring-emerald-900"
+            : "bg-amber-100 text-amber-700 ring-amber-200 dark:bg-amber-950/40 dark:text-amber-300 dark:ring-amber-900",
+        ].join(" ")}>
+          {isToday && <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-emerald-500" />}
+          {isToday ? "OPEN" : "OPEN (stale)"}
         </span>
       </div>
 

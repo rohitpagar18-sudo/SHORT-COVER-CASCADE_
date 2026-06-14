@@ -101,8 +101,8 @@ function presetLabel(p: Preset): string {
 }
 
 export default function TradesPerformancePage() {
-  const initial = applyPreset("today");
-  const [preset, setPreset] = useState<Preset>("today");
+  const initial = applyPreset("this_week");
+  const [preset, setPreset] = useState<Preset>("this_week");
   const [from, setFrom] = useState<string>(initial.from);
   const [to, setTo] = useState<string>(initial.to);
   const [symbol, setSymbol] = useState<SymbolFilter>("ALL");
@@ -118,6 +118,7 @@ export default function TradesPerformancePage() {
     optType: "ALL" as TypeFilter,
     status: "ALL" as StatusFilter,
     outcome: "ALL" as OutcomeFilter,
+    // Immediately apply the initial preset — no need to click Apply.
   });
 
   const [trades, setTrades] = useState<TradesResponse | null>(null);
@@ -200,8 +201,8 @@ export default function TradesPerformancePage() {
   }, [from, to, symbol, optType, status, outcome]);
 
   const onReset = useCallback(() => {
-    const r = applyPreset("today");
-    setPreset("today");
+    const r = applyPreset("this_week");
+    setPreset("this_week");
     setFrom(r.from);
     setTo(r.to);
     setSymbol("ALL");

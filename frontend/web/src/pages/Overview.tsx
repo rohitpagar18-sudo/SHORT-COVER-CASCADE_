@@ -158,10 +158,10 @@ export default function OverviewPage({ selectedDate, reloadTick, onData }: Props
         </div>
       </div>
 
-      {/* Row 2 */}
+      {/* Row 2 — Circuit Breakers + Next Key Events (market-hours only) */}
       <div className={[
         "grid grid-cols-1 gap-3",
-        d.today.market_status === "OPEN" ? "lg:grid-cols-3" : "lg:grid-cols-2",
+        d.today.market_status === "OPEN" ? "lg:grid-cols-2" : "lg:grid-cols-1 max-w-lg",
       ].join(" ")}>
         <Card>
           <CardTitle right={<Badge tone={cbTone(d.circuit_breakers.status)}>{d.circuit_breakers.status}</Badge>}>
@@ -200,28 +200,6 @@ export default function OverviewPage({ selectedDate, reloadTick, onData }: Props
             </ul>
           </Card>
         )}
-
-        <Card>
-          <CardTitle>Quick Actions</CardTitle>
-          <div className="flex flex-col gap-2">
-            <button
-              onClick={() => toast.push("Config auto-reloads on the bot's next scan", "info")}
-              className="flex items-center gap-2 rounded-md border border-line bg-card px-3 py-2 text-sm hover:bg-line2"
-            >
-              <RefreshCw className="h-4 w-4" />
-              Reload Config Now
-            </button>
-            <button
-              onClick={() => nav("/logs")}
-              className="flex items-center gap-2 rounded-md border border-line bg-card px-3 py-2 text-sm hover:bg-line2"
-            >
-              <FileText className="h-4 w-4" />
-              View Today's Logs
-            </button>
-            <DisabledAction icon={<FileBarChart className="h-4 w-4" />} label="Open Dashboard (Excel)" />
-            <DisabledAction icon={<Send className="h-4 w-4" />} label="Send Test Telegram" />
-          </div>
-        </Card>
       </div>
 
       {/* Row 3 — recent alerts + daily P&L */}
@@ -258,6 +236,29 @@ export default function OverviewPage({ selectedDate, reloadTick, onData }: Props
           </div>
         </Card>
       </div>
+
+      {/* Quick Actions */}
+      <Card>
+        <CardTitle>Quick Actions</CardTitle>
+        <div className="flex flex-wrap gap-2">
+          <button
+            onClick={() => toast.push("Config auto-reloads on the bot's next scan", "info")}
+            className="flex items-center gap-2 rounded-md border border-line bg-card px-3 py-2 text-sm hover:bg-line2"
+          >
+            <RefreshCw className="h-4 w-4" />
+            Reload Config Now
+          </button>
+          <button
+            onClick={() => nav("/logs")}
+            className="flex items-center gap-2 rounded-md border border-line bg-card px-3 py-2 text-sm hover:bg-line2"
+          >
+            <FileText className="h-4 w-4" />
+            View Today's Logs
+          </button>
+          <DisabledAction icon={<FileBarChart className="h-4 w-4" />} label="Open Dashboard (Excel)" />
+          <DisabledAction icon={<Send className="h-4 w-4" />} label="Send Test Telegram" />
+        </div>
+      </Card>
 
       {/* Row 4 */}
       <div className="grid grid-cols-1 gap-3 lg:grid-cols-2 xl:grid-cols-4">

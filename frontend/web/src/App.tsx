@@ -5,14 +5,6 @@ import Header from "./components/Header";
 import ComingSoon from "./components/ComingSoon";
 import OverviewPage from "./pages/Overview";
 import ConfigurationPage from "./pages/Configuration";
-import InstrumentsPage from "./pages/Instruments";
-import StrikeScanningPage from "./pages/StrikeScanning";
-import StopLossPage from "./pages/StopLoss";
-import RiskMoneyPage from "./pages/RiskMoney";
-import ConditionsPage from "./pages/Conditions";
-import ReEntryPage from "./pages/ReEntry";
-import AlertsTelegramPage from "./pages/AlertsTelegram";
-import OrdersPage from "./pages/Orders";
 import TradesPerformancePage from "./pages/TradesPerformance";
 import { api, type BotStatus, type Overview } from "./lib/api";
 import { useToast } from "./context/ToastContext";
@@ -103,27 +95,11 @@ export default function App() {
               }
             />
             <Route path="/configuration" element={<ConfigurationPage />} />
-            <Route path="/instruments" element={<InstrumentsPage />} />
-            <Route path="/strike-scanning" element={<StrikeScanningPage />} />
-            <Route path="/stop-loss" element={<StopLossPage />} />
-            <Route path="/risk-money" element={<RiskMoneyPage />} />
-            <Route path="/conditions" element={<ConditionsPage />} />
-            <Route path="/reentry-rules" element={<ReEntryPage />} />
-            <Route path="/alerts-telegram" element={<AlertsTelegramPage />} />
-            <Route path="/orders" element={<OrdersPage />} />
             <Route path="/trades-performance" element={<TradesPerformancePage />} />
             {MENU.filter(
               (m) =>
                 m.to !== "/overview" &&
                 m.to !== "/configuration" &&
-                m.to !== "/instruments" &&
-                m.to !== "/strike-scanning" &&
-                m.to !== "/stop-loss" &&
-                m.to !== "/risk-money" &&
-                m.to !== "/conditions" &&
-                m.to !== "/reentry-rules" &&
-                m.to !== "/alerts-telegram" &&
-                m.to !== "/orders" &&
                 m.to !== "/trades-performance",
             ).map((m) => (
               <Route key={m.to} path={m.to} element={<ComingSoon />} />

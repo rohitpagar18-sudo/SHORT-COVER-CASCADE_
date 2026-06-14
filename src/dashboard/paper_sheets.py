@@ -78,7 +78,7 @@ PAPER_SHEET_BANNER = (
 
 # Row where the Paper Trades column headers live (data starts at +1).
 # Paired constants — update both if the help/banner block changes size.
-PAPER_TRADES_HEADER_ROW = 10
+PAPER_TRADES_HEADER_ROW = 11
 PAPER_TRADES_DATA_START = PAPER_TRADES_HEADER_ROW + 1
 
 
@@ -123,7 +123,7 @@ PAPER_TRADE_COLUMNS = [
     # Trade identifier (when + what)
     "date", "candle_timestamp", "symbol", "strike", "option_type",
     # Levels
-    "entry", "paper_pnl", "outcome", "result_chip","exit_price", "sl", "tp1", "tp2","exit_time", "lots","is_expiry_day",
+    "entry", "paper_pnl", "outcome", "day_total_pnl", "result_chip","exit_price", "sl", "tp1", "tp2","exit_time", "lots","is_expiry_day",
     "relation","decision","lot_size", "expiry",
     "decision_reason", "slot",
     # Detailed metrics
@@ -140,6 +140,7 @@ PAPER_TRADE_COLUMNS = [
 # Header display names — internal column key → user-friendly label
 COLUMN_HEADER_DISPLAY = {
     "slot": "Trade #",
+    "day_total_pnl": "Day's Total P&L",
 }
 
 
@@ -225,6 +226,7 @@ def build_paper_trades_sheet(
     help_title.font = Font(name="Calibri", bold=True, color="2E7D32", size=11)
     help_lines = [
         "• Trade #  →  trade number for the day (cap is 3 per config).",
+        "• Day's Total P&L  →  sum of paper_pnl for every TAKEN trade on the same date, repeated on every row of that day.",
         "• result_chip  →  🟢 TP2 / TP1   🟡 TP1→BE   🔴 SL / Hard   ⏹ SqOff (3:00 PM)   · N/A (no data yet).",
         "• intrabar_ambiguous (in JSONL, not shown)  →  same 5-min candle hit BOTH SL and TP.",
         "    e.g. entry ₹100, SL ₹90, TP ₹110; candle low ₹85, high ₹115 → can't tell which side hit first from OHLC.",
@@ -236,7 +238,7 @@ def build_paper_trades_sheet(
         cell = ws.cell(row=r, column=1, value=line)
         cell.font = Font(name="Calibri", italic=True, color="595959", size=10)
 
-    # Headers live at row 10 (1 title + 1 banner + 1 help-title + 5 help + 1 blank).
+    # Headers live at row 11 (1 title + 1 banner + 1 help-title + 6 help + 1 blank).
     header_row = PAPER_TRADES_HEADER_ROW
 
     if paper_trades_df is None or paper_trades_df.empty:
@@ -261,6 +263,13 @@ def build_paper_trades_sheet(
         axis=1,
     )
 
+    # Per-day P&L total: sum of paper_pnl across every TAKEN row on the
+    # same date, broadcast to every row of that day. NO_DATA rows carry
+    # paper_pnl == 0 so they contribute nothing.
+    if "paper_pnl" in df.columns and "date" in df.columns:
+        pnl_numeric = pd.to_numeric(df["paper_pnl"], errors="coerce").fillna(0.0)
+        df["day_total_pnl"] = pnl_numeric.groupby(df["date"]).transform("sum")
+
     df = df[PAPER_TRADE_COLUMNS].copy()
     if "expiry" in df.columns:
         df["expiry"] = df["expiry"].apply(_fmt_expiry)
@@ -274,6 +283,7 @@ def build_paper_trades_sheet(
     _set_paper_headers(ws, headers, row=header_row)
 
     written = 0
+    day_total_bold = Font(name="Calibri", size=11, bold=True)
     for offset, (_, row) in enumerate(df.iterrows()):
         excel_row = header_row + 1 + offset
         for col_idx, col in enumerate(df.columns, start=1):
@@ -284,6 +294,10 @@ def build_paper_trades_sheet(
                 v = None
             cell = ws.cell(row=excel_row, column=col_idx, value=v)
             cell.font = PAPER_BODY_FONT
+            if col == "day_total_pnl":
+                cell.font = day_total_bold
+                if v is not None:
+                    cell.number_format = '₹#,##0;[Red]-₹#,##0'
         written += 1
 
     _autofit(ws, df, header_row=header_row)

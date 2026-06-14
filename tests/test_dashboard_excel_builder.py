@@ -470,3 +470,53 @@ def test_paper_trades_sheet_keeps_no_data_rows_visible() -> None:
     written = build_paper_trades_sheet(ws, df)
     # Both TAKEN rows must be on the sheet (NO_DATA flagged, not hidden).
     assert written == 2
+
+
+def test_paper_trades_sheet_day_total_pnl_column() -> None:
+    """``day_total_pnl`` lives between ``outcome`` and ``result_chip`` on
+    the Paper Trades sheet. Its value on every row is the sum of
+    ``paper_pnl`` across every TAKEN row sharing the same date (NO_DATA
+    rows carry paper_pnl == 0 so they don't move the total).
+    """
+    from openpyxl import Workbook
+    from src.dashboard.paper_sheets import (
+        PAPER_TRADE_COLUMNS,
+        PAPER_TRADES_HEADER_ROW,
+        build_paper_trades_sheet,
+    )
+
+    cols = PAPER_TRADE_COLUMNS
+    assert "day_total_pnl" in cols
+    assert cols.index("day_total_pnl") == cols.index("outcome") + 1
+    assert cols.index("result_chip") == cols.index("day_total_pnl") + 1
+
+    # 2026-06-05: three TAKEN rows summing to 4875 + -1950 + 3000 = 5925.
+    # 2026-06-06: one NO_DATA + one TP2 → 0 + 2400 = 2400.
+    rows = [
+        _paper_row("2026-06-05", "TP2_HIT", 4875.0, realized_R=2.5),
+        _paper_row("2026-06-05", "SL_HIT", -1950.0, realized_R=-1.0),
+        _paper_row("2026-06-05", "TP1_HIT", 3000.0, realized_R=1.0),
+        _paper_row("2026-06-06", "NO_DATA", 0.0),
+        _paper_row("2026-06-06", "TP2_HIT", 2400.0, realized_R=1.5),
+    ]
+    df = pd.DataFrame(rows)
+    for c in ("manual_decision", "manual_reason", "manual_outcome",
+              "manual_exit", "user_notes"):
+        df[c] = None
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Paper Trades"
+    written = build_paper_trades_sheet(ws, df)
+    assert written == 5
+
+    day_col = cols.index("day_total_pnl") + 1
+    expected_by_date = {
+        "2026-06-05": 5925.0,
+        "2026-06-06": 2400.0,
+    }
+    date_col_idx = cols.index("date") + 1
+    for r in range(PAPER_TRADES_HEADER_ROW + 1, PAPER_TRADES_HEADER_ROW + 1 + written):
+        date_val = ws.cell(row=r, column=date_col_idx).value
+        day_val = ws.cell(row=r, column=day_col).value
+        assert day_val == pytest.approx(expected_by_date[date_val])

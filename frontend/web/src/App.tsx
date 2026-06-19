@@ -12,6 +12,7 @@ import LogsPage from "./pages/Logs";
 import BotStatusPage from "./pages/BotStatus";
 import SettingsPage from "./pages/Settings";
 import AboutPage from "./pages/About";
+import ShadowStopLossPage from "./pages/ShadowStopLoss";
 import { api, type BotStatus, type Overview } from "./lib/api";
 import { useToast } from "./context/ToastContext";
 
@@ -108,6 +109,7 @@ export default function App() {
             <Route path="/bot-status" element={<BotStatusPage />} />
             <Route path="/settings" element={<SettingsPage />} />
             <Route path="/about" element={<AboutPage />} />
+            <Route path="/stoploss" element={<ShadowStopLossPage />} />
             {MENU.filter(
               (m) =>
                 m.to !== "/overview" &&
@@ -118,7 +120,8 @@ export default function App() {
                 m.to !== "/logs" &&
                 m.to !== "/bot-status" &&
                 m.to !== "/settings" &&
-                m.to !== "/about",
+                m.to !== "/about" &&
+                m.to !== "/stoploss",
             ).map((m) => (
               <Route key={m.to} path={m.to} element={<ComingSoon />} />
             ))}

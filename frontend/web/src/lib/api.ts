@@ -594,6 +594,56 @@ export type LogTailJsonl = {
 
 export type LogTailResponse = LogTailText | LogTailJsonl;
 
+// ---- Shadow Stop-Loss Lab ----
+
+export type ShadowSlMethodSummary = {
+  method: string;
+  trades: number;
+  win_rate: number;
+  total_r: number;
+  avg_r: number;
+  capture_efficiency: number | null;
+  time_stop_exits: number;
+};
+
+export type ShadowSlPerMethod = {
+  exit_price: number | null;
+  exit_time: string | null;
+  exit_reason: string | null;
+  r_multiple: number | null;
+  max_unrealized_r: number | null;
+  gave_back_r: number | null;
+  initial_sl: number | null;
+  tp1: number | null;
+  tp2: number | null;
+  entry: number | null;
+  outcome_bucket: string | null;
+  win: boolean;
+};
+
+export type ShadowSlTrade = {
+  entry_time: string | null;
+  symbol: string | null;
+  strike: number | null;
+  option_type: string | null;
+  relation: string | null;
+  is_expiry: boolean;
+  per_method: Record<string, ShadowSlPerMethod>;
+};
+
+export type ShadowSlDay = {
+  date: string;
+  trades: ShadowSlTrade[];
+};
+
+export type ShadowSlResponse = {
+  date_from: string | null;
+  date_to: string | null;
+  methods: ShadowSlMethodSummary[];
+  days: ShadowSlDay[];
+};
+
+
 // ---- F8: Health / Liveness ----
 
 export type ApiHealth = {
@@ -658,5 +708,9 @@ export const api = {
         level: params.level,
         search: params.search,
       })}`,
+    ),
+  shadowSl: (params: { date_from?: string; date_to?: string } = {}) =>
+    getJSON<ShadowSlResponse>(
+      `/api/shadow-sl${buildQuery(params as Record<string, string | undefined | null>)}`,
     ),
 };

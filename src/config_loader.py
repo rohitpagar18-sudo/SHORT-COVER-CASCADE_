@@ -512,6 +512,82 @@ class PaperTradingConfig(_Base):
         return self
 
 
+# ---------- SHADOW SL (experimental, read-only lab) ----------
+
+
+class _ShadowMethodBase(_Base):
+    """Common base for shadow_sl per-method blocks. Always has ``enabled``."""
+
+    enabled: bool = Field(default=False)
+
+    @field_validator("enabled", mode="before")
+    @classmethod
+    def _onoff(cls, v: Any) -> Any:
+        return _onoff_to_bool(v)
+
+
+class ShadowSlSma19Config(_ShadowMethodBase):
+    """SMA-trail baseline. Defaults mirror live Method-3 knobs."""
+
+    sma_period: int = Field(default=19, gt=0)
+    activate_after_minutes: int = Field(default=15, ge=0)
+    update_interval_minutes: int = Field(default=15, gt=0)
+    follow_direction: Literal["both", "ratchet"] = Field(default="both")
+    tick: float = Field(default=0.05, gt=0)
+
+
+class ShadowSlAtrInitialConfig(_ShadowMethodBase):
+    """Static ATR-anchored stop. ``SL = entry_vwap - k * ATR``."""
+
+    k: float = Field(default=2.0, gt=0)
+
+
+class ShadowSlChandelierConfig(_ShadowMethodBase):
+    """Chandelier exit. ``SL = highest_high_since_entry - k * ATR``."""
+
+    k: float = Field(default=3.0, gt=0)
+
+
+class ShadowSlChandelierTimeConfig(_ShadowMethodBase):
+    """Chandelier exit + time-stop combo."""
+
+    k: float = Field(default=3.0, gt=0)
+    time_stop_minutes: int = Field(default=35, gt=0)
+    time_stop_min_r: float = Field(default=1.0, ge=0)
+
+
+class ShadowSlMethodsConfig(_Base):
+    sma19: ShadowSlSma19Config = Field(default_factory=ShadowSlSma19Config)
+    atr_initial: ShadowSlAtrInitialConfig = Field(
+        default_factory=ShadowSlAtrInitialConfig
+    )
+    chandelier: ShadowSlChandelierConfig = Field(
+        default_factory=ShadowSlChandelierConfig
+    )
+    chandelier_time: ShadowSlChandelierTimeConfig = Field(
+        default_factory=ShadowSlChandelierTimeConfig
+    )
+
+
+class ShadowSlConfig(_Base):
+    """Experimental, READ-ONLY shadow stop-loss lab.
+
+    Lives entirely in ``src/shadow_sl/`` and writes only to
+    ``logs/shadow_sl.jsonl``. NEVER affects real/paper P&L, the
+    Parquet store, or the Excel dashboards. Defaults make the lab safe
+    to leave enabled — methods opt in individually.
+    """
+
+    enabled: bool = Field(default=False)
+    atr_period: int = Field(default=14, gt=0)
+    methods: ShadowSlMethodsConfig = Field(default_factory=ShadowSlMethodsConfig)
+
+    @field_validator("enabled", mode="before")
+    @classmethod
+    def _onoff(cls, v: Any) -> Any:
+        return _onoff_to_bool(v)
+
+
 # ---------- BOT ----------
 
 
@@ -548,6 +624,7 @@ class AppConfig(_Base):
     bot: BotConfig
     dashboard: DashboardConfig = Field(default_factory=DashboardConfig)
     paper_trading: PaperTradingConfig = Field(default_factory=PaperTradingConfig)
+    shadow_sl: ShadowSlConfig = Field(default_factory=ShadowSlConfig)
 
     @model_validator(mode="after")
     def _order_strikes_require_when_order_place_on(self) -> "AppConfig":

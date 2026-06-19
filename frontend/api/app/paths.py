@@ -30,6 +30,7 @@ DATA_DIR: Path = PROJECT_ROOT / "data"
 SIGNALS_JSONL: Path = LOGS_DIR / "signals.jsonl"
 ALERTS_JSONL: Path = LOGS_DIR / "alerts.jsonl"
 PAPER_TRADES_JSONL: Path = LOGS_DIR / "paper_trades.jsonl"
+SHADOW_SL_JSONL: Path = LOGS_DIR / "shadow_sl.jsonl"
 STATE_JSON: Path = LOGS_DIR / "state.json"
 BOT_LOG: Path = LOGS_DIR / "bot.log"
 

@@ -55,17 +55,19 @@ from ..paths import (
     BOT_LOG,
     LOGS_DIR,
     PAPER_TRADES_JSONL,
+    SHADOW_SL_JSONL,
     SIGNALS_JSONL,
     STATE_JSON,
 )
 from ..time_utils import IST, fmt_ist
 
-# Allowlist: ONLY these five files can be tailed.
+# Allowlist: ONLY these files can be tailed.
 ALLOWED_FILES: Dict[str, Path] = {
     "bot.log": BOT_LOG,
     "signals.jsonl": SIGNALS_JSONL,
     "alerts.jsonl": ALERTS_JSONL,
     "paper_trades.jsonl": PAPER_TRADES_JSONL,
+    "shadow_sl.jsonl": SHADOW_SL_JSONL,
     "state.json": STATE_JSON,
 }
 

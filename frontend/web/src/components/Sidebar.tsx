@@ -2,6 +2,7 @@ import { NavLink, useNavigate } from "react-router-dom";
 import {
   LayoutDashboard, Sliders, BarChart3, FileBarChart,
   ScrollText, Activity, Settings, Info, FileText, Sun, Moon, ExternalLink,
+  FlaskConical,
 } from "lucide-react";
 import type { BotStatus } from "../lib/api";
 import { useTheme } from "../context/ThemeContext";
@@ -14,6 +15,7 @@ export const MENU: Item[] = [
   { to: "/trades-performance", label: "Trades & Performance", icon: BarChart3 },
   { to: "/configuration",      label: "Configuration",        icon: Sliders },
   { to: "/paper-trading",      label: "Paper Trading",        icon: FileText },
+  { to: "/stoploss",           label: "Stop-Loss Lab",        icon: FlaskConical },
   { to: "/dashboard-reports",  label: "Dashboard & Reports",  icon: FileBarChart },
   { to: "/logs",               label: "Logs",                 icon: ScrollText },
   { to: "/bot-status",         label: "Bot Status",           icon: Activity },

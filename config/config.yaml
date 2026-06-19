@@ -316,6 +316,33 @@ paper_trading:
   # Full SL is -1R by definition.
 
 
+# ---------- SHADOW STOP-LOSS LAB (experimental) ----------
+# EXPERIMENTAL, READ-ONLY. The shadow lab lives in src/shadow_sl/ and
+# walks every alert in logs/alerts.jsonl against alternative SL rules,
+# writing one row per (alert x method) to logs/shadow_sl.jsonl.
+# It NEVER touches paper_trades.jsonl, the monthly Parquet store, or
+# the Excel dashboards. Never affects real or paper P&L. The live bot
+# does NOT import this block — it is exercised only by
+# scripts/update_shadow_sl.py / .bat.
+shadow_sl:
+  enabled: ON                            # Master toggle for the lab
+  atr_period: 14                         # Wilder ATR period shared by all methods
+  methods:
+    sma19:
+      enabled: ON                        # Baseline = live Method 3 logic + price clamp
+    atr_initial:
+      enabled: ON
+      k: 2.0                             # SL = entry_vwap - k*ATR (no trail)
+    chandelier:
+      enabled: ON
+      k: 3.0                             # SL = highest_high_since_entry - k*ATR
+    chandelier_time:
+      enabled: ON
+      k: 3.0
+      time_stop_minutes: 35              # Force-exit if MFE still below min_r after N min
+      time_stop_min_r: 1.0               # Minimum MFE (in R) needed to keep holding
+
+
 # ---------- BOT BEHAVIOR ----------
 # Internal bot tuning. Usually don't change.
 bot:

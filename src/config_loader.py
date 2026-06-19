@@ -159,9 +159,10 @@ class RiskRewardConfig(_Base):
     def _sanity(self) -> "RiskRewardConfig":
         if self.risk_range_min > self.risk_range_max:
             raise ValueError("risk_range_min must be <= risk_range_max")
-        if not (self.risk_range_min <= self.target_risk_per_trade <= self.risk_range_max):
+        if self.target_risk_per_trade > self.risk_range_max:
             raise ValueError(
-                "target_risk_per_trade must fall within [risk_range_min, risk_range_max]"
+                "target_risk_per_trade must be <= risk_range_max "
+                "(risk_range_min is informational — lower risk is allowed)"
             )
         if self.normal_day_tp2_r <= self.normal_day_tp1_r:
             raise ValueError("normal_day_tp2_r must be > normal_day_tp1_r")

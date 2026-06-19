@@ -102,7 +102,8 @@ stop_loss:
 # How much to risk per trade and where to exit profitably.
 risk_reward:
   target_risk_per_trade: 3000          # Target ₹ risk per trade (sweet spot)
-  risk_range_min: 2500                 # Acceptable lower bound (don't trade if below)- I need to update this because this is wring interpretation as if risk is lower then still it should trade.
+  risk_range_min: 2500                 # Informational lower band — NOT a skip gate. Lower realized risk is fine.
+                                       # Formula naturally produces values below ₹3000 due to integer lot rounding.
   risk_range_max: 3500                 # Acceptable upper bound (cap)
 
   # TP multipliers (R = entry price − SL price; TP = entry + R × multiplier)

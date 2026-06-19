@@ -301,6 +301,10 @@ Position sizing uses three layers working together — not one. All three apply 
 
 •         When in doubt, use 1 lot less than calculated
 
+## **Changelog**
+
+•         risk_range_min is informational only; only risk_range_max is a hard cap.
+
 # **11\. ORDER PLACEMENT**
 
 ## **Default: LIMIT ORDER**

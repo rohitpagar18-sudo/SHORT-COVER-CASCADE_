@@ -3,7 +3,8 @@
 Source-of-truth: strategy doc v3.1 FINAL Section 9.
 
 Three-layer risk control:
-  1. Primary    — target ₹3,000 risk per trade (range ₹2,500-₹3,500).
+  1. Primary    — target ₹3,000 risk per trade; risk_range_max (₹3,500) is a hard cap;
+                  risk_range_min (₹2,500) is informational only — lower risk is fine.
   2. Secondary  — hard lot cap (5 NIFTY / 3 BankNifty).
   3. Outer     — daily ₹6,000 max loss circuit breaker (handled by the
                  state module, not here).
@@ -26,7 +27,7 @@ class LotSizeResult:
     risk_per_unit: float        # entry − SL
     total_risk_rupees: float    # units × risk_per_unit
     capped_by_lot_limit: bool   # True iff the symbol's hard lot cap clipped lots
-    capped_by_risk_range: bool  # True iff total_risk falls outside [min, max]
+    capped_by_risk_range: bool  # True iff total_risk exceeds risk_range_max (hard cap)
     below_min_risk_band: bool   # True iff total_risk < min AND lots == hard cap
     reason: str
 
@@ -88,9 +89,7 @@ def compute_lots(
 
     units = lots * lot_size
     total_risk = units * risk_per_unit
-    capped_by_risk_range = (
-        total_risk < risk_range_min or total_risk > risk_range_max
-    )
+    capped_by_risk_range = total_risk > risk_range_max
 
     # Cheap-option exception: if we're already at the hard lot cap and total
     # risk is still below the ₹2,500 minimum band, accept the trade rather
@@ -115,8 +114,7 @@ def compute_lots(
         )
     elif capped_by_risk_range:
         parts.append(
-            f"total risk ₹{total_risk:.2f} outside ₹{risk_range_min:g}-"
-            f"₹{risk_range_max:g} target band"
+            f"total risk ₹{total_risk:.2f} exceeds ₹{risk_range_max:g} cap"
         )
     reason = "; ".join(parts)
 

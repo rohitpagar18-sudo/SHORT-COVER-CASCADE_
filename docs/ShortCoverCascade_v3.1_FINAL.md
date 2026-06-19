@@ -204,6 +204,8 @@ SL% comes directly from VIX Regime Table (Section 5). Multiplier is embedded in 
 # **8A\. STOP LOSS — METHOD 3 (METHOD-1 INITIAL + N-SMA TRAIL)**
 
 > CHANGED 2026-06-08: added SL Method 3 (initial Method-1 SL + 19-SMA trail). The strategy now has three SL methods; the legacy "Optional: trail SL to previous candle low" note under §9 is superseded by this method.
+>
+> CHANGED 2026-06-19: SL method shadow comparison added — dashboard sync now stamps auto_pnl_method1/2/3 and auto_exit_method1/2/3 columns (analysis-only, decision deferred to Phase 7).
 
 **Formula: initial SL \= Method 1; after activate\_after\_minutes (default 15), SL \= N-period SMA of the option close (default N \= 19), re-evaluated every update\_interval\_minutes (default 15).**
 

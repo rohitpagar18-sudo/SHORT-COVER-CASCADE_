@@ -232,6 +232,10 @@ revisit without explicit user approval.
   Method 3 owns the actual SMA trail. The kernel is the single source
   of truth for exits — Phase 5D's paper engine and Phase 7's
   backtest harness both call it; neither runs an independent walk.
+- SL method shadow comparison added (2026-06-19): dashboard sync now runs
+  all three SL methods on the same cached candles and stamps
+  auto_pnl_method1/2/3 + auto_exit_method1/2/3 columns (analysis-only,
+  decision deferred to Phase 7). Shadow columns never feed paper_pnl or win-rate.
 
 ### Token Refresh Discipline
 - Kite: refresh DAILY before 9:15 AM via scripts/refresh_token_kite.py

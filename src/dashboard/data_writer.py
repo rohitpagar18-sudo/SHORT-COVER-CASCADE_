@@ -543,6 +543,16 @@ AUTO_OUTCOME_COLUMNS = (
     "intrabar_ambiguous",
 )
 
+# Shadow-only SL-method comparison columns.  Never feed paper_pnl or win-rate.
+SHADOW_METHOD_COLUMNS = (
+    "auto_pnl_method1",
+    "auto_pnl_method2",
+    "auto_pnl_method3",
+    "auto_exit_method1",
+    "auto_exit_method2",
+    "auto_exit_method3",
+)
+
 
 def sync_auto_outcomes_to_parquet(
     feed: Any | None = None,
@@ -580,7 +590,7 @@ def sync_auto_outcomes_to_parquet(
 
     # Local imports keep the module load cheap when the feature is OFF.
     from src.dashboard.candle_cache import get_or_fetch_candles
-    from src.dashboard.outcome_replay import replay_alert
+    from src.dashboard.outcome_replay import replay_alert, replay_alert_all_methods
 
     months = _all_parquet_months()
     if not months:
@@ -601,8 +611,8 @@ def sync_auto_outcomes_to_parquet(
         if df.empty or "event_type" not in df.columns:
             continue
 
-        # Ensure all auto_* columns exist so .loc assignment is safe.
-        for col in AUTO_OUTCOME_COLUMNS:
+        # Ensure all auto_* and shadow columns exist so .loc assignment is safe.
+        for col in AUTO_OUTCOME_COLUMNS + SHADOW_METHOD_COLUMNS:
             if col not in df.columns:
                 df[col] = None
 
@@ -650,7 +660,7 @@ def sync_auto_outcomes_to_parquet(
                 continue
 
             try:
-                result = replay_alert(row, candles, app_config)
+                multi = replay_alert_all_methods(row, candles, app_config)
             except Exception as e:
                 logger.warning(
                     f"auto_outcomes: replay failed for "
@@ -659,11 +669,15 @@ def sync_auto_outcomes_to_parquet(
                 skipped += 1
                 continue
 
+            live_method = int(getattr(app_config.stop_loss, "method", 1))
+            result = getattr(multi, f"method{live_method}")
+
             if result is None:
-                # Refusal (trailing-SL ON) or insufficient candles.
+                # Insufficient candles for the authoritative method.
                 skipped += 1
                 continue
 
+            # Authoritative auto_* columns.
             df.at[idx, "auto_order_status"] = result.auto_order_status
             df.at[idx, "auto_exit_price"] = result.auto_exit_price
             df.at[idx, "auto_exit_time"] = result.auto_exit_time
@@ -672,6 +686,19 @@ def sync_auto_outcomes_to_parquet(
             df.at[idx, "mfe"] = result.mfe
             df.at[idx, "mae"] = result.mae
             df.at[idx, "intrabar_ambiguous"] = result.intrabar_ambiguous
+
+            # Shadow SL-method comparison columns (₹ total, not per unit).
+            lots = int(row.get("lots") or 1)
+            lot_size = int(row.get("lot_size") or 1)
+            for m in (1, 2, 3):
+                mr = getattr(multi, f"method{m}")
+                df.at[idx, f"auto_pnl_method{m}"] = (
+                    mr.auto_pnl_per_unit * lots * lot_size if mr is not None else None
+                )
+                df.at[idx, f"auto_exit_method{m}"] = (
+                    mr.auto_exit_reason if mr is not None else None
+                )
+
             stamped += 1
             any_change = True
 

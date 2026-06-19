@@ -200,6 +200,18 @@ def _pretty(col: str) -> str:
         return "MAE"
     if col == "intrabar_ambiguous":
         return "Intrabar Ambiguous"
+    if col == "auto_pnl_method1":
+        return "Auto P&L M1 (₹)"
+    if col == "auto_pnl_method2":
+        return "Auto P&L M2 (₹)"
+    if col == "auto_pnl_method3":
+        return "Auto P&L M3 (₹)"
+    if col == "auto_exit_method1":
+        return "Auto Exit M1"
+    if col == "auto_exit_method2":
+        return "Auto Exit M2"
+    if col == "auto_exit_method3":
+        return "Auto Exit M3"
     return col.replace("_", " ").title()
 
 
@@ -551,10 +563,13 @@ def _build_order_place(ws: Worksheet, df: pd.DataFrame) -> int:
     manual_cols = ["order_status", "exit_price", "pnl_rupees", "outcome_remark", "user_notes"]
     # Phase 5B-A: virtual-replay columns. Appended after the manual block
     # so the manual cells stay in the user's expected position.
+    # Shadow method comparison columns come last (analysis-only).
     auto_outcome_cols = [
         "auto_order_status", "auto_exit_price", "auto_exit_time",
         "auto_exit_reason", "auto_pnl_per_unit",
         "mfe", "mae", "intrabar_ambiguous",
+        "auto_pnl_method1", "auto_pnl_method2", "auto_pnl_method3",
+        "auto_exit_method1", "auto_exit_method2", "auto_exit_method3",
     ]
 
     if alerts.empty:

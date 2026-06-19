@@ -91,6 +91,20 @@ class ExitConfig:
 
 
 @dataclass(frozen=True)
+class MultiMethodResult:
+    """Shadow-runs all three SL methods for one alert using the same candles.
+
+    The authoritative outcome is the one matching the live
+    ``stop_loss.method`` in config. The other two are SHADOW ONLY and
+    never feed paper_pnl, win-rate, or any live metric.
+    """
+
+    method1: "ReplayResult | None"
+    method2: "ReplayResult | None"
+    method3: "ReplayResult | None"
+
+
+@dataclass(frozen=True)
 class ReplayResult:
     """Output of one alert's virtual replay."""
 
@@ -484,3 +498,93 @@ def replay_alert(
         exit_cfg=exit_cfg,
         alert_timestamp=alert_ts,
     )
+
+
+# ---------------------------------------------------------------------------
+# Shadow comparison helper — runs all three SL methods on the same candles.
+# ---------------------------------------------------------------------------
+
+
+def _build_exit_cfg_for_method(
+    method: int,
+    app_config: Any,
+    hard_cut: time,
+) -> ExitConfig:
+    """Build an ExitConfig for an explicit SL method, reusing shared config fields."""
+    move_be = bool(app_config.risk_reward.move_sl_to_breakeven_after_tp1)
+    trail_after_tp1 = bool(app_config.risk_reward.trail_sl_after_tp1)
+    hard_exit = bool(app_config.stop_loss.hard_exit_red_candle_below_vwap)
+
+    sma_trail_params: SmaTrailParams | None = None
+    if method == 3:
+        sma_cfg = getattr(app_config.stop_loss, "sma_trail", None)
+        if sma_cfg is not None:
+            sma_trail_params = SmaTrailParams(
+                sma_period=int(getattr(sma_cfg, "sma_period", 19)),
+                activate_after_minutes=int(
+                    getattr(sma_cfg, "activate_after_minutes", 15)
+                ),
+                update_interval_minutes=int(
+                    getattr(sma_cfg, "update_interval_minutes", 15)
+                ),
+                follow_direction=str(
+                    getattr(sma_cfg, "follow_direction", "both")
+                ),
+            )
+
+    return ExitConfig(
+        move_sl_to_breakeven_after_tp1=move_be,
+        trail_sl_after_tp1=trail_after_tp1,
+        hard_exit_red_candle_below_vwap=hard_exit,
+        hard_squareoff_time=hard_cut,
+        sl_method=method,
+        sma_trail=sma_trail_params,
+    )
+
+
+def replay_alert_all_methods(
+    alert_row: "dict[str, Any] | pd.Series",
+    candles: pd.DataFrame,
+    app_config: Any,
+) -> MultiMethodResult:
+    """Run the exit kernel for all three SL methods using the same candles.
+
+    Candles are NOT re-fetched — the caller passes the already-loaded
+    DataFrame. All three method walks share the same VWAP computation
+    (computed inside ``replay_exits`` from the same candles object).
+
+    The authoritative result is whichever method matches
+    ``app_config.stop_loss.method``; the other two are SHADOW ONLY and
+    must never influence live paper_pnl or win-rate figures.
+
+    Returns a :class:`MultiMethodResult`.  Each slot is ``None`` only
+    when ``replay_exits`` returns ``None`` (no post-alert candles) or
+    if an unexpected exception occurs for that specific method.
+    """
+    entry = float(alert_row["entry"])
+    sl = float(alert_row["sl"])
+    tp1 = float(alert_row["tp1"])
+    tp2 = float(alert_row["tp2"])
+    alert_ts = pd.to_datetime(alert_row["timestamp_ist"])
+
+    hh, mm = (int(x) for x in app_config.time_rules.hard_squareoff_time.split(":"))
+    hard_cut = time(hh, mm)
+
+    results: list[ReplayResult | None] = []
+    for m in (1, 2, 3):
+        cfg = _build_exit_cfg_for_method(m, app_config, hard_cut)
+        try:
+            r = replay_exits(
+                candles=candles,
+                entry=entry,
+                sl=sl,
+                tp1=tp1,
+                tp2=tp2,
+                exit_cfg=cfg,
+                alert_timestamp=alert_ts,
+            )
+        except Exception:
+            r = None
+        results.append(r)
+
+    return MultiMethodResult(method1=results[0], method2=results[1], method3=results[2])

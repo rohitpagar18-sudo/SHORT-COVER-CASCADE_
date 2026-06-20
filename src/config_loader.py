@@ -473,6 +473,53 @@ class DashboardConfig(_Base):
 # ---------- PAPER TRADING (Phase 5D) ----------
 
 
+class PaperOrderStrikesConfig(_Base):
+    """Phase 5D — paper-trade relation gate.
+
+    Mirrors ``OrderStrikesConfig`` (the Phase 8 auto-order knob) but for
+    the paper layer. 3-way bucket: ``itm`` covers ITM1/ITM2/ITM3,
+    ``otm`` covers OTM1/OTM2/OTM3.
+    """
+
+    itm: bool = False
+    atm: bool = True
+    otm: bool = False
+
+    @field_validator("itm", "atm", "otm", mode="before")
+    @classmethod
+    def _onoff(cls, v: Any) -> Any:
+        return _onoff_to_bool(v)
+
+    @model_validator(mode="after")
+    def _at_least_one_on(self) -> "PaperOrderStrikesConfig":
+        if not (self.itm or self.atm or self.otm):
+            raise ValueError(
+                "paper_trading.paper_order_strikes: at least one of "
+                "itm/atm/otm must be ON (otherwise no paper trade would "
+                "ever be taken)"
+            )
+        return self
+
+    def allows_relation(self, relation: str | None) -> bool:
+        """Map relation label (ITM1/ITM2/ITM3/ATM/OTM1/OTM2/OTM3) to bucket.
+
+        Unknown / missing relations are allowed (fail-safe) — the
+        selector still gets to apply the §13/§14 caps.
+        """
+        if relation is None:
+            return True
+        r = str(relation).strip().upper()
+        if not r:
+            return True
+        if r == "ATM":
+            return self.atm
+        if r.startswith("ITM"):
+            return self.itm
+        if r.startswith("OTM"):
+            return self.otm
+        return True
+
+
 class PaperTradingConfig(_Base):
     """Phase 5D — paper-trade tracking & first-alert selection.
 
@@ -489,6 +536,9 @@ class PaperTradingConfig(_Base):
     dedup_window_minutes: int = Field(default=20, gt=0)
     relation_priority: list[str] = Field(
         default_factory=lambda: ["ITM1", "ATM", "ITM2", "ITM3", "OTM1", "OTM2", "OTM3"]
+    )
+    paper_order_strikes: PaperOrderStrikesConfig = Field(
+        default_factory=PaperOrderStrikesConfig
     )
     max_trades_per_day: int = Field(default=3, gt=0)
     circuit_breaker_sl_count: int = Field(default=2, gt=0)

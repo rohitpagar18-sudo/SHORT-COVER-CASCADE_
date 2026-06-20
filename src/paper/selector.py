@@ -13,20 +13,28 @@ The selector REUSES the §13 / §14 semantics:
 
 To apply the SL-driven caps the selector needs each TAKEN trade's
 outcome before deciding the next row. The caller passes an
-``outcome_resolver(rep_row) -> str`` that returns the kernel's
-``auto_order_status`` for a TAKEN candidate — typically a small
-adapter around ``compute_paper_outcome``. The resolver may return
-``None`` if outcomes are unknown (e.g. close-only fidelity with no
-verdict yet); the selector treats unknown as "not an SL" for
-cap-counting purposes, which keeps the day moving and matches what
-a real trader would do.
+``outcome_resolver(rep_row) -> dict | None`` that returns
+``{"outcome": str | None, "exit_time": datetime | None}`` for a
+TAKEN candidate — typically a small adapter around
+``compute_paper_outcome``. The ``outcome`` slot drives the SL-based
+caps (circuit breaker, same-strike kill, cooldown). The
+``exit_time`` slot drives the position-open gate: a new alert on
+the same ``(symbol, option_type)`` is SKIPPED while the prior
+TAKEN trade is still live. ``exit_time=None`` (e.g. NO_DATA) is
+conservative — it keeps the position open and blocks subsequent
+same-key entries for the rest of the day.
+
+The resolver itself may return ``None`` when outcomes cannot be
+determined at all (legacy lambdas); in that case the position-open
+tracking is skipped for that rep and the SL caps treat it as a
+non-SL (best-effort).
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
-from typing import Callable, Iterable
+from typing import Any, Callable, Iterable
 from zoneinfo import ZoneInfo
 
 import pandas as pd
@@ -89,6 +97,43 @@ def _date_of(ts: datetime) -> str:
 # ---------------------------------------------------------------------------
 
 
+def _position_key(rep: pd.Series) -> tuple:
+    """Position-tracking key for the open-position gate.
+
+    Matches the default episode key in ``paper_trading.episode_key``:
+    ``(symbol, option_type)``. The strike is INTENTIONALLY excluded —
+    a live PE position on NIFTY blocks a new PE alert on the same
+    symbol regardless of strike, because both bets are the same
+    directional exposure.
+    """
+    return (
+        str(rep.get("symbol", "")).upper(),
+        str(rep.get("option_type", "")).upper(),
+    )
+
+
+def _coerce_exit_time(value: Any) -> datetime | None:
+    """Best-effort coerce a kernel exit_time payload into a datetime.
+
+    Accepts: ``datetime``, ISO string, ``None``. ISO strings without
+    tz info are localized to IST. Any parse failure → ``None``
+    (which conservatively treats the position as still open).
+    """
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        return value if value.tzinfo is not None else value.replace(tzinfo=IST)
+    try:
+        ts = pd.to_datetime(value)
+    except Exception:
+        return None
+    if pd.isna(ts):
+        return None
+    if ts.tzinfo is None:
+        ts = ts.tz_localize(IST)
+    return ts.to_pydatetime()
+
+
 def select_paper_trades(
     reps: pd.DataFrame,
     *,
@@ -96,7 +141,8 @@ def select_paper_trades(
     circuit_breaker_sl_count: int,
     cooldown_minutes_after_sl: int,
     same_strike_kill_after_2_sl: bool,
-    outcome_resolver: Callable[[pd.Series], str | None] | None = None,
+    outcome_resolver: Callable[[pd.Series], dict | None] | None = None,
+    relation_filter: Callable[[str | None], bool] | None = None,
 ) -> list[SelectionResult]:
     """Replay caps in chronological order and emit decisions.
 
@@ -111,10 +157,17 @@ def select_paper_trades(
         cooldown_minutes_after_sl: §13 cooldown window after any SL.
         same_strike_kill_after_2_sl: §13 — once a strike has two SLs
             on the day, it is dead for the rest of the day.
-        outcome_resolver: callable that returns the kernel's
-            ``auto_order_status`` for a TAKEN candidate. ``None``
-            means "outcomes unknown" — the selector treats every
-            TAKEN as a non-SL for cap counting (best-effort).
+        outcome_resolver: callable returning
+            ``{"outcome": str | None, "exit_time": datetime | None}``
+            for a TAKEN candidate. ``outcome`` drives the SL-based
+            caps; ``exit_time`` drives the open-position gate. The
+            resolver itself may return ``None`` for the legacy
+            "outcome unknown, don't track position" mode.
+        relation_filter: optional ``relation -> bool`` predicate. When
+            it returns False the rep is SKIPPED before any §13/§14 cap
+            runs. Wired to
+            ``PaperOrderStrikesConfig.allows_relation`` in production.
+            ``None`` disables the gate entirely.
 
     Returns:
         list of ``SelectionResult`` in input-row order (one per rep).
@@ -135,6 +188,10 @@ def select_paper_trades(
     cooldown = timedelta(minutes=int(cooldown_minutes_after_sl))
     day_states: dict[str, _DayState] = {}
     results_by_orig: dict[int, SelectionResult] = {}
+    # (date, symbol, option_type) -> exit datetime. None = position still
+    # open / unknown -> block future entries on the same key for the day.
+    # Keyed by date so cross-day state never bleeds.
+    position_exit_times: dict[tuple, datetime | None] = {}
 
     for _, rep in rep_df.iterrows():
         orig_idx = int(rep["_orig_idx"])
@@ -142,10 +199,47 @@ def select_paper_trades(
         day = _date_of(ts)
         state = day_states.setdefault(day, _DayState())
         strike_key = _strike_key(rep)
+        pos_key = (day,) + _position_key(rep)
         triggered: list[str] = []
 
         # ---------------- caps (order matters) ----------------
-        # 1. circuit breaker (§14)
+        # 0. position-open gate — block while a prior TAKEN trade
+        #    on the same (symbol, option_type) for this day is still
+        #    live. Runs first because if there's already an open
+        #    paper position on this side, no other gate matters.
+        if pos_key in position_exit_times:
+            prior_exit = position_exit_times[pos_key]
+            if prior_exit is None or ts < prior_exit:
+                triggered.append("prior_episode_open")
+                results_by_orig[orig_idx] = SelectionResult(
+                    alert_id=str(rep["alert_id"]),
+                    decision=DECISION_SKIPPED,
+                    decision_reason="skipped: prior episode still open",
+                    triggered_caps=triggered,
+                )
+                continue
+            # Prior position closed before this rep -> clear & fall through.
+            del position_exit_times[pos_key]
+
+        # 1. paper_order_strikes relation gate — runs before §13/§14
+        #    caps so a disabled-bucket rep never consumes a slot or
+        #    triggers cooldown state.
+        if relation_filter is not None:
+            relation = rep.get("relation")
+            if not relation_filter(relation):
+                triggered.append("paper_order_strike_disabled")
+                rel_label = str(relation) if relation is not None else "?"
+                results_by_orig[orig_idx] = SelectionResult(
+                    alert_id=str(rep["alert_id"]),
+                    decision=DECISION_SKIPPED,
+                    decision_reason=(
+                        f"skipped: paper_order_strike not enabled ({rel_label})"
+                    ),
+                    triggered_caps=triggered,
+                )
+                continue
+
+        # 2. circuit breaker (§14)
         if state.sl_count >= int(circuit_breaker_sl_count):
             triggered.append("circuit_breaker_2sl")
             results_by_orig[orig_idx] = SelectionResult(
@@ -159,7 +253,7 @@ def select_paper_trades(
             )
             continue
 
-        # 2. same-strike kill (§13)
+        # 3. same-strike kill (§13)
         if same_strike_kill_after_2_sl and strike_key in state.killed_strikes:
             triggered.append("same_strike_killed")
             results_by_orig[orig_idx] = SelectionResult(
@@ -170,7 +264,7 @@ def select_paper_trades(
             )
             continue
 
-        # 3. cooldown after SL (§13)
+        # 4. cooldown after SL (§13)
         if state.last_sl_time is not None and ts < state.last_sl_time + cooldown:
             triggered.append("cooldown_after_sl")
             mins = int(cooldown_minutes_after_sl)
@@ -182,7 +276,7 @@ def select_paper_trades(
             )
             continue
 
-        # 4. daily slot cap
+        # 5. daily slot cap
         if state.taken_count >= int(max_trades_per_day):
             triggered.append("daily_cap")
             results_by_orig[orig_idx] = SelectionResult(
@@ -206,18 +300,29 @@ def select_paper_trades(
             triggered_caps=triggered,
         )
 
-        # Update SL-driven caps using the resolved outcome (if any).
-        outcome: str | None = None
+        # Resolve outcome (drives SL caps + position-open tracking).
+        outcome_info: dict | None = None
         if outcome_resolver is not None:
             try:
-                outcome = outcome_resolver(rep)
+                outcome_info = outcome_resolver(rep)
             except Exception as e:
                 logger.warning(
                     f"selector: outcome_resolver failed for "
                     f"{rep.get('alert_id')}: {e}"
                 )
-                outcome = None
-        if outcome and outcome.upper() in SL_OUTCOMES:
+                outcome_info = None
+
+        outcome: str | None = None
+        if outcome_info is not None:
+            outcome = outcome_info.get("outcome")
+            # Track the position's exit so the gate can clear later
+            # entries. ``None`` is conservative -> blocks remainder
+            # of the day for this (symbol, option_type).
+            position_exit_times[pos_key] = _coerce_exit_time(
+                outcome_info.get("exit_time")
+            )
+
+        if outcome and str(outcome).upper() in SL_OUTCOMES:
             state.sl_count += 1
             state.last_sl_time = ts
             count = state.sl_count_by_strike.get(strike_key, 0) + 1

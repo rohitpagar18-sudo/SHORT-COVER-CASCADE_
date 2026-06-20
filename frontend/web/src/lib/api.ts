@@ -211,6 +211,8 @@ export type TradeRow = {
   lot_size: number | null;
   buy_price: number | null;
   sell_price: number | null;
+  sell_price_leg1: number | null;
+  sell_price_leg2: number | null;
   sl: number | null;
   tp1: number | null;
   tp2: number | null;

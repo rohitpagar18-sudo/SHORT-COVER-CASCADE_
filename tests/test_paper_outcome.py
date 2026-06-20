@@ -107,6 +107,45 @@ def test_tp1_be_outcome_mapping(base_alert, config):
     assert po.realized_R == pytest.approx(0.5 * cfg.risk_reward.normal_day_tp1_r)
 
 
+def test_tp1_be_outcome_stores_both_leg_exit_prices(base_alert, config):
+    """TP1_BE must expose leg1=tp1, leg2=second-leg exit, and the
+    surfaced ``exit_price`` becomes the 50/50 weighted average of the
+    two legs (the bug fix). The Phase 5B-A kernel's
+    ``auto_exit_price`` is still the raw second-leg price; that field
+    is the kernel's contract and is exposed separately for
+    diagnostics."""
+    cfg = config.model_copy(
+        update={"stop_loss": config.stop_loss.model_copy(update={"method": 1})}
+    )
+    candles = pd.DataFrame(_prefix() + [
+        _candle(10, 5, 150, 166, 149, 165),    # TP1 banked at 165
+        _candle(10, 10, 165, 168, 138, 142),   # second leg hits breakeven SL
+    ])
+    po = compute_paper_outcome(base_alert, candles=candles, app_config=cfg)
+    assert po.outcome == OUTCOME_TP1_BE
+    # leg1 == the alert's tp1; leg2 == kernel's second-leg exit
+    # (=breakeven entry under Method 1).
+    assert po.exit_price_leg1 == pytest.approx(165.0)
+    assert po.exit_price_leg2 == pytest.approx(150.0)
+    # Surfaced exit_price = weighted average so the "Sell" column
+    # reads truthfully for split-leg trades.
+    assert po.exit_price == pytest.approx(0.5 * 165.0 + 0.5 * 150.0)
+
+
+def test_sl_hit_outcome_leg_prices_are_none(base_alert, config):
+    """Single-leg outcomes must NOT populate the split-leg fields."""
+    candles = pd.DataFrame(_prefix() + [
+        _candle(10, 5, 150, 152, 138, 142),  # low crosses SL
+    ])
+    po = compute_paper_outcome(base_alert, candles=candles, app_config=config)
+    assert po.outcome == OUTCOME_SL
+    assert po.exit_price_leg1 is None
+    assert po.exit_price_leg2 is None
+    # exit_price for single-leg outcomes is unchanged — it remains
+    # the kernel's auto_exit_price (the SL hit value).
+    assert po.exit_price == pytest.approx(140.0)
+
+
 def test_eod_flat_is_open_sqoff(base_alert, config):
     # Pin Method 1 — the static-SL hover-band test. Under Method 3 the
     # SMA trail walks SL up into the hover band and fires SL_HIT.

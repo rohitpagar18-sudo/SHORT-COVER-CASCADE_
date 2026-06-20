@@ -214,9 +214,9 @@ export default function TradesPerformancePage() {
 
   return (
     <div className="space-y-4">
-      <KpiRow trades={trades} err={tradesErr} />
-
       <OpenPositionTracker />
+
+      <KpiRow trades={trades} err={tradesErr} />
 
       <FilterBar
         preset={preset}
@@ -545,7 +545,9 @@ function TradesTable({ rows }: { rows: TradeRow[] }) {
                 </td>
                 <td className="py-2 pr-3">{t.qty_lots ?? "—"}</td>
                 <td className="py-2 pr-3">{t.buy_price != null ? inr(t.buy_price) : "—"}</td>
-                <td className="py-2 pr-3">{t.sell_price != null ? inr(t.sell_price) : "—"}</td>
+                <td className="py-2 pr-3">
+                  <SellCell row={t} />
+                </td>
                 <td className="py-2 pr-3">{t.sl != null ? inr(t.sl) : "—"}</td>
                 <td className="py-2 pr-3">{t.tp1 != null ? inr(t.tp1) : "—"}</td>
                 <td className="py-2 pr-3">{t.tp2 != null ? inr(t.tp2) : "—"}</td>
@@ -585,6 +587,24 @@ function TotalsRow({ rows }: { rows: TradeRow[] }) {
       </span>
     </div>
   );
+}
+
+function SellCell({ row }: { row: TradeRow }) {
+  const leg1 = row.sell_price_leg1;
+  const leg2 = row.sell_price_leg2;
+  if (leg1 != null && leg2 != null) {
+    const avg = 0.5 * leg1 + 0.5 * leg2;
+    const tip =
+      `Leg 1 (TP1): ${inr(leg1)} | ` +
+      `Leg 2 (${row.outcome === "TP1_HIT" ? "EOD" : "Trail SL"}): ${inr(leg2)} | ` +
+      `Avg: ${inr(avg)}`;
+    return (
+      <span title={tip} className="whitespace-nowrap">
+        {inr(leg1)} <span className="text-muted">→</span> {inr(leg2)}
+      </span>
+    );
+  }
+  return <>{row.sell_price != null ? inr(row.sell_price) : "—"}</>;
 }
 
 function StatusBadge({ value }: { value: string | null }) {

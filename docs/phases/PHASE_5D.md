@@ -87,17 +87,37 @@ becomes a `paper_role="echo"` row and lives on the hidden
 Replayed in chronological order over the representatives. Caps are
 checked in this order on every row:
 
-1. **circuit breaker** — `state.sl_count >= circuit_breaker_sl_count`
+0. **open-position gate** (added 2026-06-20) — if a prior TAKEN
+   trade on the same `(symbol, option_type)` for this day is still
+   live (its kernel exit time has not yet passed, or the outcome
+   is NO_DATA) →
+   `"skipped: prior episode still open"`. Fixes the 19-Jun-2026
+   production bug where a fresh alert outside the 20-min dedup
+   window was wrongly TAKEN while the previous position's second
+   leg was still open. Resolver must return
+   `{"outcome": str | None, "exit_time": datetime | None}`;
+   `exit_time=None` is conservative and blocks the remainder of
+   the day on that key.
+1. **paper_order_strikes relation gate** (added 2026-06-20) — if the
+   rep's relation bucket (`itm` covers ITM1/ITM2/ITM3, `atm` is ATM,
+   `otm` covers OTM1/OTM2/OTM3) is OFF in
+   `paper_trading.paper_order_strikes` →
+   `"skipped: paper_order_strike not enabled (<RELATION>)"`. Runs
+   BEFORE §13/§14 caps so a disabled-bucket rep never consumes a
+   slot or triggers cooldown state. Default: `itm=OFF, atm=ON,
+   otm=OFF` — mirrors `strike.order_strikes` (the Phase 8 auto-order
+   knob). Validator refuses to load when every bucket is OFF.
+2. **circuit breaker** — `state.sl_count >= circuit_breaker_sl_count`
    (default 2) → `"skipped: circuit breaker (N paper SL)"`.
-2. **same-strike kill** — strike has 2 SLs on the day →
+3. **same-strike kill** — strike has 2 SLs on the day →
    `"skipped: same-strike killed (2 paper SL)"`. Same-strike state
    keys off the strike NUMBER, per the locked-in decision in
    `CLAUDE.md`.
-3. **cooldown after SL** — `ts < last_sl_time + cooldown` →
+4. **cooldown after SL** — `ts < last_sl_time + cooldown` →
    `"skipped: cooldown 15m after SL"`.
-4. **daily slot cap** — `taken_count >= max_trades_per_day` →
+5. **daily slot cap** — `taken_count >= max_trades_per_day` →
    `"skipped: daily cap (3) reached"`.
-5. Otherwise → `"taken (slot N/M)"`.
+6. Otherwise → `"taken (slot N/M)"`.
 
 The selector accepts an `outcome_resolver(rep_row) -> str | None`
 callback so the SL-driven caps can react to each TAKEN trade's
@@ -124,6 +144,19 @@ The SL method used by the kernel is whichever `stop_loss.method`
 Method 3, the `PARTIAL` second-leg exit reflects the SMA-trailed SL,
 not breakeven.
 
+> CHANGED 2026-06-20: `PaperOutcome` now exposes `exit_price_leg1` /
+> `exit_price_leg2` for two-leg outcomes (`TP1_BE`, `TP1_HIT`).
+> `leg1` = the alert's TP1, `leg2` = the kernel's second-leg exit
+> price. The surfaced `exit_price` becomes the 50/50 weighted
+> average of the two legs so single-figure consumers (Excel `Sell`
+> column, KPI sums) read the trade's true average sell instead of
+> just the second leg. Single-leg outcomes (`SL_HIT`, `TP2_HIT`,
+> `HARD_EXIT`, `OPEN_SQOFF`, `NO_DATA`) leave both leg fields `None`
+> and `exit_price` unchanged. The kernel's `auto_exit_price` field
+> is unmodified — this is a paper-layer presentation field only.
+> Frontend `TradesPerformance.tsx` renders "₹leg1 → ₹leg2" with a
+> tooltip showing both legs and the avg.
+
 `paper_pnl = auto_pnl_per_unit × lots × lot_size`. Lot size is
 read from `config.instruments.{nifty,banknifty}_lot_size` — never
 hardcoded.
@@ -138,6 +171,10 @@ paper_trading:
   episode_key: [symbol, option_type]
   dedup_window_minutes: 20
   relation_priority: [ITM1, ATM, ITM2, ITM3, OTM1, OTM2, OTM3]
+  paper_order_strikes:                  # added 2026-06-20
+    itm: OFF
+    atm: ON
+    otm: OFF
   max_trades_per_day: 3
   circuit_breaker_sl_count: 2
   cooldown_minutes_after_sl: 15

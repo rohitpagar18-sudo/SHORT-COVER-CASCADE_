@@ -8,7 +8,7 @@ PROBLEM:
 On NSE holidays/weekends, Kite returns stale prior-day candles. The bot
 has no guard against this. Today (28 May 2026) it ran all day on a
 holiday and wrote ghost rows to signals.jsonl. This corrupts Phase 7
-backtest data.
+backtest d0jata.
 
 FIX PHILOSOPHY:
 Single source of truth = broker's own candle data. No hardcoded holiday

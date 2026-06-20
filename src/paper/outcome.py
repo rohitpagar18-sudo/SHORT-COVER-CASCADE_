@@ -196,7 +196,9 @@ class PaperOutcome:
 
     alert_id: str
     outcome: str                  # OUTCOME_* constant
-    exit_price: float | None
+    exit_price: float | None      # For TP1_BE/TP1_HIT: 50/50 weighted average
+                                  # of leg1 (TP1) and leg2 (second-leg exit).
+                                  # For all other outcomes: single-leg exit price.
     exit_time: str | None
     exit_reason: str
     realized_R: float
@@ -212,6 +214,13 @@ class PaperOutcome:
     is_expiry_day: bool
     lots: int
     lot_size: int
+    # Two-leg exit breakdown — populated only for TP1_BE / TP1_HIT.
+    # ``None`` for all single-leg outcomes (SL_HIT, TP2_HIT, HARD_EXIT,
+    # EOD_FLAT, NO_DATA). Front-end "Sell" column renders
+    # "₹leg1 → ₹leg2" when both are set; otherwise it renders the
+    # single ``exit_price`` value.
+    exit_price_leg1: float | None = None
+    exit_price_leg2: float | None = None
 
 
 def compute_paper_outcome(
@@ -325,10 +334,29 @@ def compute_paper_outcome(
     mae_R = result.mae / risk_per_unit if risk_per_unit else 0.0
     max_drawdown_R = -mae_R  # MAE is the worst-case R drawdown
 
+    # Split-leg exit breakdown — TP1_BE and TP1_HIT bank 50% at TP1
+    # then exit the remaining 50% at the kernel's second-leg price.
+    # For these two outcomes the kernel's ``auto_exit_price`` is the
+    # second-leg price; we surface leg1 = the alert's TP1 and report
+    # ``exit_price`` as the weighted (50/50) average so single-figure
+    # consumers (Excel "Sell" column, KPI sums) read the trade's true
+    # average sell rather than just the second leg.
+    leg1_price: float | None = None
+    leg2_price: float | None = None
+    effective_exit_price: float | None = float(result.auto_exit_price)
+    if paper_outcome in (OUTCOME_TP1_BE, OUTCOME_TP1_HIT):
+        tp1_val = rep_row.get("tp1")
+        if tp1_val is not None and not (
+            isinstance(tp1_val, float) and pd.isna(tp1_val)
+        ):
+            leg1_price = float(tp1_val)
+            leg2_price = float(result.auto_exit_price)
+            effective_exit_price = 0.5 * leg1_price + 0.5 * leg2_price
+
     return PaperOutcome(
         alert_id=alert_id,
         outcome=paper_outcome,
-        exit_price=float(result.auto_exit_price),
+        exit_price=effective_exit_price,
         exit_time=str(result.auto_exit_time),
         exit_reason=str(result.auto_exit_reason),
         realized_R=float(realized_R),
@@ -344,6 +372,8 @@ def compute_paper_outcome(
         is_expiry_day=bool(is_expiry_day),
         lots=lots,
         lot_size=lot_size,
+        exit_price_leg1=leg1_price,
+        exit_price_leg2=leg2_price,
     )
 
 

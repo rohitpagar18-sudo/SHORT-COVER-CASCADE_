@@ -167,18 +167,33 @@ def test_paper_trades_jsonl_contains_only_taken(tmp_path: Path, config):
     paper_trades_path = tmp_path / "paper_trades.jsonl"
 
     # Pin max_trades_per_day=3 so this test never depends on config.yaml.
-    patched_pt = config.paper_trading.model_copy(update={"max_trades_per_day": 3})
+    # Also enable every paper_order_strikes bucket so the gate-0 relation
+    # filter doesn't pre-empt the daily-cap behaviour this test is
+    # asserting (two of the four alerts below carry relation="ITM1").
+    patched_pos = config.paper_trading.paper_order_strikes.model_copy(
+        update={"itm": True, "atm": True, "otm": True}
+    )
+    patched_pt = config.paper_trading.model_copy(
+        update={"max_trades_per_day": 3, "paper_order_strikes": patched_pos}
+    )
     pinned_config = config.model_copy(update={"paper_trading": patched_pt})
 
-    # 4 distinct episodes via different option_type / strikes,
-    # all on the same day. Cap=3 → last one SKIPPED.
+    # 4 distinct (symbol, option_type) episode keys so the
+    # open-position gate (keyed by symbol+option_type) does not
+    # pre-empt the daily-cap behaviour under test. Cap=3 →
+    # last one SKIPPED.
+    def _alt(when, symbol, strike, option_type, relation="ATM"):
+        rec = _alert(when, strike=strike, option_type=option_type, relation=relation)
+        rec["symbol"] = symbol
+        return rec
+
     with alerts_path.open("w", encoding="utf-8") as f:
-        f.write(_line(_alert("2026-05-27T10:00:00+05:30", strike=24050, option_type="CE")))
-        f.write(_line(_alert("2026-05-27T10:30:00+05:30", strike=24100, option_type="PE")))
-        f.write(_line(_alert("2026-05-27T11:00:00+05:30", strike=24150, option_type="CE",
-                              relation="ITM1")))
-        f.write(_line(_alert("2026-05-27T11:30:00+05:30", strike=24200, option_type="PE",
-                              relation="ITM1")))
+        f.write(_line(_alt("2026-05-27T10:00:00+05:30", "NIFTY", 24050, "CE")))
+        f.write(_line(_alt("2026-05-27T10:30:00+05:30", "NIFTY", 24100, "PE")))
+        f.write(_line(_alt("2026-05-27T11:00:00+05:30", "BANKNIFTY", 52000, "CE",
+                            relation="ITM1")))
+        f.write(_line(_alt("2026-05-27T11:30:00+05:30", "BANKNIFTY", 52100, "PE",
+                            relation="ITM1")))
 
     result = run_paper_engine(
         alerts_path=str(alerts_path),

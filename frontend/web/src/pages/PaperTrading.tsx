@@ -580,7 +580,10 @@ export default function PaperTradingPage() {
 
   return (
     <div className="space-y-6">
-      {/* 1. Today's Paper Plan */}
+      {/* 1. Open Positions (Live) */}
+      <OpenPositionTracker showTitle={true} />
+
+      {/* 2. Today's Paper Plan */}
       <Card>
         <CardTitle
           right={
@@ -595,9 +598,6 @@ export default function PaperTradingPage() {
         </CardTitle>
         <PaperPlanStrip data={planData} />
       </Card>
-
-      {/* 2. Open Positions (Live) */}
-      <OpenPositionTracker showTitle={true} />
 
       {/* 3. Paper Episodes table */}
       <EpisodesSection />

@@ -81,7 +81,7 @@ strike:
 # ---------- STOP LOSS CONTROL ----------
 # How the bot computes the SL price after a valid signal.
 stop_loss:
-  method: 1                            # 1 = point buffer (default, from strategy doc)
+  method: 3                            # 1 = point buffer (default, from strategy doc)
                                        # 2 = percentage-based (alternative)
                                        # 3 = Method-1 initial SL then N-SMA trail (see sma_trail below)
   use_vix_multiplier: ON               # ON = multiply SL buffer by VIX regime factor
@@ -302,6 +302,18 @@ paper_trading:
     - OTM1
     - OTM2
     - OTM3
+
+  # Which strike relations are eligible for paper trades.
+  # Mirrors `strike.order_strikes` (the Phase 8 auto-order knob) but for
+  # paper simulation. Uses the simplified 3-way bucket: itm covers
+  # ITM1/ITM2/ITM3, otm covers OTM1/OTM2/OTM3. If the episode
+  # representative's relation bucket is OFF here, the selector marks
+  # the trade as SKIPPED (reason: "paper_order_strike not enabled").
+  # At least one bucket must be ON, else the validator refuses to load.
+  paper_order_strikes:
+    itm: OFF                             # OFF = ITM1/ITM2/ITM3 reps -> SKIPPED
+    atm: ON                              # ATM = safest default, matches order_strikes
+    otm: OFF                             # OFF = OTM1/OTM2/OTM3 reps -> SKIPPED
 
   # ----- D2: selection caps (replayed in chronological order; §13/§14) -----
   max_trades_per_day: 5

@@ -99,6 +99,12 @@ class PaperTradeRecord:
     bot_tags: str | None = None
     triggered_caps: list[str] | None = None
 
+    # Split-leg exit breakdown (TP1_BE / TP1_HIT only). ``None`` for
+    # single-leg outcomes. Front-end renders "₹leg1 → ₹leg2" when both
+    # are present; otherwise the single ``exit_price`` is shown.
+    exit_price_leg1: float | None = None
+    exit_price_leg2: float | None = None
+
 
 # ---------------------------------------------------------------------------
 # paper_trades.jsonl

@@ -72,6 +72,10 @@ def _project_trade(row: Dict[str, Any]) -> Dict[str, Any]:
         "lot_size": row.get("lot_size"),
         "buy_price": row.get("entry"),
         "sell_price": row.get("exit_price"),
+        # Split-leg exits (TP1_BE / TP1_HIT only). ``None`` for
+        # single-leg outcomes — the UI falls back to sell_price.
+        "sell_price_leg1": row.get("exit_price_leg1"),
+        "sell_price_leg2": row.get("exit_price_leg2"),
         "sl": row.get("sl"),
         "tp1": row.get("tp1"),
         "tp2": row.get("tp2"),

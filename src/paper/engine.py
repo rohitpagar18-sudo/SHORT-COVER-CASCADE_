@@ -103,6 +103,8 @@ def _build_record(
         slot=selection.slot,
         outcome=outcome.outcome,
         exit_price=outcome.exit_price,
+        exit_price_leg1=outcome.exit_price_leg1,
+        exit_price_leg2=outcome.exit_price_leg2,
         exit_time=outcome.exit_time,
         exit_reason=outcome.exit_reason,
         realized_R=outcome.realized_R,
@@ -192,21 +194,24 @@ def run_paper_engine(
     # (so we never hit the same cache file twice) and memoize outcomes.
     outcomes_taken: dict[str, PaperOutcome] = {}
 
-    def _resolve_outcome(rep_row: pd.Series) -> str | None:
+    def _resolve_outcome(rep_row: pd.Series) -> dict | None:
         aid = str(rep_row["alert_id"])
         if aid in outcomes_taken:
-            return outcomes_taken[aid].outcome
-        candles = (
-            resolve_candles(rep_row, source=candle_source) if candle_source else None
-        )
-        po = compute_paper_outcome(
-            rep_row,
-            candles=candles,
-            app_config=app_config,
-            is_expiry_day=_is_expiry_day(rep_row),
-        )
-        outcomes_taken[aid] = po
-        return po.outcome
+            po = outcomes_taken[aid]
+        else:
+            candles = (
+                resolve_candles(rep_row, source=candle_source) if candle_source else None
+            )
+            po = compute_paper_outcome(
+                rep_row,
+                candles=candles,
+                app_config=app_config,
+                is_expiry_day=_is_expiry_day(rep_row),
+            )
+            outcomes_taken[aid] = po
+        # exit_time is an ISO string on PaperOutcome — the selector
+        # coerces both string and datetime forms.
+        return {"outcome": po.outcome, "exit_time": po.exit_time}
 
     selection_results = select_paper_trades(
         reps,
@@ -215,6 +220,7 @@ def run_paper_engine(
         cooldown_minutes_after_sl=pt_cfg.cooldown_minutes_after_sl,
         same_strike_kill_after_2_sl=pt_cfg.same_strike_kill_after_2_sl,
         outcome_resolver=_resolve_outcome,
+        relation_filter=pt_cfg.paper_order_strikes.allows_relation,
     )
 
     # SKIPPED reps: record the row but don't fetch candles — no API calls

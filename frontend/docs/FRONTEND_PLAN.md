@@ -436,14 +436,21 @@ Open Position card.
 **New page**: `web/src/pages/TradesPerformance.tsx` (route
 `/trades-performance` in `App.tsx`). Layout, top to bottom:
 
-1. **KPI row** (8 tiles) — Total Trades, Winning (+ %), Losing
+1. **OpenPositionTracker** — at the top, independent of the filter
+   bar (it always reflects live open positions).
+2. **Filter bar** — date-range presets (Today, This Week, This
+   Month, Last Week, Last Month, All Time, Custom) + From/To inputs
+   + Symbol/Type/Status/Outcome selects + Apply / Reset. Presets are
+   computed in IST (Monday-start ISO weeks). Preset clicks
+   auto-apply immediately — no Apply click needed. All Time sends
+   no date params so the backend returns every paper trade. Custom
+   shows From/To inputs and requires Apply. Dropdown selects also
+   require Apply (so users can stage multiple dropdown changes).
+   Reset returns to the Today preset and auto-applies.
+3. **KPI row** (8 tiles) — Total Trades, Winning (+ %), Losing
    (+ %), Total P&L, Realized, Unrealized, Max Daily Profit, Max
-   Daily Loss.
-2. **OpenPositionTracker** — mounted directly under the KPIs.
-3. **Filter bar** — date-range presets (Today, This Week, This
-   Month, Last Week, Last Month, Custom) + From/To inputs +
-   Symbol/Type/Status/Outcome selects + Apply / Reset. Presets are
-   computed in IST (Monday-start ISO weeks).
+   Daily Loss. Sits under the filter bar so the tiles react to
+   every filter change.
 4. **Today's Trades table** — Time / Symbol / Type / Strike (+ rel)
    / Qty / Buy / Sell / SL / TP1 / TP2 / P&L / Status / Outcome
    with colored outcome badges (TP2 HIT, TP1 HIT, SL HIT, PARTIAL,

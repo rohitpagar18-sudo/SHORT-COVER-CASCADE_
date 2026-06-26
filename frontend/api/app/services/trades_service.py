@@ -205,17 +205,15 @@ def list_trades(
     status: Optional[str] = None,
     outcome: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """Build /api/trades payload."""
+    """Build /api/trades payload.
+
+    Date semantics: ``date_from`` and ``date_to`` are both optional and
+    independent — null on either side means "no bound on that side".
+    Both null → all records, no date filter applied (powers the
+    All Time preset on the Trades & Performance page).
+    """
     df = _parse_date(date_from)
     dt = _parse_date(date_to)
-    if df is None and dt is None:
-        # default to today IST
-        today = today_ist()
-        df = dt = today
-    elif df is None:
-        df = dt
-    elif dt is None:
-        dt = df
 
     try:
         rows = read_jsonl(PAPER_TRADES_JSONL, max_lines=5000)
@@ -288,14 +286,8 @@ def history(
 
     df = _parse_date(date_from)
     dt = _parse_date(date_to)
-    # If neither is supplied, default to the last 30 days IST ending today.
-    if df is None and dt is None:
-        dt = today_ist()
-        df = dt - timedelta(days=29)
-    elif df is None:
-        df = dt
-    elif dt is None:
-        dt = df
+    # Null on either side = no bound on that side. Both null = all
+    # history (powers the All Time preset on Trades & Performance).
 
     try:
         rows = read_jsonl(PAPER_TRADES_JSONL, max_lines=5000)

@@ -33,7 +33,14 @@ type OutcomeFilter =
   | "PARTIAL"
   | "WOULD_SKIP";
 
-type Preset = "today" | "this_week" | "this_month" | "last_week" | "last_month" | "custom";
+type Preset =
+  | "today"
+  | "this_week"
+  | "this_month"
+  | "last_week"
+  | "last_month"
+  | "all_time"
+  | "custom";
 
 function todayIST(): Date {
   const now = new Date();
@@ -86,6 +93,11 @@ function applyPreset(preset: Preset): { from: string; to: string } {
     ref.setUTCMonth(ref.getUTCMonth() - 1);
     return { from: toISO(startOfMonth(ref)), to: toISO(endOfMonth(ref)) };
   }
+  if (preset === "all_time") {
+    // Empty strings → tradeFilters drops the params → backend returns
+    // all records with no date filter applied.
+    return { from: "", to: "" };
+  }
   return { from: toISO(t), to: toISO(t) };
 }
 
@@ -96,6 +108,7 @@ function presetLabel(p: Preset): string {
     this_month: "This Month",
     last_week: "Last Week",
     last_month: "Last Month",
+    all_time: "All Time",
     custom: "Custom",
   }[p];
 }
@@ -180,43 +193,69 @@ export default function TradesPerformancePage() {
     };
   }, [tradeFilters, groupBy]);
 
+  // Single fetch-trigger path used by both auto-apply (preset / reset)
+  // and the explicit Apply button. ``overrides`` lets a caller commit a
+  // value into ``applied`` in the same tick it updates form state —
+  // setState is async, so we cannot rely on `from`/`to` having flushed
+  // by the time we read them back inside the same handler.
+  const applyFilters = useCallback(
+    (overrides?: {
+      from?: string;
+      to?: string;
+      symbol?: SymbolFilter;
+      optType?: TypeFilter;
+      status?: StatusFilter;
+      outcome?: OutcomeFilter;
+    }) => {
+      setApplied({
+        from: overrides?.from ?? from,
+        to: overrides?.to ?? to,
+        symbol: overrides?.symbol ?? symbol,
+        optType: overrides?.optType ?? optType,
+        status: overrides?.status ?? status,
+        outcome: overrides?.outcome ?? outcome,
+      });
+    },
+    [from, to, symbol, optType, status, outcome],
+  );
+
   const onPickPreset = useCallback((p: Preset) => {
     setPreset(p);
-    if (p !== "custom") {
-      const r = applyPreset(p);
-      setFrom(r.from);
-      setTo(r.to);
+    if (p === "custom") {
+      // Custom: do not auto-apply. User picks From/To and clicks Apply.
+      return;
     }
-  }, []);
+    const r = applyPreset(p);
+    setFrom(r.from);
+    setTo(r.to);
+    // Auto-apply immediately so the user does not need to click Apply
+    // for any of the date presets (incl. All Time).
+    applyFilters({ from: r.from, to: r.to });
+  }, [applyFilters]);
 
   const onApply = useCallback(() => {
-    setApplied({
-      from,
-      to,
-      symbol,
-      optType,
-      status,
-      outcome,
-    });
-  }, [from, to, symbol, optType, status, outcome]);
+    applyFilters();
+  }, [applyFilters]);
 
   const onReset = useCallback(() => {
-    const r = applyPreset("this_week");
-    setPreset("this_week");
+    const r = applyPreset("today");
+    setPreset("today");
     setFrom(r.from);
     setTo(r.to);
     setSymbol("ALL");
     setOptType("ALL");
     setStatus("ALL");
     setOutcome("ALL");
-    setApplied({ from: r.from, to: r.to, symbol: "ALL", optType: "ALL", status: "ALL", outcome: "ALL" });
-  }, []);
+    // Auto-apply so the reset is visible immediately, no Apply needed.
+    applyFilters({
+      from: r.from, to: r.to,
+      symbol: "ALL", optType: "ALL", status: "ALL", outcome: "ALL",
+    });
+  }, [applyFilters]);
 
   return (
     <div className="space-y-4">
       <OpenPositionTracker />
-
-      <KpiRow trades={trades} err={tradesErr} />
 
       <FilterBar
         preset={preset}
@@ -236,6 +275,8 @@ export default function TradesPerformancePage() {
         onApply={onApply}
         onReset={onReset}
       />
+
+      <KpiRow trades={trades} err={tradesErr} />
 
       <TodaysTradesTable trades={trades} err={tradesErr} appliedFrom={applied.from} appliedTo={applied.to} />
 
@@ -342,7 +383,10 @@ function KpiRow({ trades, err }: { trades: TradesResponse | null; err: string | 
 // Filter bar
 // ---------------------------------------------------------------------------
 
-const PRESETS: Preset[] = ["today", "this_week", "this_month", "last_week", "last_month", "custom"];
+const PRESETS: Preset[] = [
+  "today", "this_week", "this_month",
+  "last_week", "last_month", "all_time", "custom",
+];
 
 function FilterBar(props: {
   preset: Preset;
@@ -474,13 +518,20 @@ function TodaysTradesTable({
   appliedFrom: string;
   appliedTo: string;
 }) {
-  const isToday = appliedFrom === appliedTo && appliedFrom === toISO(todayIST());
+  const isAllTime = !appliedFrom && !appliedTo;
+  const isToday =
+    !isAllTime && appliedFrom === appliedTo && appliedFrom === toISO(todayIST());
+  const rangeLabel = isAllTime
+    ? "All Time"
+    : isToday
+      ? "Today"
+      : `${appliedFrom || "…"} → ${appliedTo || "…"}`;
   return (
     <Card>
       <CardTitle
         right={
           <span className="text-xs text-muted">
-            {isToday ? "Today" : `${appliedFrom} → ${appliedTo}`} ·{" "}
+            {rangeLabel} ·{" "}
             {trades?.trades.length ?? 0} row{trades && trades.trades.length === 1 ? "" : "s"}
           </span>
         }

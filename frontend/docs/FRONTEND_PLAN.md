@@ -107,11 +107,11 @@ same look without duplicating colors or fonts.
   `bg-line2` resolve to those tokens — `darkMode: "class"` is set in
   `tailwind.config.js`.
 * **Font:** Inter, loaded via the rsms CDN in `index.css`.
-* **Sidebar (canonical order):** Overview, Instruments,
-  Strike & Scanning, Stop Loss, Risk & Money, Conditions (C0–C5),
-  Orders, Time Rules, Re-entry Rules, Alerts & Telegram, Paper Trading,
-  Trades & Performance, Dashboard & Reports, Logs, Bot Status,
-  Configuration, Settings, About. Footer shows the RUNNING/STOPPED pill, uptime,
+* **Sidebar (canonical order):** Overview, Dashboard & Reports,
+  Instruments, Strike & Scanning, Stop Loss, Risk & Money,
+  Conditions (C0–C5), Orders, Time Rules, Re-entry Rules,
+  Alerts & Telegram, Paper Trading, Trades & Performance,
+  Logs, Bot Status, Configuration, Settings, About. Footer shows the RUNNING/STOPPED pill, uptime,
   last config reload, next health check, a "View System Health"
   button, and the theme toggle. Uptime and next health check require a
   bot heartbeat (later phase) — until then they display "—" with a
@@ -783,6 +783,15 @@ to a shared `label` key for recharts).
    - Signal Funnel histogram (0/5 through 5/5, plus Alerted).
    - Blocking Conditions ranked list (top 5 near-miss blockers with bar 
      indicators).
+   - **ADX Threshold Deep Dive** (Phase F7a-2): config pills (adx_min /
+     require_rising / use_di_alignment / SHADOW vs GATING), Win Rate by
+     ADX Bucket bar chart (`<15`, `15-20`, …, `35+`) with a reference
+     line at the configured threshold, Trade Count Distribution stacked
+     bar (winners + losers), and a Winner vs Loser profile table
+     (Avg/Median ADX, % Rising, Spot/Option DI averages and alignment
+     %, % C5 passed). Winner cells highlighted green when winner − loser
+     ≥ 10pp on percentage rows. Placeholder card when fewer than 5
+     matched paper trades have ADX logged.
    - C5 ADX Shadow Analysis highlight card (amber border): C5 pass rate 
      among fired alerts %; side-by-side comparison (when C5 passed vs failed) 
      with n, win_rate %, avg_R stats; optional join_note for incomplete joins.

@@ -16,6 +16,7 @@ from typing import Any, Dict, List, Optional
 from ..paths import SIGNALS_JSONL, PAPER_TRADES_JSONL
 from ..time_utils import IST, parse_ist
 from .jsonl_reader import read_jsonl
+from . import config_service
 
 
 def _parse_date(date_str: Optional[str]) -> Optional[date_cls]:
@@ -255,12 +256,256 @@ def get_conditions_report(date_from: Optional[str], date_to: Optional[str]) -> D
             "note": "DI alignment is informational only (does not affect C5 pass/fail)",
         }
 
+    adx_deep_dive = _build_adx_deep_dive(signals)
+
     return {
         "pass_rates": pass_rates,
         "funnel": funnel,
         "bottleneck": bottleneck,
         "c5_shadow": c5_shadow,
+        "adx_deep_dive": adx_deep_dive,
         **({"di_alignment": di_alignment} if di_alignment else {}),
+    }
+
+
+# ---------------------------------------------------------------------------
+# ADX Threshold Deep Dive (Phase F7a-2)
+# ---------------------------------------------------------------------------
+
+_ADX_BUCKETS: List[tuple] = [
+    ("<15", lambda a: a < 15),
+    ("15-20", lambda a: 15 <= a < 20),
+    ("20-25", lambda a: 20 <= a < 25),
+    ("25-30", lambda a: 25 <= a < 30),
+    ("30-35", lambda a: 30 <= a < 35),
+    ("35+", lambda a: a >= 35),
+]
+
+
+def _r1(v: Optional[float]) -> Optional[float]:
+    if v is None:
+        return None
+    try:
+        return round(float(v), 1)
+    except (TypeError, ValueError):
+        return None
+
+
+def _avg(values: List[float]) -> Optional[float]:
+    return (sum(values) / len(values)) if values else None
+
+
+def _median(values: List[float]) -> Optional[float]:
+    if not values:
+        return None
+    s = sorted(values)
+    n = len(s)
+    mid = n // 2
+    return s[mid] if n % 2 else 0.5 * (s[mid - 1] + s[mid])
+
+
+def _profile(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
+    n = len(rows)
+    if n == 0:
+        return {
+            "n": 0,
+            "avg_adx": None, "median_adx": None,
+            "pct_rising": None,
+            "avg_spot_di_plus": None, "avg_spot_di_minus": None,
+            "pct_spot_aligned": None,
+            "avg_opt_di_plus": None, "avg_opt_di_minus": None,
+            "pct_opt_aligned": None,
+            "pct_c5_passed": None,
+        }
+
+    def _nums(key: str) -> List[float]:
+        out: List[float] = []
+        for r in rows:
+            v = r.get(key)
+            if isinstance(v, (int, float)):
+                out.append(float(v))
+        return out
+
+    adx_vals = _nums("adx")
+
+    rising = 0
+    rising_total = 0
+    for r in rows:
+        a, p = r.get("adx"), r.get("adx_prev")
+        if isinstance(a, (int, float)) and isinstance(p, (int, float)):
+            rising_total += 1
+            if a > p:
+                rising += 1
+
+    spot_align = 0
+    spot_align_total = 0
+    for r in rows:
+        dip, dim = r.get("di_plus"), r.get("di_minus")
+        if not (isinstance(dip, (int, float)) and isinstance(dim, (int, float))):
+            continue
+        spot_align_total += 1
+        opt_type = r.get("option_type")
+        if opt_type == "CE" and dip > dim:
+            spot_align += 1
+        elif opt_type == "PE" and dim > dip:
+            spot_align += 1
+
+    opt_dip = _nums("option_di_plus")
+    opt_dim = _nums("option_di_minus")
+    opt_align = 0
+    opt_align_total = 0
+    for r in rows:
+        dip, dim = r.get("option_di_plus"), r.get("option_di_minus")
+        if isinstance(dip, (int, float)) and isinstance(dim, (int, float)):
+            opt_align_total += 1
+            if dip > dim:
+                opt_align += 1
+
+    c5_pass = sum(1 for r in rows if r.get("c5_passed") is True)
+
+    return {
+        "n": n,
+        "avg_adx": _r1(_avg(adx_vals)),
+        "median_adx": _r1(_median(adx_vals)),
+        "pct_rising": _r1((rising / rising_total * 100.0) if rising_total else None),
+        "avg_spot_di_plus": _r1(_avg(_nums("di_plus"))),
+        "avg_spot_di_minus": _r1(_avg(_nums("di_minus"))),
+        "pct_spot_aligned": _r1((spot_align / spot_align_total * 100.0) if spot_align_total else None),
+        "avg_opt_di_plus": _r1(_avg(opt_dip)),
+        "avg_opt_di_minus": _r1(_avg(opt_dim)),
+        "pct_opt_aligned": _r1((opt_align / opt_align_total * 100.0) if opt_align_total else None),
+        "pct_c5_passed": _r1((c5_pass / n * 100.0) if n else None),
+    }
+
+
+def _read_adx_config_snapshot() -> Dict[str, Any]:
+    """Read C5 ADX knobs from live config.yaml — single source of truth."""
+    try:
+        return {
+            "adx_min": float(config_service.get("conditions.c5_adx.adx_min", 20.0)),
+            "require_rising": bool(config_service.get("conditions.c5_adx.require_rising", True)),
+            "use_di_alignment": bool(config_service.get("conditions.c5_adx.use_di_alignment", False)),
+            "gating": bool(config_service.get("conditions.c5_adx.gating", False)),
+            "period": int(config_service.get("conditions.c5_adx.period", 14)),
+        }
+    except Exception:
+        return {
+            "adx_min": 20.0, "require_rising": True,
+            "use_di_alignment": False, "gating": False, "period": 14,
+        }
+
+
+def _build_adx_deep_dive(signals: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    """Join paper trades to the alert-time signal row and slice by ADX bucket.
+
+    Returns ``None`` when fewer than 5 paper trades have an ADX value
+    logged (UI shows a placeholder).
+    """
+    try:
+        paper_trades = read_jsonl(PAPER_TRADES_JSONL, max_lines=20_000)
+    except Exception:
+        paper_trades = []
+
+    # Only TAKEN + representative + finalized.
+    paper_finalized = [
+        t for t in paper_trades
+        if t.get("decision") == "TAKEN"
+        and t.get("paper_role") == "representative"
+        and t.get("outcome") not in (None, "NO_DATA")
+    ]
+
+    # Build signal lookup by (symbol, strike, option_type, candle_timestamp).
+    # Prefer alert rows (richer), fall back to scan rows.
+    sig_index: Dict[tuple, Dict[str, Any]] = {}
+    for s in signals:
+        ts = s.get("timestamp_ist")
+        if not ts:
+            continue
+        key = (s.get("symbol"), s.get("strike"), s.get("option_type"), ts)
+        existing = sig_index.get(key)
+        # Alert rows take precedence over scans for the same key.
+        if existing is None or (
+            s.get("event_type") == "alert" and existing.get("event_type") != "alert"
+        ):
+            sig_index[key] = s
+
+    matched_rows: List[Dict[str, Any]] = []
+    for t in paper_finalized:
+        key = (
+            t.get("symbol"), t.get("strike"),
+            t.get("option_type"), t.get("candle_timestamp"),
+        )
+        sig = sig_index.get(key)
+        if sig is None:
+            continue
+        adx = sig.get("adx")
+        if not isinstance(adx, (int, float)):
+            continue
+        # Combine trade + signal fields needed for the deep dive.
+        matched_rows.append({
+            "option_type": t.get("option_type"),
+            "paper_pnl": t.get("paper_pnl"),
+            "adx": float(adx),
+            "adx_prev": sig.get("adx_prev"),
+            "di_plus": sig.get("di_plus"),
+            "di_minus": sig.get("di_minus"),
+            "option_di_plus": sig.get("option_di_plus"),
+            "option_di_minus": sig.get("option_di_minus"),
+            "c5_passed": sig.get("c5_passed"),
+        })
+
+    if len(matched_rows) < 5:
+        return None
+
+    # Bucket counts.
+    buckets: List[Dict[str, Any]] = []
+    for label, predicate in _ADX_BUCKETS:
+        in_bucket = [r for r in matched_rows if predicate(r["adx"])]
+        winners = sum(
+            1 for r in in_bucket
+            if isinstance(r.get("paper_pnl"), (int, float)) and r["paper_pnl"] > 0
+        )
+        losers = len(in_bucket) - winners
+        n = len(in_bucket)
+        buckets.append({
+            "label": label,
+            "n": n,
+            "winners": winners,
+            "losers": losers,
+            "win_rate_pct": _r1((winners / n * 100.0) if n else None),
+        })
+
+    # Winner vs loser profile.
+    winner_rows = [
+        r for r in matched_rows
+        if isinstance(r.get("paper_pnl"), (int, float)) and r["paper_pnl"] > 0
+    ]
+    loser_rows = [
+        r for r in matched_rows
+        if not (isinstance(r.get("paper_pnl"), (int, float)) and r["paper_pnl"] > 0)
+    ]
+
+    total_paper = len(paper_finalized)
+    matched = len(matched_rows)
+    pct = round((matched / total_paper * 100.0), 1) if total_paper else 0.0
+    note: Optional[str] = None
+    if total_paper and pct < 80.0:
+        note = (
+            f"only {matched}/{total_paper} paper trades had an ADX value at "
+            "alert time — older trades may pre-date C5 logging"
+        )
+
+    return {
+        "config": _read_adx_config_snapshot(),
+        "join_coverage": {
+            "matched": matched,
+            "total": total_paper,
+            "pct": pct,
+            "note": note,
+        },
+        "buckets": buckets,
+        "winner_profile": _profile(winner_rows),
+        "loser_profile": _profile(loser_rows),
     }
 
 

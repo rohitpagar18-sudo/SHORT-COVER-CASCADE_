@@ -1,5 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Download, RefreshCw } from "lucide-react";
+import {
+  Bar, BarChart, CartesianGrid, Cell, Legend,
+  ReferenceLine, ResponsiveContainer, Tooltip as RTooltip,
+  XAxis, YAxis,
+} from "recharts";
 import { Card, CardTitle, Skeleton } from "../components/Card";
 import PnLChart from "../components/charts/PnLChart";
 import WeekdayBarChart from "../components/charts/WeekdayBarChart";
@@ -14,6 +19,9 @@ import {
   type ReportMonthly,
   type ReportDuration,
   type ConditionsReport,
+  type AdxDeepDive,
+  type AdxBucket,
+  type AdxProfile,
   type RiskReport,
   type InsightsReport,
   type InsightsBreakdownRow,
@@ -940,7 +948,10 @@ export default function DashboardReportsPage() {
             )}
           </Card>
 
-          {/* 4. C5 ADX Shadow Analysis */}
+          {/* 4. ADX Threshold Deep Dive (Phase F7a-2) */}
+          <AdxDeepDiveCard data={conditionsData?.adx_deep_dive ?? null} loading={loading && !conditionsData} />
+
+          {/* 5. C5 ADX Shadow Analysis */}
           <Card className="border-amber-300 dark:border-amber-700">
             <CardTitle><span className="text-amber-900 dark:text-amber-200">C5 ADX Shadow Analysis</span></CardTitle>
             {loading && !conditionsData ? (
@@ -1577,6 +1588,250 @@ export default function DashboardReportsPage() {
       <div className="pb-4 pt-2 text-center text-xs text-muted">
         All times are IST (Asia/Kolkata). Paper P&L; health inferred from file activity.
       </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// ADX Threshold Deep Dive (Condition Analysis tab)
+// ---------------------------------------------------------------------------
+
+function _fmtNum(v: number | null, digits = 1, suffix = ""): string {
+  if (v === null || v === undefined || Number.isNaN(v)) return "—";
+  return `${v.toFixed(digits)}${suffix}`;
+}
+
+function _bucketBarColor(b: AdxBucket): string {
+  if (b.n === 0 || b.win_rate_pct === null) return "#94A3B8"; // slate-400
+  if (b.win_rate_pct >= 60) return "#16A34A"; // emerald-600
+  if (b.win_rate_pct >= 40) return "#F59E0B"; // amber-500
+  return "#DC2626"; // rose-600
+}
+
+function _bucketForAdxMin(buckets: AdxBucket[], adxMin: number): string | null {
+  // Map adx_min to the bucket label it falls inside (uses the same edges).
+  if (adxMin < 15) return "<15";
+  if (adxMin < 20) return "15-20";
+  if (adxMin < 25) return "20-25";
+  if (adxMin < 30) return "25-30";
+  if (adxMin < 35) return "30-35";
+  return "35+";
+  void buckets;
+}
+
+function AdxDeepDiveCard({
+  data,
+  loading,
+}: {
+  data: AdxDeepDive | null;
+  loading: boolean;
+}) {
+  return (
+    <Card>
+      <CardTitle>ADX Threshold Deep Dive</CardTitle>
+      {loading ? (
+        <Skeleton className="h-[320px] w-full" />
+      ) : !data ? (
+        <div className="rounded-md border border-dashed border-line bg-line2/30 p-6 text-center text-sm text-muted">
+          Not enough ADX data yet. Requires ≥5 matched paper trades with ADX
+          logged. Data accumulates each trading day.
+        </div>
+      ) : (
+        <AdxDeepDiveBody data={data} />
+      )}
+    </Card>
+  );
+}
+
+function AdxDeepDiveBody({ data }: { data: AdxDeepDive }) {
+  const { config, join_coverage, buckets, winner_profile, loser_profile } = data;
+  const refLabel = _bucketForAdxMin(buckets, config.adx_min);
+
+  const winRateData = buckets.map((b) => ({
+    label: b.label,
+    win_rate: b.win_rate_pct ?? 0,
+    color: _bucketBarColor(b),
+    n: b.n, winners: b.winners, losers: b.losers,
+    win_rate_pct: b.win_rate_pct,
+  }));
+
+  const distData = buckets.map((b) => ({
+    label: b.label,
+    winners: b.winners,
+    losers: b.losers,
+    n: b.n,
+    win_rate_pct: b.win_rate_pct,
+  }));
+
+  const winRateTooltip = (p: { active?: boolean; payload?: Array<{ payload: typeof winRateData[number] }> }) => {
+    if (!p.active || !p.payload?.length) return null;
+    const d = p.payload[0].payload;
+    const wr = d.win_rate_pct === null ? "—" : `${d.win_rate_pct.toFixed(1)}%`;
+    return (
+      <div className="rounded-md border border-line bg-card px-2 py-1 text-xs shadow-sm">
+        <div className="font-semibold text-ink">{d.label}</div>
+        <div className="text-muted">{d.n} trades — {d.winners}W / {d.losers}L ({wr})</div>
+      </div>
+    );
+  };
+
+  return (
+    <div className="space-y-5">
+      {/* Row 1 — Config pills */}
+      <div className="flex flex-wrap gap-2 text-[11px]">
+        <Pill>ADX(14) threshold: ≥{config.adx_min}</Pill>
+        <Pill>Rising required: {config.require_rising ? "✓" : "✗"}</Pill>
+        <Pill>DI Alignment: {config.use_di_alignment ? "ON" : "OFF"}</Pill>
+        <Pill tone={config.gating ? "gating" : "shadow"}>
+          Mode: {config.gating ? "GATING" : "SHADOW"}
+        </Pill>
+      </div>
+
+      {/* Chart 1 — Win Rate by ADX Bucket */}
+      <div>
+        <div className="mb-1 text-xs font-semibold text-ink">Win Rate by ADX Bucket</div>
+        <div className="h-[240px] w-full">
+          <ResponsiveContainer width="100%" height="100%">
+            <BarChart data={winRateData} margin={{ top: 10, right: 12, left: 0, bottom: 12 }}>
+              <CartesianGrid strokeDasharray="3 3" stroke="#E2E8F0" />
+              <XAxis dataKey="label" tick={{ fontSize: 11 }} />
+              <YAxis domain={[0, 100]} tickFormatter={(v) => `${v}%`} tick={{ fontSize: 11 }} />
+              <RTooltip content={winRateTooltip} />
+              {refLabel && (
+                <ReferenceLine
+                  x={refLabel}
+                  stroke="#64748B"
+                  strokeDasharray="4 3"
+                  label={{ value: `Current threshold ≥${config.adx_min}`, position: "top", fill: "#475569", fontSize: 10 }}
+                />
+              )}
+              <Bar dataKey="win_rate" name="Win Rate">
+                {winRateData.map((d, i) => (
+                  <Cell key={i} fill={d.color} />
+                ))}
+              </Bar>
+            </BarChart>
+          </ResponsiveContainer>
+        </div>
+      </div>
+
+      {/* Chart 2 — Trade Count Distribution */}
+      <div>
+        <div className="mb-1 text-xs font-semibold text-ink">Trade Count Distribution</div>
+        <div className="h-[220px] w-full">
+          <ResponsiveContainer width="100%" height="100%">
+            <BarChart data={distData} margin={{ top: 10, right: 12, left: 0, bottom: 12 }}>
+              <CartesianGrid strokeDasharray="3 3" stroke="#E2E8F0" />
+              <XAxis dataKey="label" tick={{ fontSize: 11 }} />
+              <YAxis allowDecimals={false} tick={{ fontSize: 11 }} />
+              <RTooltip content={winRateTooltip} />
+              <Legend wrapperStyle={{ fontSize: 11 }} />
+              <Bar dataKey="winners" stackId="x" fill="#16A34A" name="Winners" />
+              <Bar dataKey="losers" stackId="x" fill="#DC2626" name="Losers" />
+            </BarChart>
+          </ResponsiveContainer>
+        </div>
+      </div>
+
+      {/* Row 2 — Winner vs Loser Profile */}
+      <ProfileTable winners={winner_profile} losers={loser_profile} />
+
+      {/* Footer notes */}
+      <div className="space-y-1 text-xs">
+        {!config.gating && (
+          <div className="text-amber-700 dark:text-amber-300">
+            C5 is in shadow mode — data only, no alerts blocked
+          </div>
+        )}
+        <div className="text-muted">
+          ADX data matched for {join_coverage.matched} of {join_coverage.total} trades
+          ({join_coverage.pct.toFixed(1)}% coverage)
+          {join_coverage.note ? ` — ${join_coverage.note}` : ""}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function Pill({
+  children,
+  tone = "neutral",
+}: {
+  children: React.ReactNode;
+  tone?: "neutral" | "shadow" | "gating";
+}) {
+  const cls = {
+    neutral: "border-line bg-line2/40 text-ink",
+    shadow: "border-amber-300 bg-amber-50 text-amber-800 dark:border-amber-700 dark:bg-amber-950/30 dark:text-amber-200",
+    gating: "border-emerald-300 bg-emerald-50 text-emerald-800 dark:border-emerald-700 dark:bg-emerald-950/30 dark:text-emerald-200",
+  }[tone];
+  return (
+    <span className={`inline-flex items-center rounded-md border px-2 py-1 ${cls}`}>
+      {children}
+    </span>
+  );
+}
+
+const _PROFILE_ROWS: Array<{
+  label: string;
+  key: keyof AdxProfile;
+  suffix?: string;
+  digits?: number;
+}> = [
+  { label: "Avg ADX",            key: "avg_adx" },
+  { label: "Median ADX",         key: "median_adx" },
+  { label: "% ADX Rising",       key: "pct_rising",       suffix: "%" },
+  { label: "Avg Spot +DI",       key: "avg_spot_di_plus" },
+  { label: "Avg Spot −DI",       key: "avg_spot_di_minus" },
+  { label: "% Spot DI Aligned",  key: "pct_spot_aligned", suffix: "%" },
+  { label: "Avg Opt +DI",        key: "avg_opt_di_plus" },
+  { label: "Avg Opt −DI",        key: "avg_opt_di_minus" },
+  { label: "% Opt DI Aligned",   key: "pct_opt_aligned",  suffix: "%" },
+  { label: "% C5 Passed",        key: "pct_c5_passed",    suffix: "%" },
+];
+
+function ProfileTable({
+  winners,
+  losers,
+}: {
+  winners: AdxProfile;
+  losers: AdxProfile;
+}) {
+  return (
+    <div className="overflow-hidden rounded-md border border-line">
+      <table className="w-full text-sm">
+        <thead className="bg-line2/40 text-xs">
+          <tr>
+            <th className="px-3 py-2 text-left text-ink">Metric</th>
+            <th className="px-3 py-2 text-right text-emerald-700 dark:text-emerald-300">
+              ✅ Winners (n={winners.n})
+            </th>
+            <th className="px-3 py-2 text-right text-rose-700 dark:text-rose-300">
+              ❌ Losers (n={losers.n})
+            </th>
+          </tr>
+        </thead>
+        <tbody>
+          {_PROFILE_ROWS.map((row) => {
+            const wv = winners[row.key] as number | null;
+            const lv = losers[row.key] as number | null;
+            const isPct = !!row.suffix;
+            const winnerEdge =
+              isPct && wv !== null && lv !== null && wv - lv >= 10;
+            return (
+              <tr key={row.label} className="border-t border-line2">
+                <td className="px-3 py-1.5 text-ink">{row.label}</td>
+                <td className={`px-3 py-1.5 text-right font-mono ${winnerEdge ? "bg-emerald-100/60 font-semibold text-emerald-800 dark:bg-emerald-950/40 dark:text-emerald-200" : ""}`}>
+                  {_fmtNum(wv, row.digits ?? 1, row.suffix ?? "")}
+                </td>
+                <td className="px-3 py-1.5 text-right font-mono">
+                  {_fmtNum(lv, row.digits ?? 1, row.suffix ?? "")}
+                </td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
     </div>
   );
 }

@@ -445,11 +445,50 @@ export type DIAlignment = {
   note: string;
 };
 
+export type AdxBucket = {
+  label: string;
+  n: number;
+  winners: number;
+  losers: number;
+  win_rate_pct: number | null;
+};
+
+export type AdxProfile = {
+  n: number;
+  avg_adx: number | null;
+  median_adx: number | null;
+  pct_rising: number | null;
+  avg_spot_di_plus: number | null;
+  avg_spot_di_minus: number | null;
+  pct_spot_aligned: number | null;
+  avg_opt_di_plus: number | null;
+  avg_opt_di_minus: number | null;
+  pct_opt_aligned: number | null;
+  pct_c5_passed: number | null;
+};
+
+export type AdxConfigSnapshot = {
+  adx_min: number;
+  require_rising: boolean;
+  use_di_alignment: boolean;
+  gating: boolean;
+  period: number;
+};
+
+export type AdxDeepDive = {
+  config: AdxConfigSnapshot;
+  join_coverage: { matched: number; total: number; pct: number; note: string | null };
+  buckets: AdxBucket[];
+  winner_profile: AdxProfile;
+  loser_profile: AdxProfile;
+};
+
 export type ConditionsReport = {
   pass_rates: ConditionPassRate[];
   funnel: FunnelBucket[];
   bottleneck: BottleneckItem[];
   c5_shadow: C5ShadowReport;
+  adx_deep_dive: AdxDeepDive | null;
   di_alignment?: DIAlignment;
 };
 

@@ -282,6 +282,76 @@ def test_paper_trading_block_has_no_r_override_fields(config):
     )
 
 
+def test_single_lot_tp2hit_overrides_to_tp1hit(base_alert, config):
+    """1 lot cannot split — TP2_HIT must collapse to TP1_HIT (full lot at TP1)."""
+    base_alert["lots"] = 1
+    candles = pd.DataFrame(_prefix() + [
+        _candle(10, 5, 150, 166, 149, 165),
+        _candle(10, 10, 165, 176, 160, 174),
+    ])
+    kernel = replay_alert(base_alert, candles, config)
+    assert kernel.auto_order_status == TP2_HIT  # kernel still says TP2
+    po = compute_paper_outcome(base_alert, candles=candles, app_config=config)
+    assert po.outcome == OUTCOME_TP1_HIT
+    assert po.exit_price == pytest.approx(base_alert["tp1"])
+    expected_pnl = (base_alert["tp1"] - base_alert["entry"]) * config.instruments.nifty_lot_size
+    assert po.paper_pnl == pytest.approx(expected_pnl)
+    assert po.exit_price_leg1 is None
+    assert po.exit_price_leg2 is None
+
+
+def test_single_lot_partial_overrides_to_tp1hit(base_alert, config):
+    """1 lot + kernel PARTIAL → override to TP1_HIT (no second leg)."""
+    cfg = config.model_copy(
+        update={"stop_loss": config.stop_loss.model_copy(update={"method": 1})}
+    )
+    base_alert["lots"] = 1
+    candles = pd.DataFrame(_prefix() + [
+        _candle(10, 5, 150, 166, 149, 165),    # TP1 banked
+        _candle(10, 10, 165, 168, 138, 142),   # second leg hits breakeven SL
+    ])
+    kernel = replay_alert(base_alert, candles, cfg)
+    assert kernel.auto_order_status == PARTIAL
+    po = compute_paper_outcome(base_alert, candles=candles, app_config=cfg)
+    assert po.outcome == OUTCOME_TP1_HIT
+    assert po.exit_price == pytest.approx(base_alert["tp1"])
+    expected_pnl = (base_alert["tp1"] - base_alert["entry"]) * cfg.instruments.nifty_lot_size
+    assert po.paper_pnl == pytest.approx(expected_pnl)
+    assert po.exit_price_leg1 is None
+    assert po.exit_price_leg2 is None
+
+
+def test_two_lot_tp2hit_splits_correctly(base_alert, config):
+    """lots==2 → 1 lot at TP1, 1 lot at TP2 — clean 50/50 split."""
+    base_alert["lots"] = 2
+    candles = pd.DataFrame(_prefix() + [
+        _candle(10, 5, 150, 166, 149, 165),
+        _candle(10, 10, 165, 176, 160, 174),
+    ])
+    kernel = replay_alert(base_alert, candles, config)
+    assert kernel.auto_order_status == TP2_HIT
+    po = compute_paper_outcome(base_alert, candles=candles, app_config=config)
+    assert po.outcome == OUTCOME_TP2
+    lot_size = config.instruments.nifty_lot_size
+    tp1_leg = (base_alert["tp1"] - base_alert["entry"]) * 1 * lot_size
+    tp2_leg = (kernel.auto_exit_price - base_alert["entry"]) * 1 * lot_size
+    assert po.paper_pnl == pytest.approx(tp1_leg + tp2_leg)
+
+
+def test_sl_hit_single_lot_unaffected(base_alert, config):
+    """1 lot + kernel SL_HIT: outcome unchanged — no override applies."""
+    base_alert["lots"] = 1
+    candles = pd.DataFrame(_prefix() + [
+        _candle(10, 5, 150, 152, 138, 142),  # low crosses SL
+    ])
+    kernel = replay_alert(base_alert, candles, config)
+    assert kernel.auto_order_status == SL_HIT
+    po = compute_paper_outcome(base_alert, candles=candles, app_config=config)
+    assert po.outcome == OUTCOME_SL
+    expected_pnl = kernel.auto_pnl_per_unit * 1 * config.instruments.nifty_lot_size
+    assert po.paper_pnl == pytest.approx(expected_pnl)
+
+
 def test_close_only_fidelity_detected(base_alert, config):
     # Build a frame where O=H=L=C — typical of legacy close-only rows.
     rows = []

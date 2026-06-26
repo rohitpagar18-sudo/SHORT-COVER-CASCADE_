@@ -107,11 +107,11 @@ same look without duplicating colors or fonts.
   `bg-line2` resolve to those tokens — `darkMode: "class"` is set in
   `tailwind.config.js`.
 * **Font:** Inter, loaded via the rsms CDN in `index.css`.
-* **Sidebar (canonical order):** Overview, Configuration, Instruments,
+* **Sidebar (canonical order):** Overview, Instruments,
   Strike & Scanning, Stop Loss, Risk & Money, Conditions (C0–C5),
   Orders, Time Rules, Re-entry Rules, Alerts & Telegram, Paper Trading,
   Trades & Performance, Dashboard & Reports, Logs, Bot Status,
-  Settings, About. Footer shows the RUNNING/STOPPED pill, uptime,
+  Configuration, Settings, About. Footer shows the RUNNING/STOPPED pill, uptime,
   last config reload, next health check, a "View System Health"
   button, and the theme toggle. Uptime and next health check require a
   bot heartbeat (later phase) — until then they display "—" with a
@@ -835,7 +835,7 @@ missing or partial JSONL.
 **New service**: `frontend/api/app/services/reports_service.py`
 * Only TAKEN + `paper_role=="representative"` rows are counted (echoes excluded).
 * Finalized = outcome not in (None, "NO_DATA"). Open = outcome == "NO_DATA".
-* Winners = TP2_HIT | TP1_HIT | PARTIAL. Losers = SL_HIT.
+* Winners = TP2_HIT | TP1_HIT | TP1_BE. OPEN_SQOFF classified by paper_pnl sign.
 * KPI deltas compare the immediately preceding equal-length window.
 * Spark series = list of daily_pnl values over the current period (same
   for all 7 KPIs — it's the daily P&L series).

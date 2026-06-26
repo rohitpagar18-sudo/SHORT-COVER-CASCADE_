@@ -5,8 +5,9 @@ Builds /api/trades and /api/trades/history payloads. Filters on:
   symbol                   ("NIFTY"|"BANKNIFTY"|None)
   option_type              ("CE"|"PE"|None)
   status                   trade row 'decision': "TAKEN"|"SKIPPED"|None
-  outcome                  trade row 'outcome': "TP2_HIT"|"TP1_HIT"|"SL_HIT"|
-                                              "NO_DATA"|"PARTIAL"|"WOULD_SKIP"|None
+  outcome                  trade row 'outcome': "TP2_HIT"|"TP1_HIT"|"TP1_BE"|
+                                              "SL_HIT"|"HARD_EXIT"|"OPEN_SQOFF"|
+                                              "NO_DATA"|None
 
 A REALIZED trade = paper_trades row with finalized outcome
 (anything other than NO_DATA). Open positions contribute unrealized P&L
@@ -24,7 +25,7 @@ from .jsonl_reader import read_jsonl
 from . import positions_service
 
 
-_FINAL_OUTCOMES = {"TP2_HIT", "TP1_HIT", "SL_HIT", "PARTIAL", "WOULD_SKIP"}
+_FINAL_OUTCOMES = {"TP2_HIT", "TP1_HIT", "TP1_BE", "SL_HIT", "HARD_EXIT", "OPEN_SQOFF"}
 
 
 def _parse_date(s: Optional[str]) -> Optional[date_cls]:
@@ -133,9 +134,9 @@ def _kpis(
             d = r.get("date")
             if isinstance(d, str):
                 daily_totals[d] += float(pnl)
-            if outcome in ("TP2_HIT", "TP1_HIT") and pnl > 0:
+            if pnl > 0:
                 win_count += 1
-            elif outcome == "SL_HIT" or (outcome in ("PARTIAL",) and pnl < 0):
+            elif pnl < 0:
                 loss_count += 1
 
     max_daily_profit = max(daily_totals.values(), default=0.0)
@@ -325,8 +326,7 @@ def history(
         finals = [r for r in rows_in_bucket if r.get("outcome") in _FINAL_OUTCOMES]
         wins = sum(
             1 for r in finals
-            if r.get("outcome") in ("TP2_HIT", "TP1_HIT")
-            and isinstance(r.get("paper_pnl"), (int, float))
+            if isinstance(r.get("paper_pnl"), (int, float))
             and float(r["paper_pnl"]) > 0
         )
         total_trades = len(finals)

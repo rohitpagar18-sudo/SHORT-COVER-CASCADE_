@@ -590,17 +590,20 @@ function TotalsRow({ rows }: { rows: TradeRow[] }) {
 }
 
 function SellCell({ row }: { row: TradeRow }) {
-  const leg1 = row.sell_price_leg1;
-  const leg2 = row.sell_price_leg2;
-  if (leg1 != null && leg2 != null) {
-    const avg = 0.5 * leg1 + 0.5 * leg2;
+  // 1 lot cannot split — show the single exit price. For >=2 lots, only
+  // TP2_HIT and TP1_BE bank a TP1 leg + second leg (split display).
+  const lots = row.qty_lots ?? 0;
+  const isSplit =
+    lots >= 2 && (row.outcome === "TP2_HIT" || row.outcome === "TP1_BE");
+  if (isSplit && row.tp1 != null && row.sell_price != null) {
+    const tp1Lots = Math.floor(lots / 2);
+    const tp2Lots = lots - tp1Lots;
     const tip =
-      `Leg 1 (TP1): ${inr(leg1)} | ` +
-      `Leg 2 (${row.outcome === "TP1_HIT" ? "EOD" : "Trail SL"}): ${inr(leg2)} | ` +
-      `Avg: ${inr(avg)}`;
+      `Leg 1 (TP1, ${tp1Lots} lot${tp1Lots === 1 ? "" : "s"}): ${inr(row.tp1)} | ` +
+      `Leg 2 (${row.outcome === "TP2_HIT" ? "TP2" : "Trail SL"}, ${tp2Lots} lot${tp2Lots === 1 ? "" : "s"}): ${inr(row.sell_price)}`;
     return (
       <span title={tip} className="whitespace-nowrap">
-        {inr(leg1)} <span className="text-muted">→</span> {inr(leg2)}
+        {inr(row.tp1)} <span className="text-muted">→</span> {inr(row.sell_price)}
       </span>
     );
   }

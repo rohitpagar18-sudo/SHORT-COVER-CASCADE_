@@ -118,6 +118,40 @@ risk_reward:
                                        # For real trailing, set stop_loss.method: 3
                                        # and configure stop_loss.sma_trail above.
 
+  # ---------- TARGET 3 (FUTURE — not yet implemented) ----------
+  # Prerequisite: Phase 8 live orders with partial-fill tracking.
+  #
+  # Method 3 (SMA trail): NO fixed TP3. SMA trail runs freely after TP1
+  #   until SMA is crossed or 15:00 EOD. TP3 concept does not apply.
+  #
+  # Method 1 and Method 2 only — SL movement ladder:
+  #   TP1 hit (1.5R normal / 2.0R expiry) → move SL to entry (0R breakeven)
+  #   TP2 hit (2.5R normal / 3.0R expiry) → move SL to TP1 price (1.5R / 2.0R expiry)
+  #   TP3 hit (5.0R normal / 6.0R expiry) → exit ALL remaining lots immediately
+  #
+  # Lot-exit ladder — current 2-target system (in code today):
+  #   Lots  TP1 leg    TP2 leg    Note
+  #     1   1 lot      —          Full exit at TP1 (cannot split)
+  #     2   1 lot      1 lot      Clean 50/50
+  #     3   1 lot      2 lots     Round-down on TP1
+  #     4   2 lots     2 lots     Clean 50/50
+  #     5   2 lots     3 lots     Round-down on TP1
+  #
+  # Lot-exit ladder — future 3-target system (TP3 phase):
+  #   Lots  TP1 leg    TP2 leg    TP3 leg    Note
+  #     1   1 lot      —          —          Full exit at TP1
+  #     2   1 lot      1 lot      —          No TP3 lot available
+  #     3   1 lot      1 lot      1 lot      Clean thirds
+  #     4   2 lots     1 lot      1 lot
+  #     5   2 lots     2 lots     1 lot
+  #     6   2 lots     2 lots     2 lots     Clean thirds
+  #     7   3 lots     2 lots     2 lots
+  #   Rule: TP1 = ceil(lots/3), TP2 = ceil((lots−TP1)/2), TP3 = remainder
+  #
+  # Config keys to add when implementing TP3:
+  #   normal_day_tp3_r: 5.0
+  #   expiry_day_tp3_r: 6.0
+
 
 # ---------- POSITION SIZING ----------
 # How many lots to take per trade.

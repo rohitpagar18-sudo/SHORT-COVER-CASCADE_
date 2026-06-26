@@ -20,10 +20,6 @@ from .jsonl_reader import read_jsonl
 
 IST = ZoneInfo("Asia/Kolkata")
 
-_WINNER_OUTCOMES = {"TP2_HIT", "TP1_HIT", "PARTIAL"}
-_LOSER_OUTCOMES = {"SL_HIT"}
-_FINAL_OUTCOMES = _WINNER_OUTCOMES | _LOSER_OUTCOMES | {"WOULD_SKIP"}
-
 _WEEKDAYS = ["Mon", "Tue", "Wed", "Thu", "Fri"]
 _WEEKDAY_IDX = {n: i for i, n in enumerate(_WEEKDAYS)}
 
@@ -166,13 +162,13 @@ def _filter_range(rows: List[Dict[str, Any]], df: date_cls, dt: date_cls) -> Lis
 def _build_kpis(finalized: List[Dict[str, Any]], prev_finalized: Optional[List[Dict[str, Any]]], spark_series: List[float]) -> Dict[str, Any]:
     def _compute(rows: List[Dict[str, Any]]) -> Dict[str, float]:
         total = len(rows)
-        winners = [r for r in rows if r.get("outcome") in _WINNER_OUTCOMES]
-        losers = [r for r in rows if r.get("outcome") in _LOSER_OUTCOMES]
+        winners = [r for r in rows if _pnl(r) > 0]
+        losers = [r for r in rows if _pnl(r) < 0]
         win_pnls = [_pnl(r) for r in winners]
         loss_pnls = [_pnl(r) for r in losers]
         total_pnl = sum(_pnl(r) for r in rows)
-        gross_profit = sum(p for p in win_pnls if p > 0)
-        gross_loss = sum(abs(p) for p in loss_pnls if p < 0)
+        gross_profit = sum(win_pnls)
+        gross_loss = sum(abs(p) for p in loss_pnls)
         win_rate = (len(winners) / total * 100.0) if total else 0.0
         profit_factor = (gross_profit / gross_loss) if gross_loss > 0 else None
         avg_win = (sum(win_pnls) / len(win_pnls)) if win_pnls else 0.0
@@ -352,17 +348,17 @@ def _build_duration(finalized: List[Dict[str, Any]]) -> Optional[List[Dict[str, 
     for r in finalized:
         m = _duration_minutes(r)
         if m is not None:
-            duration_rows.append((m, r.get("outcome")))
+            duration_rows.append((m, _pnl(r)))
 
     if not duration_rows:
         return None
 
     bucket_counts: Dict[str, int] = defaultdict(int)
     bucket_wins: Dict[str, int] = defaultdict(int)
-    for mins, outcome in duration_rows:
+    for mins, pnl in duration_rows:
         bk = _duration_bucket(mins)
         bucket_counts[bk] += 1
-        if outcome in _WINNER_OUTCOMES:
+        if pnl > 0:
             bucket_wins[bk] += 1
 
     return [
@@ -396,15 +392,15 @@ def _build_monthly(all_rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         finalized = [r for r in rows if _is_finalized(r)]
         open_rows = [r for r in rows if _is_open(r)]
         total_trades = len(finalized)
-        winners = [r for r in finalized if r.get("outcome") in _WINNER_OUTCOMES]
-        losers = [r for r in finalized if r.get("outcome") in _LOSER_OUTCOMES]
+        winners = [r for r in finalized if _pnl(r) > 0]
+        losers = [r for r in finalized if _pnl(r) < 0]
         win_rate = round(len(winners) / total_trades * 100.0, 1) if total_trades else 0.0
         realized_pnl = sum(_pnl(r) for r in finalized)
         unrealized_pnl = sum(_pnl(r) for r in open_rows)
         total_pnl = realized_pnl + unrealized_pnl
 
-        gross_profit = sum(_pnl(r) for r in winners if _pnl(r) > 0)
-        gross_loss = sum(abs(_pnl(r)) for r in losers if _pnl(r) < 0)
+        gross_profit = sum(_pnl(r) for r in winners)
+        gross_loss = sum(abs(_pnl(r)) for r in losers)
         profit_factor = round(gross_profit / gross_loss, 3) if gross_loss > 0 else None
 
         # Per-day max/min for this month

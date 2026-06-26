@@ -291,6 +291,20 @@ revisit without explicit user approval.
   `option_di_minus`, `option_di_aligned` in `signals.jsonl`.
   **Informational only — does NOT affect C5 pass/fail.**
 
+### TP3 / Target 3 (future enhancement)
+- TP3 / Target 3: future enhancement for Method 1 and Method 2 only.
+  Full SL-movement ladder and lot-exit rules documented in
+  config/config.yaml (risk_reward block). Method 3 SMA trail has no
+  fixed TP3 — trail runs until SMA cross or 15:00 EOD. Not implemented
+  until Phase 8 live orders land.
+
+### Separate paper config (config_paper.yaml)
+- Separate paper config (config_paper.yaml): deliberate NO for Phase 6.
+  Paper engine uses a single config (single source of truth — PHASE_5D.md
+  hard rule). Revisit at Phase 8 when real orders go live and a
+  conservative live config vs experimental paper config separation
+  becomes genuinely motivated.
+
 ## Phase 5.2 Decisions (Strategy Dashboard + ML Data)
 
 ### File Organization

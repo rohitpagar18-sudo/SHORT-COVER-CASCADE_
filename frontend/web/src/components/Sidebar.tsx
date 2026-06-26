@@ -13,12 +13,12 @@ type Item = { to: string; label: string; icon: React.ElementType };
 export const MENU: Item[] = [
   { to: "/overview",           label: "Overview",             icon: LayoutDashboard },
   { to: "/trades-performance", label: "Trades & Performance", icon: BarChart3 },
-  { to: "/configuration",      label: "Configuration",        icon: Sliders },
   { to: "/paper-trading",      label: "Paper Trading",        icon: FileText },
   { to: "/stoploss",           label: "Stop-Loss Lab",        icon: FlaskConical },
   { to: "/dashboard-reports",  label: "Dashboard & Reports",  icon: FileBarChart },
   { to: "/logs",               label: "Logs",                 icon: ScrollText },
   { to: "/bot-status",         label: "Bot Status",           icon: Activity },
+  { to: "/configuration",      label: "Configuration",        icon: Sliders },
   { to: "/settings",           label: "Settings",             icon: Settings },
   { to: "/about",              label: "About",                icon: Info },
 ];

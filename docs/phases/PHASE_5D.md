@@ -135,6 +135,7 @@ representative.
 | `HARD_EXIT`   | `HARD_EXIT`   | −1R          | −1R          |
 | `TP2_HIT`     | `TP2_HIT`     | +2.5R (= `risk_reward.normal_day_tp2_r`) | +3.0R (= `risk_reward.expiry_day_tp2_r`) |
 | `PARTIAL` (TP1 banked, second leg SL/breakeven/trailed) | `TP1_BE` | +0.75R (= 0.5 × `risk_reward.normal_day_tp1_r`) | +1.0R (= 0.5 × `risk_reward.expiry_day_tp1_r`) |
+| **lots == 1**, kernel `TP2_HIT` or `PARTIAL` | **override → `TP1_HIT`** (full lot exits at TP1) | `(tp1 − entry) / R` | `(tp1 − entry) / R` |
 | `TP1_HIT` (TP1 banked, second leg EOD-flat ≥ SL) | `TP1_HIT` | actual `pnl/R` | actual `pnl/R` |
 | `EOD_FLAT`    | `OPEN_SQOFF`  | actual `pnl/R` | actual `pnl/R` |
 | (no candles)  | `NO_DATA`     | 0            | 0            |
@@ -160,6 +161,18 @@ not breakeven.
 `paper_pnl = auto_pnl_per_unit × lots × lot_size`. Lot size is
 read from `config.instruments.{nifty,banknifty}_lot_size` — never
 hardcoded.
+
+> CHANGED 2026-06-27: real-world lot-split rule. A single lot cannot
+> partially fill, so when `lots == 1` and the kernel returns
+> `TP2_HIT` or `PARTIAL` the paper layer rewrites the outcome to
+> `TP1_HIT`, exits the full lot at TP1, and sets
+> `paper_pnl = (tp1 − entry) × lot_size`. For `lots >= 2` with
+> `TP2_HIT` or `PARTIAL`, `paper_pnl` is recomputed from the actual
+> split — TP1 leg = `lots // 2`, second leg = `lots − lots // 2` —
+> replacing the kernel's implicit 50/50 ₹-weighting so 3-lot, 5-lot
+> etc. report the correct paper P&L. `realized_R` continues to use
+> the canonical 2.5R / 0.75R labels (R is the position-average
+> label, not the ₹ split). The kernel itself is NOT modified.
 
 ## Config (paper_trading block)
 

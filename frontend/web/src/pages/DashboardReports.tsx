@@ -1663,9 +1663,10 @@ function AdxDeepDiveBody({ data }: { data: AdxDeepDive }) {
     win_rate_pct: b.win_rate_pct,
   }));
 
-  const winRateTooltip = (p: { active?: boolean; payload?: Array<{ payload: typeof winRateData[number] }> }) => {
+  const winRateTooltip = (p: { active?: boolean; payload?: Array<{ payload?: typeof winRateData[number] }> }) => {
     if (!p.active || !p.payload?.length) return null;
     const d = p.payload[0].payload;
+    if (!d) return null;
     const wr = d.win_rate_pct === null ? "—" : `${d.win_rate_pct.toFixed(1)}%`;
     return (
       <div className="rounded-md border border-line bg-card px-2 py-1 text-xs shadow-sm">

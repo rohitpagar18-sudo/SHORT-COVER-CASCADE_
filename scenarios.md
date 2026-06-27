@@ -44,8 +44,11 @@ SL     =  Entry − R
 
 | Day Type | TP1 | TP2 |
 |----------|-----|-----|
-| Normal day | Entry + (R × 2) | Entry + (R × 3) |
-| Expiry day | Entry + (R × 1.5) | Entry + (R × 2.5) |
+| Normal day | Entry + (R × 1.5) | Entry + (R × 2.5) |
+| Expiry day | Entry + (R × 2.0) | Entry + (R × 3.0) |
+
+> Expiry day targets are LARGER (2R / 3R) because option premiums move faster near expiry.
+> Normal day targets are smaller (1.5R / 2.5R). Values live in `config.yaml → risk_reward`.
 
 ---
 
@@ -139,6 +142,9 @@ Active at 10:30:   NIFTY CE position (open) + NIFTY PE position (open)
 11:00  →  Any new alert          ⛔ SKIPPED  (circuit broken for the day)
 ```
 
+> Live bot circuit breaker: `circuit_breakers.max_sl_per_day = 3` (fires after 3rd SL).
+> Paper trade circuit breaker: `paper_trading.circuit_breaker_sl_count = 5` (fires after 5th paper SL).
+
 ---
 
 ### Scenario G — Multiple strikes fire on the same candle
@@ -156,19 +162,64 @@ Active at 10:30:   NIFTY CE position (open) + NIFTY PE position (open)
 
 ---
 
+### Scenario H — ATM is the only enabled strike AND it gets killed
+
+**Config:** `paper_order_strikes.itm=OFF, atm=ON, otm=OFF` and `same_strike_kill_after_2_sl=ON`
+
+```
+09:50  →  NIFTY CE ATM 24500    ✅ TAKEN
+10:00  →  SL hit #1             ❌ (same-strike SL count on 24500 CE: 1)
+10:20  →  NIFTY CE ATM 24500    ✅ TAKEN again (after cooldown)
+10:35  →  SL hit #2             ❌ (same-strike SL count on 24500 CE: 2)
+                                    ↓ Strike 24500 CE is DEAD for today
+10:55  →  NIFTY CE ATM 24500    ⛔ SKIPPED  (killed strike)
+11:00  →  NIFTY CE ITM1 24450   ⛔ SKIPPED  (paper_order_strike: itm=OFF)
+11:00  →  NIFTY CE OTM1 24550   ⛔ SKIPPED  (paper_order_strike: otm=OFF)
+```
+ATM-only + same_strike_kill_after_2sl = ON      
+
+  When ATM is the only enabled strike (paper_order_strikes.itm=OFF,  
+  atm=ON, otm=OFF) and that ATM strike accumulates 2 SLs:
+
+  1. ATM strike is killed — key is (NIFTY, 24500, CE)
+  2. Telegram alerts keep firing — C0–C4 scanning never stops        
+  3. All subsequent entries for NIFTY CE are SKIPPED for the rest of 
+  the day:
+    - ATM → SKIPPED (killed strike)
+    - ITM1/ITM2 → SKIPPED (paper_order_strike not enabled)
+    - OTM → SKIPPED (paper_order_strike not enabled)
+  4. NIFTY PE is completely unaffected — separate kill key (NIFTY,   
+  24500, PE)
+  5. BankNifty is unaffected — different symbol
+  6. Bot does NOT shut down — only that specific (symbol,
+  strike_number, option_type) is dead
+  7. If spot drifts and ATM moves to 24550 CE — that's a different   
+  strike number, new kill key, allowed again
+**What the bot does:**
+- **Telegram alerts KEEP FIRING** — C0–C4 scanning never stops. You still get alert messages.
+- **Paper trades: SKIPPED for rest of day on NIFTY CE** — ATM is killed and no other strike is enabled.
+- **NIFTY PE is unaffected** — kill key is `(NIFTY, 24500, CE)`. PE has its own independent key.
+- **BankNifty is unaffected** — completely separate symbol.
+- **Bot does NOT shut down** — only that specific `(symbol, strike, option_type)` combo is dead.
+
+> If you want re-entry on a different ATM level (e.g. spot drifts and new ATM = 24550), that's a
+> different strike number → different kill key → allowed.
+
+---
+
 ## Daily Limits at a Glance
 
-| Gate | Rule | Default |
-|------|------|---------|
-| Entry window | 9:45 AM – 2:30 PM | configurable |
-| Gap day start | 10:00 AM (if gap >1% from prev close) | configurable |
-| Hard close | 3:00 PM — cannot be disabled | fixed |
-| Max paper trades/day | 5 trades | config |
-| SL circuit breaker | 3 SL hits → stop for the day | config |
-| Loss circuit breaker | ₹6,000 loss → stop for the day | config |
-| Cooldown after SL | 15 min wait before next entry | config |
-| Strike kill | 2 SLs on same strike → dead for the day | config |
-| Dedup window | 20 min (collapses re-fires into one episode) | config |
+| Gate | Rule | Live bot config | Paper config |
+|------|------|-----------------|--------------|
+| Entry window | 9:45 AM – 2:30 PM | configurable | same |
+| Gap day start | 10:00 AM (if gap >1% from prev close) | configurable | same |
+| Hard close | 3:00 PM — cannot be disabled | fixed | same |
+| Max paper trades/day | 5 trades | N/A | `max_trades_per_day: 5` |
+| SL circuit breaker | Stop entries for the day | `max_sl_per_day: 3` | `circuit_breaker_sl_count: 5` |
+| Loss circuit breaker | ₹6,000 loss → stop for the day | `max_loss_per_day_rupees: 6000` | N/A |
+| Cooldown after SL | 15 min wait before next entry | configurable | same |
+| Strike kill | 2 SLs on same strike → dead for the day | `same_strike_kill_after_2_sl: ON` | same |
+| Dedup window | 20 min (collapses re-fires into one episode) | configurable | same |
 
 ---
 
@@ -181,13 +232,14 @@ ENTRY
   │         └── Exit 100%  →  SL_HIT ❌
   │
   ├─── Price rises to TP1
-  │         └── Exit 50% at TP1  💰
+  │         └── Exit tp1_lots at TP1  💰  (lots=1: full exit, no runner)
+  │               │       tp1_lots = ceil(lots/2); tp2_lots = lots − tp1_lots
   │               │
-  │               ├─ Method 1/2 → SL moves to BREAKEVEN on remaining 50%
+  │               ├─ Method 1/2 → SL moves to BREAKEVEN on remaining tp2_lots
   │               ├─ Method 3  → SL keeps trailing 19-SMA (no breakeven)
   │               │
-  │               ├─── Remaining 50% hits SL/Breakeven/Trail → PARTIAL ⚠️
-  │               └─── Remaining 50% hits TP2 → TP2_HIT 💰💰
+  │               ├─── Remaining tp2_lots hits SL/Breakeven/Trail → PARTIAL ⚠️
+  │               └─── Remaining tp2_lots hits TP2 → TP2_HIT 💰💰
   │
   ├─── Red candle entirely below VWAP
   │         └── HARD EXIT (all remaining quantity)  🔴
@@ -207,22 +259,32 @@ ENTRY
 
 ---
 
-## Lot Exit Split by Method (1/2/3 lots)
+## Lot Exit Ladder — 50/50 Rule (scalable to any lot count)
 
-All 3 SL methods use the **same 50/50 lot split**. Only the SL behavior on the 2nd leg differs.
+All 3 SL methods use the **same lot-split rule**. Only the SL behavior on the 2nd leg differs.
 
-| Lots | TP1 leg | 2nd leg | Note |
+**Formula:** `tp1_lots = ceil(lots / 2)`, `tp2_lots = lots − tp1_lots`.
+On odd counts the **extra lot goes to TP1** (conservative — book more at the first target).
+**No TP3 leg.**
+
+**Special case (lots = 1):** cannot split → **full exit at TP1**. No breakeven step, no TP2 runner.
+
+| Lots | TP1 leg | TP2 leg | Note |
 |------|---------|---------|------|
-| **1** | — | 1 lot rides full position | Can't split 1 lot into halves |
-| **2** | 1 lot at TP1 | 1 lot | Clean 50/50 |
-| **3** | 1 lot at TP1 | 2 lots | Round-down on TP1 leg |
-| **4** | 2 lots at TP1 | 2 lots | Clean 50/50 |
-| **5** | 2 lots at TP1 | 3 lots | Round-down on TP1 leg |
-| **6** | 3 lots at TP1 | 3 lots | Clean 50/50 |
-| **7** | 3 lots at TP1 | 4 lots | Round-down on TP1 leg |
+| **1** | 1 lot — full exit at TP1 | 0 lots | Cannot split; no runner. Outcome = TP1_HIT |
+| **2** | 1 lot | 1 lot | Clean 50/50 |
+| **3** | 2 lots | 1 lot | Odd: extra to TP1 |
+| **4** | 2 lots | 2 lots | Clean 50/50 |
+| **5** | 3 lots | 2 lots | Odd: extra to TP1 |
+| **10** | 5 lots | 5 lots | 50/50 |
+| **20** | 10 lots | 10 lots | 50/50 |
+| **30** | 15 lots | 15 lots | 50/50 |
 
-> **Currently alert-only + paper:** P&L uses 0.5 weight per unit — no real broker split yet.
-> **Phase 8** will place two real orders at broker to execute the physical split.
+> **Implemented in** `src/risk/lot_sizing.compute_lot_split()` — single source of truth for **both paper simulation (5B-A kernel)** and **Phase 8 live orders**.
+> Today `position_sizing.nifty_max_lots = 5` and `banknifty_max_lots = 5`; the formula scales unchanged if the cap is raised later.
+
+> **PARTIAL R is lot-dependent:** `PARTIAL R = tp1_fraction × tp1_r`.
+> Even lots → `0.5 × tp1_r` (e.g. 0.75R on normal day). 3-lot odd → `(2/3) × 1.5 = 1.0R`.
 
 ---
 
@@ -239,13 +301,12 @@ All 3 SL methods use the **same 50/50 lot split**. Only the SL behavior on the 2
 | 20-min episode dedup window | Same | Same |
 | Position-open gate | Same | Same |
 | 15-min cooldown after SL | Same | Same |
-| Circuit breaker (SL count) | Same | Same |
 | Same-strike kill after 2 SLs | Same | Same |
 | Daily cap (5 trades) | Same | Same |
 | Entry window 9:45 AM – 2:30 PM | Same | Same |
 | Hard close at 3:00 PM | Same | Same |
 | SL / TP1 / TP2 levels | Same | Same |
-| 50/50 lot exit at TP1 | Same (virtual) | Same (real orders) |
+| Lot split at TP1 (`ceil(lots/2)`, lots=1 → full exit) | Same (virtual) | Same (real orders) |
 
 ### What is DIFFERENT
 
@@ -253,8 +314,9 @@ All 3 SL methods use the **same 50/50 lot split**. Only the SL behavior on the 2
 |--------|-------------|-----------------|
 | Execution | Virtual — no broker call. P&L simulated from candles after market close | Real LIMIT/MARKET order placed via Kite/Upstox API |
 | Which strikes | `paper_order_strikes` — currently **ATM only** | `order_strikes` — currently **ATM only** |
+| Circuit breaker SL cap | `paper_trading.circuit_breaker_sl_count: 5` | `circuit_breakers.max_sl_per_day: 3` |
 | When outcome is known | EOD — replayed from historical candles at dashboard sync | Real-time — broker fill/SL/TP callback |
-| Lot split at TP1 | Virtual 0.5 weight on P&L | Two real broker orders |
+| Lot split at TP1 | Virtual P&L weighted by `ceil(lots/2)` / remainder | Two real broker orders |
 | Current status | **LIVE NOW** (logging to paper_trades.jsonl) | **Phase 8 — NOT built yet** |
 
 ### Key difference: alert strikes vs paper/order strikes

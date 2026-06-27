@@ -31,7 +31,11 @@ Common rules across all methods:
   - SL hit (low <= current SL) before TP1 -> SL_HIT (full position).
   - Hard exit (complete red candle entirely below option session VWAP)
     before TP1 -> HARD_EXIT (full position).
-  - TP1 touch -> exit 50%. Targets do NOT move with the trail.
+  - TP1 touch -> exit ``tp1_lots`` (see ``compute_lot_split``).
+    Targets do NOT move with the trail.
+  - Single-lot trades (``tp2_lots == 0``): TP1 touch closes the full
+    position immediately. No breakeven step, no TP2 monitoring.
+    Outcome = ``TP1_HIT``.
   - TP2 touch on remainder -> TP2_HIT.
   - SL/breakeven/trailed-SL touch on remainder -> PARTIAL.
   - Hard exit on remainder -> PARTIAL.
@@ -55,6 +59,7 @@ from zoneinfo import ZoneInfo
 import pandas as pd
 
 from src.indicators.vwap import compute_session_vwap
+from src.risk.lot_sizing import compute_lot_split
 from src.risk.stop_loss import SmaTrailParams, compute_sma_trail_sl
 
 IST = ZoneInfo("Asia/Kolkata")
@@ -112,7 +117,10 @@ class ReplayResult:
     auto_exit_price: float
     auto_exit_time: str          # ISO IST timestamp
     auto_exit_reason: str
-    auto_pnl_per_unit: float     # ₹ per unit, weighted 50/50 if TP1 hit
+    auto_pnl_per_unit: float     # ₹ per unit, weighted by lot split
+                                 # (tp1_fraction/tp2_fraction). For even
+                                 # lots this is 50/50; odd lots tilt the
+                                 # weight toward the TP1 leg.
     mfe: float                   # max(high) − entry across walked candles
     mae: float                   # entry − min(low) across walked candles
     intrabar_ambiguous: bool
@@ -131,6 +139,7 @@ def replay_exits(
     tp2: float,
     exit_cfg: ExitConfig,
     alert_timestamp: datetime,
+    lots: int = 2,
 ) -> ReplayResult | None:
     """Walk ``candles`` after ``alert_timestamp`` and return the outcome.
 
@@ -150,6 +159,10 @@ def replay_exits(
             candle. Candles with timestamp <= this are treated as the
             entry candle and earlier — the walk starts at the next
             candle.
+        lots: total lot count for the trade. Drives the lot split via
+            :func:`src.risk.lot_sizing.compute_lot_split`. Defaults to
+            ``2`` (clean 50/50) for legacy callers. When ``lots == 1``,
+            TP1 closes the full position — no TP2 leg, no breakeven.
 
     Returns:
         A ``ReplayResult`` describing the virtual outcome, OR ``None``
@@ -162,6 +175,11 @@ def replay_exits(
     """
     if candles is None or candles.empty:
         return None
+    tp1_lots, tp2_lots = compute_lot_split(max(1, int(lots)))
+    total_lots = tp1_lots + tp2_lots
+    tp1_frac = tp1_lots / total_lots
+    tp2_frac = tp2_lots / total_lots
+    single_lot = tp2_lots == 0
     required = {"timestamp", "open", "high", "low", "close"}
     missing = required - set(candles.columns)
     if missing:
@@ -265,8 +283,8 @@ def replay_exits(
             and cl < vwap
         ):
             if tp1_hit:
-                # Half banked at TP1, remainder hard-exits.
-                pnl_per_unit += 0.5 * (cl - entry)
+                # TP1 leg banked; remainder (tp2_frac) hard-exits.
+                pnl_per_unit += tp2_frac * (cl - entry)
                 outcome = PARTIAL
                 exit_reason = (
                     f"TP1 banked then HARD_EXIT @ {cl:.2f} "
@@ -312,7 +330,19 @@ def replay_exits(
 
             if tp2_touched:
                 # TP1 and TP2 hit in the same candle, no SL touch.
-                pnl_per_unit += 0.5 * (tp1 - entry) + 0.5 * (tp2 - entry)
+                # Single-lot trades cannot run to TP2 — collapse to a
+                # full TP1 exit on this same candle.
+                if single_lot:
+                    pnl_per_unit += 1.0 * (tp1 - entry)
+                    outcome = TP1_HIT
+                    exit_price = tp1
+                    exit_time = ts.isoformat()
+                    exit_reason = (
+                        f"TP1_HIT @ {tp1:.2f} (single-lot full exit; "
+                        f"TP2 also touched in same candle)"
+                    )
+                    break
+                pnl_per_unit += tp1_frac * (tp1 - entry) + tp2_frac * (tp2 - entry)
                 outcome = TP2_HIT
                 exit_price = tp2
                 exit_time = ts.isoformat()
@@ -323,18 +353,29 @@ def replay_exits(
                 break
 
             if tp1_touched:
-                # Half exits at TP1. Under Method 1/2, move SL to
-                # breakeven if config ON. Under Method 3, breakeven does
-                # NOT apply — the SMA trail continues to manage the SL
-                # on the second leg.
-                pnl_per_unit += 0.5 * (tp1 - entry)
+                # Single-lot trades cannot split — close the full
+                # position at TP1, no breakeven step, no TP2 monitoring.
+                if single_lot:
+                    pnl_per_unit += 1.0 * (tp1 - entry)
+                    outcome = TP1_HIT
+                    exit_price = tp1
+                    exit_time = ts.isoformat()
+                    exit_reason = (
+                        f"TP1_HIT @ {tp1:.2f} (single-lot full exit)"
+                    )
+                    break
+                # Multi-lot: exit tp1_frac at TP1, runner stays open.
+                # Under Method 1/2, move SL to breakeven if config ON.
+                # Under Method 3, breakeven does NOT apply — the SMA
+                # trail continues to manage the SL on the second leg.
+                pnl_per_unit += tp1_frac * (tp1 - entry)
                 tp1_hit = True
                 if (
                     trail_cfg is None
                     and exit_cfg.move_sl_to_breakeven_after_tp1
                 ):
                     current_sl = float(entry)
-                # Continue walking with remaining 50%.
+                # Continue walking with remaining tp2_frac of position.
                 continue
 
         else:
@@ -343,7 +384,7 @@ def replay_exits(
 
             if sl_touched and tp2_touched:
                 intrabar_ambiguous = True
-                pnl_per_unit += 0.5 * (current_sl - entry)
+                pnl_per_unit += tp2_frac * (current_sl - entry)
                 outcome = PARTIAL
                 exit_price = current_sl
                 exit_time = ts.isoformat()
@@ -354,7 +395,7 @@ def replay_exits(
                 break
 
             if sl_touched:
-                pnl_per_unit += 0.5 * (current_sl - entry)
+                pnl_per_unit += tp2_frac * (current_sl - entry)
                 outcome = PARTIAL
                 exit_price = current_sl
                 exit_time = ts.isoformat()
@@ -371,7 +412,7 @@ def replay_exits(
                 break
 
             if tp2_touched:
-                pnl_per_unit += 0.5 * (tp2 - entry)
+                pnl_per_unit += tp2_frac * (tp2 - entry)
                 outcome = TP2_HIT
                 exit_price = tp2
                 exit_time = ts.isoformat()
@@ -385,7 +426,7 @@ def replay_exits(
         last_close = float(last["close"])
         last_ts = pd.Timestamp(last["timestamp"]).isoformat()
         if tp1_hit:
-            pnl_per_unit += 0.5 * (last_close - entry)
+            pnl_per_unit += tp2_frac * (last_close - entry)
             outcome = TP1_HIT
             exit_reason = (
                 f"TP1 banked, second leg force-closed at 15:00 "
@@ -453,6 +494,16 @@ def replay_alert(
     tp1 = float(alert_row["tp1"])
     tp2 = float(alert_row["tp2"])
     alert_ts = pd.to_datetime(alert_row["timestamp_ist"])
+    # Lots drive the TP1/TP2 split fractions. Default to 2 (clean 50/50)
+    # only when an alert row is missing the field — production rows
+    # always carry it.
+    lots_raw = alert_row.get("lots") if hasattr(alert_row, "get") else None
+    try:
+        lots = int(lots_raw) if lots_raw not in (None, "") else 2
+    except (TypeError, ValueError):
+        lots = 2
+    if lots < 1:
+        lots = 2
 
     # Build the hard-square-off time once from config (HH:MM).
     hh, mm = (int(x) for x in app_config.time_rules.hard_squareoff_time.split(":"))
@@ -497,6 +548,7 @@ def replay_alert(
         tp2=tp2,
         exit_cfg=exit_cfg,
         alert_timestamp=alert_ts,
+        lots=lots,
     )
 
 
@@ -566,6 +618,13 @@ def replay_alert_all_methods(
     tp1 = float(alert_row["tp1"])
     tp2 = float(alert_row["tp2"])
     alert_ts = pd.to_datetime(alert_row["timestamp_ist"])
+    lots_raw = alert_row.get("lots") if hasattr(alert_row, "get") else None
+    try:
+        lots = int(lots_raw) if lots_raw not in (None, "") else 2
+    except (TypeError, ValueError):
+        lots = 2
+    if lots < 1:
+        lots = 2
 
     hh, mm = (int(x) for x in app_config.time_rules.hard_squareoff_time.split(":"))
     hard_cut = time(hh, mm)
@@ -582,6 +641,7 @@ def replay_alert_all_methods(
                 tp2=tp2,
                 exit_cfg=cfg,
                 alert_timestamp=alert_ts,
+                lots=lots,
             )
         except Exception:
             r = None

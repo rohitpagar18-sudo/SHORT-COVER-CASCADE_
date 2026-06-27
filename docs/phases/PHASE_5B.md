@@ -2490,9 +2490,13 @@ exactly. All numeric inputs come from config — nothing is hardcoded:
     the option's running session VWAP. Implementation reuses
     `src/indicators/vwap.compute_session_vwap` — no duplicate VWAP
     formula.
-  - **TP1** (1.5R normal / 2.0R expiry): on touch, exit 50%.
+  - **TP1** (1.5R normal / 2.0R expiry): on touch, exit `tp1_lots`
+    (see `compute_lot_split` — `ceil(lots/2)`, lot-aware).
     Targets do NOT move with the Method-3 trail.
-  - **TP2** (2.5R normal / 3.0R expiry): remaining 50% exits.
+  - **Single-lot trades (`tp2_lots == 0`):** TP1 touch closes the full
+    position immediately. No breakeven step, no TP2 monitoring.
+    Outcome = `TP1_HIT`.
+  - **TP2** (2.5R normal / 3.0R expiry): remaining `tp2_lots` exits.
   - **3:00 PM hard deadline**: any still-open virtual position is
     closed at the last walked candle's close.
 - **Intrabar ambiguity**: if one candle's range covers both a stop and
@@ -2523,7 +2527,7 @@ Append-only, never rename, never overwrite the manual columns.
 | `auto_exit_price`     | float  | Virtual exit price in ₹ (final leg close).     |
 | `auto_exit_time`      | str    | ISO IST timestamp of the exit candle.          |
 | `auto_exit_reason`    | str    | Human-readable narrative.                      |
-| `auto_pnl_per_unit`   | float  | ₹ per unit, weighted by 50/50 if TP1 hit.      |
+| `auto_pnl_per_unit`   | float  | ₹ per unit, weighted by lot split (`tp1_fraction` / `tp2_fraction`). Even lots = 50/50; odd lots tilt to TP1 leg. |
 | `mfe`                 | float  | Max favorable excursion = max(high) − entry.   |
 | `mae`                 | float  | Max adverse excursion = entry − min(low).      |
 | `intrabar_ambiguous`  | bool   | True if SL and TP touched in same candle.      |

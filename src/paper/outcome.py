@@ -51,6 +51,7 @@ from src.dashboard.outcome_replay import (
     ReplayResult,
     replay_alert,
 )
+from src.risk.lot_sizing import compute_lot_split
 
 
 # ---------------------------------------------------------------------------
@@ -104,12 +105,16 @@ def _r_multiple(
     risk_per_unit: float,
     is_expiry_day: bool,
     app_config: Any,
+    lots: int = 2,
 ) -> float:
     """Map the kernel's outcome onto §9's R ladder.
 
     TP1 / TP2 multipliers are read straight from ``risk_reward`` — the
-    single source of truth. The TP1+breakeven case is the §9-defined
-    half-banked R (``0.5 × tp1_R``).
+    single source of truth. The TP1+breakeven case banks the TP1 leg
+    (``tp1_fraction``) at full TP1 R and the runner at breakeven
+    (0R), so PARTIAL R = ``tp1_fraction × tp1_r``. For even lot counts
+    this is exactly ``0.5 × tp1_r``; odd counts (extra lot to TP1) tilt
+    it higher — e.g. 3-lot PARTIAL R = ``(2/3) × 1.5 = 1.0R``.
 
     The kernel already returns the exact ₹/unit P&L. We could just do
     ``pnl_per_unit / R`` for every case — and that is the fallback —
@@ -126,18 +131,22 @@ def _r_multiple(
         tp1_r = float(rr.normal_day_tp1_r)
         tp2_r = float(rr.normal_day_tp2_r)
 
+    safe_lots = max(1, int(lots))
+    tp1_lots, _ = compute_lot_split(safe_lots)
+    tp1_fraction = tp1_lots / safe_lots
+
     if paper_outcome == OUTCOME_SL or paper_outcome == OUTCOME_HARD_EXIT:
         return SL_R
     if paper_outcome == OUTCOME_TP2:
         return tp2_r
     if paper_outcome == OUTCOME_TP1_BE:
-        return 0.5 * tp1_r
+        return tp1_fraction * tp1_r
     if paper_outcome == OUTCOME_TP1_HIT:
         # TP1 banked + second leg EOD-flat at ≥SL. Use the per-unit P&L
         # the kernel computed — captures the actual close, not a label.
         if risk_per_unit and risk_per_unit > 0:
             return float(pnl_per_unit) / float(risk_per_unit)
-        return 0.5 * tp1_r
+        return tp1_fraction * tp1_r
     if paper_outcome == OUTCOME_OPEN_SQOFF:
         if risk_per_unit and risk_per_unit > 0:
             return float(pnl_per_unit) / float(risk_per_unit)
@@ -196,9 +205,11 @@ class PaperOutcome:
 
     alert_id: str
     outcome: str                  # OUTCOME_* constant
-    exit_price: float | None      # For TP1_BE/TP1_HIT: 50/50 weighted average
-                                  # of leg1 (TP1) and leg2 (second-leg exit).
-                                  # For all other outcomes: single-leg exit price.
+    exit_price: float | None      # For multi-lot TP1_BE/TP1_HIT: lot-weighted
+                                  # average of leg1 (TP1) and leg2 (second-leg
+                                  # exit), weighted by tp1_lots / tp2_lots.
+                                  # For single-lot trades and all single-leg
+                                  # outcomes: the single exit price.
     exit_time: str | None
     exit_reason: str
     realized_R: float
@@ -317,9 +328,12 @@ def compute_paper_outcome(
     entry = float(rep_row["entry"])
     sl = float(rep_row["sl"])
     risk_per_unit = abs(entry - sl)
-    kernel_status = (result.auto_order_status or "").upper()
     paper_outcome = _map_kernel_to_paper(result.auto_order_status)
 
+    # The kernel is lot-aware (it received ``lots`` via ``replay_alert``):
+    # ``auto_pnl_per_unit`` is already weighted by the lot split, and
+    # single-lot trades surface as TP1_HIT directly when TP1 was hit.
+    # The wrapper just scales to ₹ and computes split-leg analytics.
     paper_pnl_per_unit = float(result.auto_pnl_per_unit)
     paper_pnl = paper_pnl_per_unit * lots * lot_size
 
@@ -327,40 +341,27 @@ def compute_paper_outcome(
     leg2_price: float | None = None
     effective_exit_price: float | None = float(result.auto_exit_price)
 
-    # 1-lot override: a single lot CANNOT split 50/50. Whenever the
-    # kernel says TP2_HIT or PARTIAL (both assume a 2-leg exit), the
-    # paper layer collapses the trade to a full exit at TP1.
-    single_lot_override = (
-        lots == 1 and kernel_status in (TP2_HIT, PARTIAL)
-    )
-    if single_lot_override:
-        tp1_val = rep_row.get("tp1")
-        if tp1_val is None or (
-            isinstance(tp1_val, float) and pd.isna(tp1_val)
-        ):
-            tp1_price = entry  # safety — should never happen for real alerts
-        else:
-            tp1_price = float(tp1_val)
-        paper_outcome = OUTCOME_TP1_HIT
-        effective_exit_price = tp1_price
-        paper_pnl_per_unit = tp1_price - entry
-        paper_pnl = paper_pnl_per_unit * lot_size * lots
-    elif lots >= 2 and kernel_status in (TP2_HIT, PARTIAL):
-        # Real-world lot split: TP1 leg = floor(lots/2), TP2/second leg = remainder.
-        # Replaces the kernel's implicit 50/50 ₹-weighting so 3-lot, 5-lot, etc.
-        # report the correct paper P&L.
+    # Split-leg breakdown — TP1_BE and TP1_HIT outcomes bank a TP1 leg
+    # then exit the runner at the kernel's second-leg price. Single-lot
+    # trades have no runner (tp2_lots == 0): exit_price stays as the
+    # kernel's auto_exit_price (= TP1) and the leg fields stay None.
+    safe_lots = max(1, lots)
+    tp1_lots, tp2_lots = compute_lot_split(safe_lots)
+    if (
+        tp2_lots > 0
+        and paper_outcome in (OUTCOME_TP1_BE, OUTCOME_TP1_HIT)
+    ):
         tp1_val = rep_row.get("tp1")
         if tp1_val is not None and not (
             isinstance(tp1_val, float) and pd.isna(tp1_val)
         ):
-            tp1_price = float(tp1_val)
-            second_leg_price = float(result.auto_exit_price)
-            tp1_lots = lots // 2
-            tp2_lots = lots - tp1_lots
-            paper_pnl = (
-                (tp1_price - entry) * tp1_lots * lot_size
-                + (second_leg_price - entry) * tp2_lots * lot_size
-            )
+            leg1_price = float(tp1_val)
+            leg2_price = float(result.auto_exit_price)
+            # Lot-weighted average so the surfaced exit_price reflects
+            # actual lot quantities at each leg (not a blind 50/50).
+            effective_exit_price = (
+                tp1_lots * leg1_price + tp2_lots * leg2_price
+            ) / safe_lots
 
     realized_R = _r_multiple(
         paper_outcome,
@@ -368,24 +369,12 @@ def compute_paper_outcome(
         risk_per_unit,
         bool(is_expiry_day),
         app_config,
+        lots=safe_lots,
     )
 
     mfe_R = result.mfe / risk_per_unit if risk_per_unit else 0.0
     mae_R = result.mae / risk_per_unit if risk_per_unit else 0.0
     max_drawdown_R = -mae_R  # MAE is the worst-case R drawdown
-
-    # Split-leg exit breakdown — TP1_BE and TP1_HIT bank a TP1 leg then
-    # exit the remaining lots at the kernel's second-leg price. The
-    # 1-lot override collapses to a single full-position exit, so leg
-    # fields stay ``None``.
-    if not single_lot_override and paper_outcome in (OUTCOME_TP1_BE, OUTCOME_TP1_HIT):
-        tp1_val = rep_row.get("tp1")
-        if tp1_val is not None and not (
-            isinstance(tp1_val, float) and pd.isna(tp1_val)
-        ):
-            leg1_price = float(tp1_val)
-            leg2_price = float(result.auto_exit_price)
-            effective_exit_price = 0.5 * leg1_price + 0.5 * leg2_price
 
     return PaperOutcome(
         alert_id=alert_id,

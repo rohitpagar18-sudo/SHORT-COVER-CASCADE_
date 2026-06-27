@@ -128,3 +128,37 @@ def compute_lots(
         below_min_risk_band=below_min_risk_band,
         reason=reason,
     )
+
+
+def compute_lot_split(lots: int) -> tuple[int, int]:
+    """Return ``(tp1_lots, tp2_lots)`` for the 50/50 exit ladder.
+
+    Rule (scalable to any lot count, no TP3 leg):
+      - ``lots == 1`` -> ``(1, 0)``: full exit at TP1, no runner.
+      - ``lots >= 2`` -> ``tp1 = ceil(lots / 2)``, ``tp2 = lots - tp1``.
+        Odd lots: extra lot goes to TP1 (conservative — exit more at
+        the first target). Even lots: exactly 50/50.
+
+    Single source of truth for both paper simulation (5B-A kernel)
+    and Phase 8 live order placement.
+
+    Examples:
+        compute_lot_split(1)  -> (1, 0)   # single-lot: full exit at TP1
+        compute_lot_split(2)  -> (1, 1)   # 50/50
+        compute_lot_split(3)  -> (2, 1)   # odd: extra to TP1
+        compute_lot_split(4)  -> (2, 2)   # 50/50
+        compute_lot_split(5)  -> (3, 2)   # odd: extra to TP1
+        compute_lot_split(10) -> (5, 5)   # 50/50
+        compute_lot_split(20) -> (10, 10) # 50/50
+        compute_lot_split(30) -> (15, 15) # 50/50
+
+    Raises:
+        ValueError: if ``lots < 1``.
+    """
+    if lots < 1:
+        raise ValueError(f"lots must be >= 1, got {lots}")
+    if lots == 1:
+        return (1, 0)
+    tp1 = math.ceil(lots / 2)
+    tp2 = lots - tp1
+    return (tp1, tp2)

@@ -145,34 +145,36 @@ The SL method used by the kernel is whichever `stop_loss.method`
 Method 3, the `PARTIAL` second-leg exit reflects the SMA-trailed SL,
 not breakeven.
 
-> CHANGED 2026-06-20: `PaperOutcome` now exposes `exit_price_leg1` /
-> `exit_price_leg2` for two-leg outcomes (`TP1_BE`, `TP1_HIT`).
-> `leg1` = the alert's TP1, `leg2` = the kernel's second-leg exit
-> price. The surfaced `exit_price` becomes the 50/50 weighted
-> average of the two legs so single-figure consumers (Excel `Sell`
-> column, KPI sums) read the trade's true average sell instead of
-> just the second leg. Single-leg outcomes (`SL_HIT`, `TP2_HIT`,
-> `HARD_EXIT`, `OPEN_SQOFF`, `NO_DATA`) leave both leg fields `None`
+> CHANGED 2026-06-20 / refined 2026-06-27: `PaperOutcome` exposes
+> `exit_price_leg1` / `exit_price_leg2` for multi-lot two-leg
+> outcomes (`TP1_BE`, `TP1_HIT`). `leg1` = the alert's TP1,
+> `leg2` = the kernel's second-leg exit price. The surfaced
+> `exit_price` is the **lot-weighted** average — `(tp1_lots × leg1 +
+> tp2_lots × leg2) / lots` — so single-figure consumers (Excel `Sell`
+> column, KPI sums) read the trade's true average sell. Single-leg
+> outcomes (`SL_HIT`, `TP2_HIT`, `HARD_EXIT`, `OPEN_SQOFF`,
+> `NO_DATA`) and **single-lot trades** leave both leg fields `None`
 > and `exit_price` unchanged. The kernel's `auto_exit_price` field
 > is unmodified — this is a paper-layer presentation field only.
-> Frontend `TradesPerformance.tsx` renders "₹leg1 → ₹leg2" with a
-> tooltip showing both legs and the avg.
 
 `paper_pnl = auto_pnl_per_unit × lots × lot_size`. Lot size is
 read from `config.instruments.{nifty,banknifty}_lot_size` — never
 hardcoded.
 
-> CHANGED 2026-06-27: real-world lot-split rule. A single lot cannot
-> partially fill, so when `lots == 1` and the kernel returns
-> `TP2_HIT` or `PARTIAL` the paper layer rewrites the outcome to
-> `TP1_HIT`, exits the full lot at TP1, and sets
-> `paper_pnl = (tp1 − entry) × lot_size`. For `lots >= 2` with
-> `TP2_HIT` or `PARTIAL`, `paper_pnl` is recomputed from the actual
-> split — TP1 leg = `lots // 2`, second leg = `lots − lots // 2` —
-> replacing the kernel's implicit 50/50 ₹-weighting so 3-lot, 5-lot
-> etc. report the correct paper P&L. `realized_R` continues to use
-> the canonical 2.5R / 0.75R labels (R is the position-average
-> label, not the ₹ split). The kernel itself is NOT modified.
+> CHANGED 2026-06-27 (LOCKED): lot-split rule moved into the 5B-A
+> kernel — single source of truth. The kernel takes `lots` via
+> `replay_alert` and weights `auto_pnl_per_unit` by
+> `tp1_fraction = tp1_lots / lots` and
+> `tp2_fraction = tp2_lots / lots`, where
+> `tp1_lots = ceil(lots / 2)` and `tp2_lots = lots − tp1_lots`
+> (extra lot on odd counts goes to TP1). When `lots == 1` the kernel
+> closes the full position at TP1 directly — outcome = `TP1_HIT`,
+> no breakeven, no TP2 runner. The paper wrapper holds NO override:
+> `paper_pnl = auto_pnl_per_unit × lots × lot_size` is correct as-is.
+> `PARTIAL R` becomes `tp1_fraction × tp1_r` (0.75R for even lots on
+> a normal day; 1.0R for 3-lot odd). Helper:
+> `src/risk/lot_sizing.compute_lot_split()`. Scalable to any future
+> `position_sizing.*_max_lots` (10/20/30) without code change.
 
 ## Config (paper_trading block)
 
@@ -232,7 +234,8 @@ tests/
 
 | Point | Decision | Reason |
 |-------|----------|--------|
-| `TP1_HIT` (TP1 banked, second leg EOD-flat ≥ SL) R-multiple | Use the kernel's actual `pnl/R` rather than `0.5 × tp1_R` | The kernel already returned the real close price; using the canonical 0.75R label would mis-represent strong-finish days. SL_HIT and TP2_HIT keep the canonical labels because their P&L is deterministic. |
+| `TP1_HIT` (TP1 banked, second leg EOD-flat ≥ SL) R-multiple | Use the kernel's actual `pnl/R` rather than `tp1_fraction × tp1_R` | The kernel already returned the real close price; using the canonical label would mis-represent strong-finish days. SL_HIT and TP2_HIT keep the canonical labels because their P&L is deterministic. |
+| `PARTIAL` (`TP1_BE`) R-multiple | `tp1_fraction × tp1_r` (lot-dependent) | Locked 2026-06-27. For even lots = `0.5 × tp1_r` (unchanged). For odd lots (e.g. 3-lot) the TP1 leg is `ceil(lots/2) = 2` of 3, so PARTIAL R = `(2/3) × 1.5 = 1.0R`. `tp1_fraction = ceil(lots/2) / lots`. For lots=1 (`tp2=0`), TP1 closes the full position → outcome is always `TP1_HIT`, never `PARTIAL`. |
 | `OPEN_SQOFF` outcome label | Renamed from kernel's `EOD_FLAT` | "EOD_FLAT" was confusing alongside `TP1_HIT` (which is also EOD-flat). `OPEN_SQOFF` = "still open, forced out at hard squareoff". |
 | `HARD_EXIT` R | −1R (treated as full SL) | Strategy doc §7 treats hard-exit-below-VWAP as a discretionary stop — same magnitude as SL for paper accounting. |
 | Tie-break beyond `candle_timestamp` + `relation_priority` | File order | Stable, deterministic, matches "first seen wins" intuition. |

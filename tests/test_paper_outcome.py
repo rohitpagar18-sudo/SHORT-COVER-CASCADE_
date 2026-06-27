@@ -103,13 +103,16 @@ def test_tp1_be_outcome_mapping(base_alert, config):
     kernel = replay_alert(base_alert, candles, cfg)
     assert kernel.auto_order_status == PARTIAL
     assert po.outcome == OUTCOME_TP1_BE
-    # Normal day → 0.5 × 1.5 = 0.75R inherited from risk_reward.
-    assert po.realized_R == pytest.approx(0.5 * cfg.risk_reward.normal_day_tp1_r)
+    # PARTIAL R = tp1_fraction × tp1_r. 3-lot ceil split = (2, 1) →
+    # tp1_fraction = 2/3, normal_day_tp1_r = 1.5 → 1.0R.
+    assert po.realized_R == pytest.approx(
+        (2 / 3) * cfg.risk_reward.normal_day_tp1_r
+    )
 
 
 def test_tp1_be_outcome_stores_both_leg_exit_prices(base_alert, config):
     """TP1_BE must expose leg1=tp1, leg2=second-leg exit, and the
-    surfaced ``exit_price`` becomes the 50/50 weighted average of the
+    surfaced ``exit_price`` becomes the lot-weighted average of the
     two legs (the bug fix). The Phase 5B-A kernel's
     ``auto_exit_price`` is still the raw second-leg price; that field
     is the kernel's contract and is exposed separately for
@@ -127,9 +130,11 @@ def test_tp1_be_outcome_stores_both_leg_exit_prices(base_alert, config):
     # (=breakeven entry under Method 1).
     assert po.exit_price_leg1 == pytest.approx(165.0)
     assert po.exit_price_leg2 == pytest.approx(150.0)
-    # Surfaced exit_price = weighted average so the "Sell" column
-    # reads truthfully for split-leg trades.
-    assert po.exit_price == pytest.approx(0.5 * 165.0 + 0.5 * 150.0)
+    # 3-lot ceil split = (2, 1) → surfaced exit_price is the
+    # lot-weighted average (2 lots at 165 + 1 lot at 150) / 3.
+    assert po.exit_price == pytest.approx(
+        (2 * 165.0 + 1 * 150.0) / 3.0
+    )
 
 
 def test_sl_hit_outcome_leg_prices_are_none(base_alert, config):
@@ -282,15 +287,17 @@ def test_paper_trading_block_has_no_r_override_fields(config):
     )
 
 
-def test_single_lot_tp2hit_overrides_to_tp1hit(base_alert, config):
-    """1 lot cannot split — TP2_HIT must collapse to TP1_HIT (full lot at TP1)."""
+def test_single_lot_tp1hit_full_exit(base_alert, config):
+    """lots=1 cannot split — the kernel itself closes the full position at TP1,
+    so a candle where both TP1 and TP2 touch still resolves to TP1_HIT."""
     base_alert["lots"] = 1
     candles = pd.DataFrame(_prefix() + [
         _candle(10, 5, 150, 166, 149, 165),
         _candle(10, 10, 165, 176, 160, 174),
     ])
     kernel = replay_alert(base_alert, candles, config)
-    assert kernel.auto_order_status == TP2_HIT  # kernel still says TP2
+    # Kernel is now lot-aware: lots=1 → full exit at TP1 → TP1_HIT.
+    assert kernel.auto_order_status == TP1_HIT
     po = compute_paper_outcome(base_alert, candles=candles, app_config=config)
     assert po.outcome == OUTCOME_TP1_HIT
     assert po.exit_price == pytest.approx(base_alert["tp1"])
@@ -300,18 +307,19 @@ def test_single_lot_tp2hit_overrides_to_tp1hit(base_alert, config):
     assert po.exit_price_leg2 is None
 
 
-def test_single_lot_partial_overrides_to_tp1hit(base_alert, config):
-    """1 lot + kernel PARTIAL → override to TP1_HIT (no second leg)."""
+def test_single_lot_tp1_then_drop_full_exit(base_alert, config):
+    """lots=1 + later breakeven drop → kernel still exits the full lot at TP1.
+    No second leg can hit breakeven because there is no second leg."""
     cfg = config.model_copy(
         update={"stop_loss": config.stop_loss.model_copy(update={"method": 1})}
     )
     base_alert["lots"] = 1
     candles = pd.DataFrame(_prefix() + [
-        _candle(10, 5, 150, 166, 149, 165),    # TP1 banked
-        _candle(10, 10, 165, 168, 138, 142),   # second leg hits breakeven SL
+        _candle(10, 5, 150, 166, 149, 165),    # TP1 — single lot exits here
+        _candle(10, 10, 165, 168, 138, 142),   # would have hit breakeven SL
     ])
     kernel = replay_alert(base_alert, candles, cfg)
-    assert kernel.auto_order_status == PARTIAL
+    assert kernel.auto_order_status == TP1_HIT
     po = compute_paper_outcome(base_alert, candles=candles, app_config=cfg)
     assert po.outcome == OUTCOME_TP1_HIT
     assert po.exit_price == pytest.approx(base_alert["tp1"])

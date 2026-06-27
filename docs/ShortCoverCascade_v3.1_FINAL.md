@@ -446,9 +446,17 @@ Execute these steps in exact order when scanning each closed 5m candle:
 
 26\.   On fill: place SL bracket order immediately
 
-27\.   On TP1 hit: exit 50%, move SL to breakeven, monitor TP2
+27\.   On TP1 hit: exit `tp1_lots` (= `ceil(total_lots / 2)`).
+       If `tp2_lots > 0`: move SL to breakeven (Method 1/2) or keep trailing (Method 3), monitor TP2.
+       If `tp2_lots == 0` (single-lot trade): position fully closed — no breakeven, no TP2 monitoring.
 
-28\.   On TP2 hit: exit remaining 50%, log trade
+28\.   On TP2 hit: exit remaining `tp2_lots`, log trade.
+
+**Lot exit rule (50/50, scalable to any lot count):**
+`tp1_lots = ceil(total_lots / 2)`, `tp2_lots = total_lots − tp1_lots`.
+Odd counts: extra lot exits at TP1. No TP3 leg. No other split modes.
+Implemented in `src/risk/lot_sizing.compute_lot_split()` — used by both
+paper simulation (5B-A kernel) and Phase 8 live orders.
 
 29\.   On SL hit: exit, increment daily SL counter, start 15-min cooldown timer, mark strike (if 2nd SL on same strike)
 
@@ -482,9 +490,9 @@ ENTRY: ₹152.50 (LIMIT)
 
 SL: ₹140.00 (Method 1, base −10 × 1.0)
 
-TP1: ₹171.25 (R × 1.5, exit 50%)
+TP1: ₹171.25 (R × 1.5, exit `tp1_lots` = ceil(lots/2))
 
-TP2: ₹183.75 (R × 2.5, exit 50%)
+TP2: ₹183.75 (R × 2.5, exit `tp2_lots` = lots − tp1_lots)
 
  
 

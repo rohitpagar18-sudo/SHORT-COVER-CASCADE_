@@ -237,6 +237,27 @@ revisit without explicit user approval.
   auto_pnl_method1/2/3 + auto_exit_method1/2/3 columns (analysis-only,
   decision deferred to Phase 7). Shadow columns never feed paper_pnl or win-rate.
 
+### Lot Exit Ladder (50/50 Rule — Locked)
+- Split: `tp1_lots = ceil(lots / 2)`, `tp2_lots = lots − tp1_lots`.
+- Odd lots: extra lot goes to TP1 (conservative). Even lots: exact 50/50.
+- Special case: `lots == 1` → full exit at TP1. No breakeven step, no TP2 runner.
+- No TP3 leg. Two exits only.
+- Implemented in: `src/risk/lot_sizing.compute_lot_split()`.
+- Used by: `outcome_replay.py` (paper sim + Phase 7 backtest) and Phase 8 live orders.
+- The 5B-A kernel takes `lots` and weights `auto_pnl_per_unit` by
+  `tp1_fraction` / `tp2_fraction`. The paper wrapper no longer holds
+  a separate 1-lot or floor-based override — the kernel is the single
+  source of truth for the split.
+- PARTIAL R = `tp1_fraction × tp1_r` (= 0.75R for even lots on a
+  normal day; 1.0R for 3-lot odd; 1.0R for 4-lot expiry day; etc.).
+- Scales to ANY future `position_sizing.*_max_lots` (10, 20, 30 …)
+  without code change.
+- Do NOT change the split ratio without explicit user approval.
+- Verified ladder:
+    lots=1  → (1, 0)   lots=2  → (1, 1)   lots=3  → (2, 1)
+    lots=4  → (2, 2)   lots=5  → (3, 2)   lots=10 → (5, 5)
+    lots=20 → (10, 10) lots=30 → (15, 15)
+
 ### Token Refresh Discipline
 - Kite: refresh DAILY before 9:15 AM via scripts/refresh_token_kite.py
 - Upstox: refresh ANNUALLY (365-day token via Analytics tab)

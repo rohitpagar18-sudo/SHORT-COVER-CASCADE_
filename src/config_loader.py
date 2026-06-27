@@ -481,7 +481,7 @@ class PaperOrderStrikesConfig(_Base):
     ``otm`` covers OTM1/OTM2/OTM3.
     """
 
-    itm: bool = False
+    itm: bool = True
     atm: bool = True
     otm: bool = False
 

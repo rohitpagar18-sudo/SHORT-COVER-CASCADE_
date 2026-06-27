@@ -353,16 +353,21 @@ paper_trading:
     - OTM3
 
   # Which strike relations are eligible for paper trades.
-  # Mirrors `strike.order_strikes` (the Phase 8 auto-order knob) but for
-  # paper simulation. Uses the simplified 3-way bucket: itm covers
+  # Mirrors `strike.alert_strikes` — every relation that fires a Telegram
+  # alert should also be paper-tracked, otherwise alerts on ITM/OTM strikes
+  # produce no paper row (no outcome, no P&L, no count) and the dashboard
+  # silently drops them. Uses the simplified 3-way bucket: itm covers
   # ITM1/ITM2/ITM3, otm covers OTM1/OTM2/OTM3. If the episode
   # representative's relation bucket is OFF here, the selector marks
   # the trade as SKIPPED (reason: "paper_order_strike not enabled").
   # At least one bucket must be ON, else the validator refuses to load.
   paper_order_strikes:
-    itm: OFF                             # OFF = ITM1/ITM2/ITM3 reps -> SKIPPED
+    itm: ON                              # ON = ITM1/ITM2/ITM3 reps eligible for paper trades.
+                                         # Matches strike.alert_strikes (itm1/itm2 ON) so every
+                                         # ITM alert produces a paper row + outcome.
     atm: ON                              # ATM = safest default, matches order_strikes
     otm: OFF                             # OFF = OTM1/OTM2/OTM3 reps -> SKIPPED
+                                         # (alert_strikes also has otm1/otm2/otm3 OFF)
 
   # ----- D2: selection caps (replayed in chronological order; §13/§14) -----
   max_trades_per_day: 5

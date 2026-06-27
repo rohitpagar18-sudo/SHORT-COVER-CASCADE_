@@ -22,6 +22,8 @@ import {
   type AdxDeepDive,
   type AdxBucket,
   type AdxProfile,
+  type C0ShadowReport,
+  type C0ShadowStats,
   type RiskReport,
   type InsightsReport,
   type InsightsBreakdownRow,
@@ -1092,7 +1094,10 @@ export default function DashboardReportsPage() {
             )}
           </Card>
 
-          {/* 5. DI Alignment (optional) */}
+          {/* 5b. C0 Direction Filter — Retroactive Shadow Analysis */}
+          <C0ShadowCard data={conditionsData?.c0_shadow_analysis ?? null} loading={loading && !conditionsData} />
+
+          {/* 6. DI Alignment (optional) */}
           {conditionsData?.di_alignment && (
             <Card>
               <CardTitle>DI Alignment (Informational)</CardTitle>
@@ -1664,6 +1669,148 @@ export default function DashboardReportsPage() {
         All times are IST (Asia/Kolkata). Paper P&L; health inferred from file activity.
       </div>
     </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// C0 Direction Filter — Retroactive Shadow Analysis (Condition Analysis tab)
+// ---------------------------------------------------------------------------
+
+function _c0FmtPct(v: number | null): string {
+  if (v === null || v === undefined || Number.isNaN(v)) return "—";
+  return `${v.toFixed(1)}%`;
+}
+
+function _c0FmtR(v: number | null): string {
+  if (v === null || v === undefined || Number.isNaN(v)) return "—";
+  return `${v.toFixed(2)}R`;
+}
+
+function C0BucketStat({
+  label,
+  stats,
+  tone,
+  minSample,
+}: {
+  label: string;
+  stats: C0ShadowStats;
+  tone: "emerald" | "rose";
+  minSample: number;
+}) {
+  const border = tone === "emerald" ? "border-emerald-200 dark:border-emerald-800" : "border-rose-200 dark:border-rose-800";
+  const bg = tone === "emerald" ? "bg-emerald-50 dark:bg-emerald-950/20" : "bg-rose-50 dark:bg-rose-950/20";
+  const head = tone === "emerald" ? "text-emerald-700 dark:text-emerald-300" : "text-rose-700 dark:text-rose-300";
+  const body = tone === "emerald" ? "text-emerald-900 dark:text-emerald-100" : "text-rose-900 dark:text-rose-100";
+  const sub = tone === "emerald" ? "text-emerald-700 dark:text-emerald-300" : "text-rose-700 dark:text-rose-300";
+
+  const tooFew = stats.n < minSample;
+
+  return (
+    <div className={`rounded-md border ${border} ${bg} p-3`}>
+      <div className={`text-[10px] uppercase tracking-wide ${head}`}>{label}</div>
+      <div className="mt-2 space-y-1">
+        <div className={`text-sm font-semibold ${body}`}>n = {stats.n}</div>
+        {tooFew ? (
+          <div className={`text-xs italic ${sub}`}>
+            n={stats.n} — too few to conclude (need ≥{minSample})
+          </div>
+        ) : (
+          <>
+            <div className={`text-xs ${sub}`}>
+              Win Rate: {_c0FmtPct(stats.win_rate)} ({stats.winners}W / {stats.losers}L)
+            </div>
+            <div className={`text-xs ${sub}`}>Avg R: {_c0FmtR(stats.avg_r)}</div>
+          </>
+        )}
+        <div className={`text-xs ${sub}`}>Paper P&amp;L: {inrSigned(stats.total_pnl)}</div>
+      </div>
+    </div>
+  );
+}
+
+function C0ShadowCard({
+  data,
+  loading,
+}: {
+  data: C0ShadowReport | null;
+  loading: boolean;
+}) {
+  return (
+    <Card className="border-blue-300 dark:border-blue-700">
+      <CardTitle>
+        <span className="text-blue-900 dark:text-blue-200">
+          C0 Direction Filter — Retroactive Analysis
+        </span>
+        <span className="ml-2 inline-flex items-center rounded-md border border-blue-300 bg-blue-50 px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-blue-700 dark:border-blue-700 dark:bg-blue-950/40 dark:text-blue-300">
+          OFF · Shadow
+        </span>
+      </CardTitle>
+
+      {loading ? (
+        <Skeleton className="h-[220px] w-full" />
+      ) : !data ? (
+        <div className="rounded-md border border-dashed border-line bg-line2/30 p-6 text-center text-sm text-muted">
+          No alert data available for C0 analysis.
+        </div>
+      ) : (
+        <div className="space-y-4">
+          <div className="rounded-md bg-blue-50 p-3 dark:bg-blue-950/20">
+            <div className="text-sm font-semibold text-blue-900 dark:text-blue-100">
+              Would filtering by spot-vs-VWAP alignment have improved results?
+            </div>
+            <div className="mt-1 text-xs text-blue-700 dark:text-blue-300">
+              {data.alerts_total} alerts · {data.aligned_count} aligned · {data.misaligned_count} misaligned
+              · C0 would have blocked {data.block_pct.toFixed(0)}%
+            </div>
+          </div>
+
+          <div className="grid grid-cols-2 gap-3">
+            <C0BucketStat
+              label="✓ C0 Aligned (spot direction matches option)"
+              stats={data.when_c0_aligned}
+              tone="emerald"
+              minSample={data.min_sample}
+            />
+            <C0BucketStat
+              label="✗ C0 Misaligned (spot opposes option)"
+              stats={data.when_c0_misaligned}
+              tone="rose"
+              minSample={data.min_sample}
+            />
+          </div>
+
+          <div className="rounded-md border border-blue-200 bg-blue-50/60 p-3 dark:border-blue-800 dark:bg-blue-950/10">
+            <div className="text-[10px] uppercase tracking-wide text-blue-700 dark:text-blue-300">
+              Paper P&amp;L Delta (Aligned − Misaligned)
+            </div>
+            <div
+              className={`mt-1 text-lg font-semibold ${
+                data.pnl_delta > 0
+                  ? "text-emerald-700 dark:text-emerald-300"
+                  : data.pnl_delta < 0
+                    ? "text-rose-700 dark:text-rose-300"
+                    : "text-slate-700 dark:text-slate-300"
+              }`}
+            >
+              {inrSigned(data.pnl_delta)}
+            </div>
+            <div className="mt-1 text-xs text-blue-700 dark:text-blue-300">
+              Positive ⇒ aligned bucket nets more P&amp;L. Negative ⇒ misaligned bucket is more profitable.
+            </div>
+          </div>
+
+          <div className="rounded-md border-l-4 border-blue-400 bg-slate-50 px-3 py-2 text-sm font-semibold text-slate-800 dark:border-blue-500 dark:bg-slate-800/50 dark:text-slate-100">
+            {data.insight}
+          </div>
+
+          {data.join_note && (
+            <div className="rounded-md bg-slate-100 p-2 text-xs italic text-slate-600 dark:bg-slate-800 dark:text-slate-300">
+              {data.join_note}
+            </div>
+          )}
+        </div>
+      )}
+    </Card>
   );
 }
 

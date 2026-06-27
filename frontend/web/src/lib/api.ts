@@ -484,12 +484,35 @@ export type AdxDeepDive = {
   loser_profile: AdxProfile;
 };
 
+export type C0ShadowStats = {
+  n: number;
+  winners: number;
+  losers: number;
+  win_rate: number | null;
+  avg_r: number | null;
+  total_pnl: number;
+};
+
+export type C0ShadowReport = {
+  alerts_total: number;
+  aligned_count: number;
+  misaligned_count: number;
+  block_pct: number;
+  when_c0_aligned: C0ShadowStats;
+  when_c0_misaligned: C0ShadowStats;
+  pnl_delta: number;
+  insight: string;
+  min_sample: number;
+  join_note?: string;
+};
+
 export type ConditionsReport = {
   pass_rates: ConditionPassRate[];
   funnel: FunnelBucket[];
   bottleneck: BottleneckItem[];
   c5_shadow: C5ShadowReport;
   adx_deep_dive: AdxDeepDive | null;
+  c0_shadow_analysis: C0ShadowReport | null;
   di_alignment?: DIAlignment;
 };
 

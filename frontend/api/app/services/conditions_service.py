@@ -259,12 +259,19 @@ def get_conditions_report(date_from: Optional[str], date_to: Optional[str]) -> D
 
     adx_deep_dive = _build_adx_deep_dive(signals)
 
+    # ---- C0 Direction Filter — Retroactive Shadow Analysis ----
+    # Reads spot_price + spot_vwap (already on every alert row) and asks:
+    # would C0 have passed or blocked this alert? Then joins paper trades
+    # to compare bucket outcomes. Pure read-only; no live-bot impact.
+    c0_shadow_analysis = _compute_c0_shadow(signals)
+
     return {
         "pass_rates": pass_rates,
         "funnel": funnel,
         "bottleneck": bottleneck,
         "c5_shadow": c5_shadow,
         "adx_deep_dive": adx_deep_dive,
+        "c0_shadow_analysis": c0_shadow_analysis,
         **({"di_alignment": di_alignment} if di_alignment else {}),
     }
 
@@ -615,3 +622,199 @@ def _check_c5_join_coverage(c5_alerts: List[Dict[str, Any]]) -> Optional[str]:
         return f"Limited join coverage: {join_coverage:.0f}% of C5 alerts matched to paper trades."
 
     return None
+
+
+# ---------------------------------------------------------------------------
+# C0 Direction Filter — Retroactive Shadow Analysis
+# ---------------------------------------------------------------------------
+# C0 is currently OFF (c0_spot_trend_filter_enabled). When OFF, alerts fire
+# for both CE and PE regardless of spot-vs-VWAP direction. This shadow layer
+# asks: for each fired alert, would C0 have passed or blocked it? Then
+# compares paper-trade outcomes between the two buckets.
+#
+# Win/Loss bucketing (per task spec — intentionally different from C5):
+#   Win  = outcome in ("TP2_HIT", "TP1_HIT", "TP1_BE")
+#   Loss = outcome == "SL_HIT"
+#   Excluded: NO_DATA, OPEN_SQOFF, HARD_EXIT (unfinalized)
+
+_C0_MIN_SAMPLE = 10
+_C0_WIN_OUTCOMES = {"TP2_HIT", "TP1_HIT", "TP1_BE"}
+_C0_LOSS_OUTCOMES = {"SL_HIT"}
+_C0_EXCLUDED_OUTCOMES = {None, "", "NO_DATA", "OPEN_SQOFF", "HARD_EXIT"}
+
+
+def _c0_would_pass(option_type: Optional[str], spot: Optional[float], vwap: Optional[float]) -> Optional[bool]:
+    """Pure C0 rule. Returns None if inputs are missing."""
+    if option_type not in ("CE", "PE"):
+        return None
+    if not isinstance(spot, (int, float)) or not isinstance(vwap, (int, float)):
+        return None
+    if option_type == "CE":
+        return spot > vwap
+    return spot < vwap  # PE
+
+
+def _c0_bucket_stats(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """Compute {n, win_rate, avg_r, total_pnl} for a bucket.
+
+    Applies the minimum-sample guard: if n < _C0_MIN_SAMPLE, win_rate and
+    avg_r are returned as None (UI renders "too few to conclude"). Counts
+    and total_pnl are always returned for transparency.
+    """
+    n = len(rows)
+    winners = sum(1 for r in rows if r["outcome"] in _C0_WIN_OUTCOMES)
+    losers = sum(1 for r in rows if r["outcome"] in _C0_LOSS_OUTCOMES)
+    total_pnl = sum(
+        float(r["paper_pnl"]) for r in rows
+        if isinstance(r.get("paper_pnl"), (int, float))
+    )
+
+    if n < _C0_MIN_SAMPLE:
+        return {
+            "n": n,
+            "winners": winners,
+            "losers": losers,
+            "win_rate": None,
+            "avg_r": None,
+            "total_pnl": round(total_pnl, 2),
+        }
+
+    decided = winners + losers
+    win_rate = (winners / decided * 100.0) if decided > 0 else 0.0
+    r_vals = [float(r["realized_R"]) for r in rows if isinstance(r.get("realized_R"), (int, float))]
+    avg_r = (sum(r_vals) / len(r_vals)) if r_vals else 0.0
+    return {
+        "n": n,
+        "winners": winners,
+        "losers": losers,
+        "win_rate": round(win_rate, 1),
+        "avg_r": round(avg_r, 2),
+        "total_pnl": round(total_pnl, 2),
+    }
+
+
+def _c0_insight_line(
+    aligned: Dict[str, Any], misaligned: Dict[str, Any], block_pct: float
+) -> str:
+    """Auto-generate the bold insight beneath the C0 comparison table."""
+    a_wr, m_wr = aligned.get("win_rate"), misaligned.get("win_rate")
+    if a_wr is None or m_wr is None:
+        return (
+            f"C0 would have blocked {block_pct:.0f}% of alerts. "
+            "Not enough finalized trades in one bucket to conclude — collect more data."
+        )
+    if a_wr - m_wr >= 5.0:
+        return (
+            f"C0 would have blocked {block_pct:.0f}% of alerts. "
+            "Aligned trades outperform — consider enabling."
+        )
+    if m_wr - a_wr >= 5.0:
+        return (
+            f"C0 would have blocked {block_pct:.0f}% of alerts. "
+            "Misaligned trades perform better — keep OFF."
+        )
+    return (
+        f"C0 would have blocked {block_pct:.0f}% of alerts. "
+        "No significant quality difference — keep OFF."
+    )
+
+
+def _compute_c0_shadow(signals: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    """Build the C0 shadow report.
+
+    Population: alert rows where all_passed=True AND spot_price + spot_vwap
+    are present. Joined to TAKEN + representative paper trades on
+    (symbol, strike, option_type, candle_timestamp).
+
+    Returns None if there are no qualifying alerts (UI renders placeholder).
+    """
+    alerts = [
+        s for s in signals
+        if s.get("event_type") == "alert"
+        and s.get("all_passed") is True
+        and isinstance(s.get("spot_price"), (int, float))
+        and isinstance(s.get("spot_vwap"), (int, float))
+        and s.get("option_type") in ("CE", "PE")
+    ]
+    if not alerts:
+        return None
+
+    try:
+        paper_trades = read_jsonl(PAPER_TRADES_JSONL, max_lines=20_000)
+    except Exception:
+        paper_trades = []
+
+    # Index TAKEN + representative + finalized trades by alert key.
+    trades_by_key: Dict[tuple, Dict[str, Any]] = {}
+    for t in paper_trades:
+        if t.get("decision") != "TAKEN":
+            continue
+        if t.get("paper_role") != "representative":
+            continue
+        if t.get("outcome") in _C0_EXCLUDED_OUTCOMES:
+            continue
+        key = (
+            t.get("symbol"), t.get("strike"),
+            t.get("option_type"), t.get("candle_timestamp"),
+        )
+        trades_by_key[key] = t
+
+    aligned_rows: List[Dict[str, Any]] = []
+    misaligned_rows: List[Dict[str, Any]] = []
+    matched = 0
+
+    for a in alerts:
+        passes = _c0_would_pass(
+            a.get("option_type"), a.get("spot_price"), a.get("spot_vwap"),
+        )
+        if passes is None:
+            continue
+        key = (
+            a.get("symbol"), a.get("strike"),
+            a.get("option_type"), a.get("timestamp_ist"),
+        )
+        trade = trades_by_key.get(key)
+        if trade is None:
+            continue
+        matched += 1
+        row = {
+            "outcome": trade.get("outcome"),
+            "realized_R": trade.get("realized_R"),
+            "paper_pnl": trade.get("paper_pnl"),
+        }
+        (aligned_rows if passes else misaligned_rows).append(row)
+
+    alerts_total = len(alerts)
+    join_pct = (matched / alerts_total * 100.0) if alerts_total else 0.0
+    aligned_count_all = sum(
+        1 for a in alerts
+        if _c0_would_pass(a.get("option_type"), a.get("spot_price"), a.get("spot_vwap")) is True
+    )
+    misaligned_count_all = alerts_total - aligned_count_all
+    block_pct = (misaligned_count_all / alerts_total * 100.0) if alerts_total else 0.0
+
+    aligned_stats = _c0_bucket_stats(aligned_rows)
+    misaligned_stats = _c0_bucket_stats(misaligned_rows)
+
+    pnl_delta = round(aligned_stats["total_pnl"] - misaligned_stats["total_pnl"], 2)
+
+    report: Dict[str, Any] = {
+        "alerts_total": alerts_total,
+        "aligned_count": aligned_count_all,
+        "misaligned_count": misaligned_count_all,
+        "block_pct": round(block_pct, 1),
+        "when_c0_aligned": aligned_stats,
+        "when_c0_misaligned": misaligned_stats,
+        "pnl_delta": pnl_delta,
+        "insight": _c0_insight_line(aligned_stats, misaligned_stats, block_pct),
+        "min_sample": _C0_MIN_SAMPLE,
+    }
+
+    if alerts_total > 0 and join_pct < 80.0:
+        report["join_note"] = (
+            f"Limited join coverage: only {matched}/{alerts_total} alerts "
+            f"({join_pct:.0f}%) matched a finalized paper trade — older "
+            "alerts may pre-date paper logging."
+        )
+
+    return report

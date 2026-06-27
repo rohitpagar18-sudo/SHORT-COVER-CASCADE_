@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Download, RefreshCw } from "lucide-react";
+import { Download, Info, RefreshCw } from "lucide-react";
 import {
   Bar, BarChart, CartesianGrid, Cell, Legend,
   ReferenceLine, ResponsiveContainer, Tooltip as RTooltip,
@@ -88,6 +88,12 @@ function startOfWeekMon(d: Date): Date {
   return out;
 }
 
+function endOfWeekSun(d: Date): Date {
+  const s = startOfWeekMon(d);
+  s.setDate(s.getDate() + 6);
+  return s;
+}
+
 function startOfMonth(d: Date): Date {
   return new Date(d.getFullYear(), d.getMonth(), 1);
 }
@@ -97,7 +103,14 @@ function startOfQuarter(d: Date): Date {
   return new Date(d.getFullYear(), qMonth, 1);
 }
 
-type DatePreset = "this_week" | "this_month" | "this_quarter" | "last_30" | "last_90" | "custom";
+type DatePreset =
+  | "this_week"
+  | "last_week"
+  | "this_month"
+  | "this_quarter"
+  | "last_30"
+  | "last_90"
+  | "custom";
 
 function applyPreset(preset: DatePreset): { from: string; to: string } {
   const t = todayIST();
@@ -105,6 +118,11 @@ function applyPreset(preset: DatePreset): { from: string; to: string } {
   switch (preset) {
     case "this_week":
       return { from: toISO(startOfWeekMon(t)), to: today };
+    case "last_week": {
+      const ref = new Date(t);
+      ref.setDate(ref.getDate() - 7);
+      return { from: toISO(startOfWeekMon(ref)), to: toISO(endOfWeekSun(ref)) };
+    }
     case "this_month":
       return { from: toISO(startOfMonth(t)), to: today };
     case "this_quarter":
@@ -126,6 +144,7 @@ function applyPreset(preset: DatePreset): { from: string; to: string } {
 
 const PRESET_LABELS: Record<DatePreset, string> = {
   this_week: "This Week",
+  last_week: "Last Week",
   this_month: "This Month",
   this_quarter: "This Quarter",
   last_30: "Last 30 Days",
@@ -195,6 +214,7 @@ type KpiCardProps = {
   label: string;
   kpi: ReportKpi | undefined;
   format?: "inr" | "pct" | "mult" | "count";
+  infoTooltip?: string;
 };
 
 function formatKpiValue(value: number | null, format: KpiCardProps["format"]): string {
@@ -211,7 +231,7 @@ function formatKpiValue(value: number | null, format: KpiCardProps["format"]): s
   }
 }
 
-function KpiCard({ label, kpi, format = "inr" }: KpiCardProps) {
+function KpiCard({ label, kpi, format = "inr", infoTooltip }: KpiCardProps) {
   const value = kpi?.value ?? null;
   const spark = kpi?.spark ?? [];
   const isPositive = value == null || value >= 0;
@@ -227,7 +247,19 @@ function KpiCard({ label, kpi, format = "inr" }: KpiCardProps) {
 
   return (
     <div className="rounded-xl border border-line bg-card p-4 shadow-card">
-      <div className="text-[10px] uppercase tracking-wide text-muted">{label}</div>
+      <div className="flex items-center gap-1 text-[10px] uppercase tracking-wide text-muted">
+        <span>{label}</span>
+        {infoTooltip && (
+          <button
+            type="button"
+            title={infoTooltip}
+            aria-label={`About ${label}`}
+            className="inline-flex items-center text-muted hover:text-ink"
+          >
+            <Info className="h-3 w-3" />
+          </button>
+        )}
+      </div>
       <div className={`mt-2 text-xl font-semibold ${valueCls}`}>
         {formatKpiValue(value, format)}
       </div>
@@ -539,18 +571,30 @@ export default function DashboardReportsPage() {
 
   const onPickPreset = useCallback((p: DatePreset) => {
     setPreset(p);
-    if (p !== "custom") {
-      const r = applyPreset(p);
-      setFrom(r.from);
-      setTo(r.to);
+    if (p === "custom") {
+      // Custom: do not auto-apply. User picks From/To and clicks Apply.
+      return;
     }
-  }, []);
+    const r = applyPreset(p);
+    setFrom(r.from);
+    setTo(r.to);
+    // Auto-apply preset immediately — no Apply click needed.
+    setAppliedFrom(r.from);
+    setAppliedTo(r.to);
+    setLoading(true);
+    if (timerRef.current) window.clearTimeout(timerRef.current);
+    fetchData(r.from, r.to, agg);
+  }, [agg, fetchData]);
 
   const onApply = useCallback(() => {
+    // Manual refresh / confirm: commits staged custom dates (if any) and
+    // forces a re-fetch with the currently active parameters.
     setAppliedFrom(from);
     setAppliedTo(to);
     setLoading(true);
-  }, [from, to]);
+    if (timerRef.current) window.clearTimeout(timerRef.current);
+    fetchData(from, to, agg);
+  }, [from, to, agg, fetchData]);
 
   const onRefresh = useCallback(() => {
     setLoading(true);
@@ -665,6 +709,7 @@ export default function DashboardReportsPage() {
           )}
           <button
             onClick={onApply}
+            title="Refresh with current date range"
             className="rounded-md border border-emerald-500 bg-emerald-500 px-3 py-1.5 text-sm font-medium text-white hover:bg-emerald-600"
           >
             Apply
@@ -712,7 +757,18 @@ export default function DashboardReportsPage() {
               <KpiCard label="Profit Factor" kpi={data?.kpis.profit_factor} format="mult" />
               <KpiCard label="Avg Win" kpi={data?.kpis.avg_win} format="inr" />
               <KpiCard label="Avg Loss" kpi={data?.kpis.avg_loss} format="inr" />
-              <KpiCard label="Expectancy" kpi={data?.kpis.expectancy} format="inr" />
+              <KpiCard
+                label="Expectancy"
+                kpi={data?.kpis.expectancy}
+                format="inr"
+                infoTooltip={
+                  "What is Expectancy?\n\n" +
+                  "Expected average profit or loss per trade.\n" +
+                  "Formula: (Win Rate × Avg Win ₹) − (Loss Rate × Avg Loss ₹)\n" +
+                  "A positive value means the strategy has a mathematical edge — " +
+                  "on average, each trade is expected to return this amount."
+                }
+              />
             </div>
           )}
 
@@ -895,7 +951,26 @@ export default function DashboardReportsPage() {
 
           {/* 2. Signal Funnel */}
           <Card>
-            <CardTitle>Signal Funnel</CardTitle>
+            <CardTitle>
+              <span className="inline-flex items-center gap-1">
+                Signal Funnel
+                <button
+                  type="button"
+                  title={
+                    "Signal Funnel — how to read this chart\n\n" +
+                    "Each bar shows how many scans cleared exactly that many conditions (0–5). " +
+                    "Most scans fail early (0–2 bars) because the strategy is selective. " +
+                    "The 'Alerted' bar counts scans where all 5 conditions passed and a " +
+                    "Telegram alert fired. A large 4/5 bar means one condition is repeatedly " +
+                    "blocking near-misses — check the Blocking Conditions list below."
+                  }
+                  aria-label="About Signal Funnel"
+                  className="inline-flex items-center text-muted hover:text-ink"
+                >
+                  <Info className="h-3.5 w-3.5" />
+                </button>
+              </span>
+            </CardTitle>
             {loading && !conditionsData ? (
               <Skeleton className="h-[200px] w-full" />
             ) : conditionsData?.funnel && conditionsData.funnel.length > 0 ? (

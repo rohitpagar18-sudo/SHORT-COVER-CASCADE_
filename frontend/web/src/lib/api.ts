@@ -252,6 +252,7 @@ export type TradeFilters = {
   option_type: string | null;
   status: string | null;
   outcome: string | null;
+  relation: string | null;
 };
 
 export type TradesResponse = {

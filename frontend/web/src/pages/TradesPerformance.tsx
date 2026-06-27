@@ -32,6 +32,15 @@ type OutcomeFilter =
   | "NO_DATA"
   | "PARTIAL"
   | "WOULD_SKIP";
+type RelationFilter =
+  | "ALL"
+  | "ATM"
+  | "ITM1"
+  | "ITM2"
+  | "ITM3"
+  | "OTM1"
+  | "OTM2"
+  | "OTM3";
 
 type Preset =
   | "today"
@@ -114,14 +123,16 @@ function presetLabel(p: Preset): string {
 }
 
 export default function TradesPerformancePage() {
-  const initial = applyPreset("this_week");
-  const [preset, setPreset] = useState<Preset>("this_week");
+  // Default preset = "Today" — initial state + first auto-apply on mount.
+  const initial = applyPreset("today");
+  const [preset, setPreset] = useState<Preset>("today");
   const [from, setFrom] = useState<string>(initial.from);
   const [to, setTo] = useState<string>(initial.to);
   const [symbol, setSymbol] = useState<SymbolFilter>("ALL");
   const [optType, setOptType] = useState<TypeFilter>("ALL");
   const [status, setStatus] = useState<StatusFilter>("ALL");
   const [outcome, setOutcome] = useState<OutcomeFilter>("ALL");
+  const [relation, setRelation] = useState<RelationFilter>("ALL");
 
   // Applied filters (only update when user clicks "Apply").
   const [applied, setApplied] = useState({
@@ -131,6 +142,7 @@ export default function TradesPerformancePage() {
     optType: "ALL" as TypeFilter,
     status: "ALL" as StatusFilter,
     outcome: "ALL" as OutcomeFilter,
+    relation: "ALL" as RelationFilter,
     // Immediately apply the initial preset — no need to click Apply.
   });
 
@@ -148,6 +160,7 @@ export default function TradesPerformancePage() {
     option_type: applied.optType === "ALL" ? undefined : applied.optType,
     status: applied.status === "ALL" ? undefined : applied.status,
     outcome: applied.outcome === "ALL" ? undefined : applied.outcome,
+    relation: applied.relation === "ALL" ? undefined : applied.relation,
   }), [applied]);
 
   // Trades + KPIs: poll every 15s.
@@ -206,6 +219,7 @@ export default function TradesPerformancePage() {
       optType?: TypeFilter;
       status?: StatusFilter;
       outcome?: OutcomeFilter;
+      relation?: RelationFilter;
     }) => {
       setApplied({
         from: overrides?.from ?? from,
@@ -214,9 +228,10 @@ export default function TradesPerformancePage() {
         optType: overrides?.optType ?? optType,
         status: overrides?.status ?? status,
         outcome: overrides?.outcome ?? outcome,
+        relation: overrides?.relation ?? relation,
       });
     },
-    [from, to, symbol, optType, status, outcome],
+    [from, to, symbol, optType, status, outcome, relation],
   );
 
   const onPickPreset = useCallback((p: Preset) => {
@@ -246,10 +261,11 @@ export default function TradesPerformancePage() {
     setOptType("ALL");
     setStatus("ALL");
     setOutcome("ALL");
+    setRelation("ALL");
     // Auto-apply so the reset is visible immediately, no Apply needed.
     applyFilters({
       from: r.from, to: r.to,
-      symbol: "ALL", optType: "ALL", status: "ALL", outcome: "ALL",
+      symbol: "ALL", optType: "ALL", status: "ALL", outcome: "ALL", relation: "ALL",
     });
   }, [applyFilters]);
 
@@ -265,6 +281,7 @@ export default function TradesPerformancePage() {
         optType={optType}
         status={status}
         outcome={outcome}
+        relation={relation}
         onPickPreset={onPickPreset}
         onFromChange={(v) => { setFrom(v); setPreset("custom"); }}
         onToChange={(v) => { setTo(v); setPreset("custom"); }}
@@ -272,11 +289,10 @@ export default function TradesPerformancePage() {
         onOptType={setOptType}
         onStatus={setStatus}
         onOutcome={setOutcome}
+        onRelation={setRelation}
         onApply={onApply}
         onReset={onReset}
       />
-
-      <KpiRow trades={trades} err={tradesErr} />
 
       <TodaysTradesTable trades={trades} err={tradesErr} appliedFrom={applied.from} appliedTo={applied.to} />
 
@@ -288,6 +304,8 @@ export default function TradesPerformancePage() {
         groupBy={groupBy}
         onGroupByChange={setGroupBy}
       />
+
+      <KpiRow trades={trades} err={tradesErr} />
 
       <div className="pt-2 text-center text-xs text-muted">
         All times are IST (Asia/Kolkata). Paper P&L; updates each 5-min scan,
@@ -396,6 +414,7 @@ function FilterBar(props: {
   optType: TypeFilter;
   status: StatusFilter;
   outcome: OutcomeFilter;
+  relation: RelationFilter;
   onPickPreset: (p: Preset) => void;
   onFromChange: (v: string) => void;
   onToChange: (v: string) => void;
@@ -403,6 +422,7 @@ function FilterBar(props: {
   onOptType: (v: TypeFilter) => void;
   onStatus: (v: StatusFilter) => void;
   onOutcome: (v: OutcomeFilter) => void;
+  onRelation: (v: RelationFilter) => void;
   onApply: () => void;
   onReset: () => void;
 }) {
@@ -459,6 +479,8 @@ function FilterBar(props: {
           options={["ALL", "TAKEN", "SKIPPED"]} />
         <SelectBlock label="Outcome" value={props.outcome} onChange={(v) => props.onOutcome(v as OutcomeFilter)}
           options={["ALL", "TP2_HIT", "TP1_HIT", "SL_HIT", "NO_DATA", "PARTIAL", "WOULD_SKIP"]} />
+        <SelectBlock label="Relation" value={props.relation} onChange={(v) => props.onRelation(v as RelationFilter)}
+          options={["ALL", "ATM", "ITM1", "ITM2", "ITM3", "OTM1", "OTM2", "OTM3"]} />
         <div className="flex gap-2">
           <button
             onClick={props.onApply}

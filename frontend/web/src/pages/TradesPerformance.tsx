@@ -294,7 +294,7 @@ export default function TradesPerformancePage() {
         onReset={onReset}
       />
 
-      <TodaysTradesTable trades={trades} err={tradesErr} appliedFrom={applied.from} appliedTo={applied.to} />
+      <KpiRow trades={trades} err={tradesErr} />
 
       <DailyPnLPanel trades={trades} chartUnit={chartUnit} onUnitChange={setChartUnit} />
 
@@ -305,7 +305,7 @@ export default function TradesPerformancePage() {
         onGroupByChange={setGroupBy}
       />
 
-      <KpiRow trades={trades} err={tradesErr} />
+      <TodaysTradesTable trades={trades} err={tradesErr} appliedFrom={applied.from} appliedTo={applied.to} />
 
       <div className="pt-2 text-center text-xs text-muted">
         All times are IST (Asia/Kolkata). Paper P&L; updates each 5-min scan,

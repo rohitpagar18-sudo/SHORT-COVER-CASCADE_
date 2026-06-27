@@ -53,7 +53,7 @@ instruments:
 # ITM = one strike in-the-money (deeper-value, higher delta, earlier signals)
 # OTM = one strike out-of-the-money (cheaper, faster moves, original strategy default)
 strike:
-  max_deviation_from_atm: 1            # Hard cap — never go beyond ± 1 strike
+  max_deviation_from_atm: 2            # Hard cap — never go beyond ± 2 strike
   late_entry_threshold_percent: 30     # If option is >30% above VWAP already, skip (chasing)
 
   # Which strikes to SCAN and ALERT on (Phase 5+).

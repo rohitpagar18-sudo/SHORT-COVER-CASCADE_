@@ -184,20 +184,21 @@ def get_conditions_report(date_from: Optional[str], date_to: Optional[str]) -> D
     ][:5]
 
     # ---- C5 Shadow Analysis ----
-    # Find all alerts where C5 is present
+    # In shadow mode "C5" is never written into conditions_passed / conditions_failed.
+    # Pass/fail lives in the top-level boolean c5_passed (same field _profile uses).
+    # Population: alert rows where C1-C4 fired (all_passed=True) and ADX was computed.
     c5_alerts = [
         s for s in signals
-        if s.get("all_passed") and s.get("event_type") == "alert"
-        and "C5" in (s.get("conditions_passed") or []) or "C5" in (s.get("conditions_failed") or [])
+        if s.get("event_type") == "alert"
+        and s.get("all_passed")
+        and s.get("c5_passed") is not None
     ]
 
     c5_passed_in_alerts = sum(
-        1 for a in c5_alerts
-        if "C5" in (a.get("conditions_passed") or [])
+        1 for a in c5_alerts if a.get("c5_passed") is True
     )
     c5_failed_in_alerts = sum(
-        1 for a in c5_alerts
-        if "C5" in (a.get("conditions_failed") or [])
+        1 for a in c5_alerts if a.get("c5_passed") is False
     )
 
     c5_pass_rate = (
@@ -521,11 +522,11 @@ def _compute_c5_outcome_stats(
     except Exception:
         paper_trades = []
 
-    # Filter to the subset of C5 alerts with the desired status
+    # Filter to the subset of C5 alerts with the desired status (boolean field).
     if c5_status == "passed":
-        subset = [a for a in c5_alerts if "C5" in (a.get("conditions_passed") or [])]
+        subset = [a for a in c5_alerts if a.get("c5_passed") is True]
     else:
-        subset = [a for a in c5_alerts if "C5" in (a.get("conditions_failed") or [])]
+        subset = [a for a in c5_alerts if a.get("c5_passed") is False]
 
     if not subset:
         return {"n": 0, "win_rate": 0.0, "avg_r": 0.0}

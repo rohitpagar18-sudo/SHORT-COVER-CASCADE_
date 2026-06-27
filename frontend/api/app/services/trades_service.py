@@ -98,6 +98,7 @@ def _passes_filters(
     option_type: Optional[str],
     status: Optional[str],
     outcome: Optional[str],
+    relation: Optional[str] = None,
 ) -> bool:
     d = _row_date(row)
     if df is not None and (d is None or d < df):
@@ -112,6 +113,9 @@ def _passes_filters(
         return False
     if outcome and row.get("outcome") != outcome:
         return False
+    if relation and relation.upper() != "ALL":
+        if str(row.get("relation", "")).upper() != relation.upper():
+            return False
     return True
 
 
@@ -204,6 +208,7 @@ def list_trades(
     option_type: Optional[str] = None,
     status: Optional[str] = None,
     outcome: Optional[str] = None,
+    relation: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Build /api/trades payload.
 
@@ -222,7 +227,7 @@ def list_trades(
 
     filtered_rows = [
         r for r in rows
-        if _passes_filters(r, df, dt, symbol, option_type, status, outcome)
+        if _passes_filters(r, df, dt, symbol, option_type, status, outcome, relation)
     ]
 
     try:
@@ -243,6 +248,7 @@ def list_trades(
             "option_type": option_type,
             "status": status,
             "outcome": outcome,
+            "relation": relation,
         },
         "kpis": kpis,
         "trades": trades,
@@ -278,6 +284,7 @@ def history(
     option_type: Optional[str] = None,
     status: Optional[str] = None,
     outcome: Optional[str] = None,
+    relation: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Build /api/trades/history payload."""
     gb = group_by.lower().strip()
@@ -296,7 +303,7 @@ def history(
 
     filtered_rows = [
         r for r in rows
-        if _passes_filters(r, df, dt, symbol, option_type, status, outcome)
+        if _passes_filters(r, df, dt, symbol, option_type, status, outcome, relation)
     ]
 
     # Bucket by period key
@@ -375,6 +382,7 @@ def history(
             "option_type": option_type,
             "status": status,
             "outcome": outcome,
+            "relation": relation,
         },
         "groups": groups,
     }

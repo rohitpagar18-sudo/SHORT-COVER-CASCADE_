@@ -447,23 +447,24 @@ Open Position card.
    shows From/To inputs and requires Apply. Dropdown selects also
    require Apply (so users can stage multiple dropdown changes).
    Reset returns to the Today preset and auto-applies.
-3. **KPI row** (8 tiles) — Total Trades, Winning (+ %), Losing
-   (+ %), Total P&L, Realized, Unrealized, Max Daily Profit, Max
-   Daily Loss. Sits under the filter bar so the tiles react to
-   every filter change.
-4. **Today's Trades table** — Time / Symbol / Type / Strike (+ rel)
+   Strike Relation dropdown (ALL / ATM / ITM1 / ITM2 / ITM3 / OTM1 / OTM2 / OTM3, default ALL) follows Apply-required pattern.
+3. **Today's Trades table** — Time / Symbol / Type / Strike (+ rel)
    / Qty / Buy / Sell / SL / TP1 / TP2 / P&L / Status / Outcome
    with colored outcome badges (TP2 HIT, TP1 HIT, SL HIT, PARTIAL,
    RUN, SKIPPED). Totals row + legend.
-5. **Daily P&L Overview** — reuses the Overview `PnLChart`
+4. **Daily P&L Overview** — reuses the Overview `PnLChart`
    (`ComposedChart` bars + line) with a ₹ / % toggle (% view is a
    relative bar chart since this layer has no fixed `target_risk`
    context). Side `StatPanel` shows Total / Realized / Unrealized /
    Max Profit / Max Loss.
-6. **Trade History** — Group By Day / Week / Month with
+5. **Trade History** — Group By Day / Week / Month with
    expandable rows. Each row collapses to label + total P&L; expand
    shows a 6-stat strip (Total Trades, Win Rate, Total P&L, Realized,
    Unrealized, Max Day Profit) and the period's full trade rows.
+6. **KPI row** (8 tiles) — Total Trades, Winning (+ %), Losing
+   (+ %), Total P&L, Realized, Unrealized, Max Daily Profit, Max
+   Daily Loss. Sits just above the footer so the tiles react to
+   every filter change.
 7. **Footer** — "All times are IST (Asia/Kolkata). Paper P&L;
    updates each 5-min scan, outcomes finalized at EOD."
 
@@ -872,9 +873,7 @@ missing or partial JSONL.
 
 1. **Page header** — title, description, "Last synced HH:MM" + manual
    Refresh button, disabled Export button (Coming soon).
-2. **Date-range bar** — presets: This Week / This Month / This Quarter
-   / Last 30 Days / Last 90 Days / Custom (default: This Month). Custom
-   reveals From/To date inputs. Apply button triggers re-fetch.
+2. **Date-range bar** — presets: This Week / Last Week / This Month / This Quarter / Last 30 Days / Last 90 Days / Custom (default: This Month). Preset clicks auto-apply immediately — no Apply click needed. Custom reveals From/To date inputs and requires Apply. Apply button is always visible; for presets it acts as a manual refresh trigger.
 3. **Stale banner** — amber ribbon when last fetch failed but old data
    is still showing.
 4. **Tab bar** — Performance Overview (functional) | Strategy Insights

@@ -27,6 +27,10 @@ def get_trades(
         default=None,
         description="TP2_HIT | TP1_HIT | SL_HIT | NO_DATA | PARTIAL | WOULD_SKIP",
     ),
+    relation: Optional[str] = Query(
+        default=None,
+        description="ATM | ITM1 | ITM2 | ITM3 | OTM1 | OTM2 | OTM3 (ALL = omit)",
+    ),
 ) -> Dict[str, Any]:
     try:
         return trades_service.list_trades(
@@ -36,6 +40,7 @@ def get_trades(
             option_type=option_type,
             status=status,
             outcome=outcome,
+            relation=relation,
         )
     except Exception:
         return {
@@ -43,6 +48,7 @@ def get_trades(
                 "date_from": date_from, "date_to": date_to,
                 "symbol": symbol, "option_type": option_type,
                 "status": status, "outcome": outcome,
+                "relation": relation,
             },
             "kpis": {
                 "total_trades": 0, "winning_trades": 0, "winning_pct": 0.0,
@@ -64,6 +70,7 @@ def get_trades_history(
     option_type: Optional[str] = Query(default=None),
     status: Optional[str] = Query(default=None),
     outcome: Optional[str] = Query(default=None),
+    relation: Optional[str] = Query(default=None),
 ) -> Dict[str, Any]:
     try:
         return trades_service.history(
@@ -74,6 +81,7 @@ def get_trades_history(
             option_type=option_type,
             status=status,
             outcome=outcome,
+            relation=relation,
         )
     except Exception:
         return {
@@ -82,6 +90,7 @@ def get_trades_history(
                 "date_from": date_from, "date_to": date_to,
                 "symbol": symbol, "option_type": option_type,
                 "status": status, "outcome": outcome,
+                "relation": relation,
             },
             "groups": [],
         }

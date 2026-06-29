@@ -215,7 +215,12 @@ class UpstoxFeed(BaseFeed):
             lookback_candles: HINT for how many 5-min candles to make
                 available. Defaults to 100 (≈ 1.5 trading days).
         """
-        days_back = max(2, math.ceil(max(lookback_candles, 1) / 75) + 1)
+        # Approx 75 5-min candles per trading day. +5 calendar-day buffer
+        # absorbs a Sat-Sun weekend PLUS up to 3 contiguous NSE holidays
+        # (e.g. Diwali cluster, or Fri/Mon holiday glued to the weekend).
+        # Earlier +1 buffer only handled a plain weekend and starved
+        # indicators on the first trading day after a long weekend.
+        days_back = max(2, math.ceil(max(lookback_candles, 1) / 75) + 5)
         today = datetime.now(IST).date()
         intraday_df = self._fetch_intraday_candles(instrument_key)
         historical_df = self._fetch_historical_candles(

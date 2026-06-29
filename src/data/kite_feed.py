@@ -217,9 +217,12 @@ class KiteFeed(BaseFeed):
         now = datetime.now(IST)
         session_date = self._resolve_session_date(now)
 
-        # Approx 75 5-min candles per trading day. +1 calendar-day buffer
-        # absorbs a single weekend within the window.
-        days_back = max(2, math.ceil(max(lookback_candles, 1) / 75) + 1)
+        # Approx 75 5-min candles per trading day. +5 calendar-day buffer
+        # absorbs a Sat-Sun weekend PLUS up to 3 contiguous NSE holidays
+        # (e.g. Diwali cluster, or Fri/Mon holiday glued to the weekend).
+        # Earlier +1 buffer only handled a plain weekend and starved
+        # indicators on the first trading day after a long weekend.
+        days_back = max(2, math.ceil(max(lookback_candles, 1) / 75) + 5)
         from_date_d = session_date - timedelta(days=days_back)
         from_date = datetime(
             from_date_d.year, from_date_d.month, from_date_d.day,

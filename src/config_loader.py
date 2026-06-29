@@ -647,6 +647,10 @@ class BotConfig(_Base):
     api_retry_count: int = Field(ge=0)
     api_retry_delay_seconds: float = Field(ge=0)
     state_persistence_enabled: bool
+    # Intraday VIX refresh cadence (minutes). 0 = lock at session start
+    # (legacy behaviour). Default 0 keeps backward-compat for any config
+    # that predates this knob.
+    vix_refresh_minutes: int = Field(ge=0, default=0)
 
     @field_validator("state_persistence_enabled", mode="before")
     @classmethod

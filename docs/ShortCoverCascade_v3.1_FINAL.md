@@ -138,7 +138,7 @@ Note: This condition logically depends on price rising in the same candle, which
 
 # **6\. INDIA VIX REGIME SYSTEM**
 
-VIX is read at session start (9:15 AM) via Upstox SDK and fixed for the day. All SL calculations use the VIX regime multiplier (when VIX toggle is ON, which is default).
+VIX is read at session start and re-read every bot.vix_refresh_minutes (default 30 min). The current regime applies to NEW entries only; open positions keep their entry-time SL. A failed/garbage read (<=0) keeps the last good value. All SL calculations use the VIX regime multiplier (when VIX toggle is ON, which is default).
 
 | India VIX | Regime | Method 1 Multiplier | Method 2 SL% Normal | Method 2 SL% Expiry |
 | :---- | :---- | :---- | :---- | :---- |

@@ -1140,7 +1140,7 @@ df = pd.concat([pd.read_parquet(f) for f in glob.glob("data/scc_data_2026-0[4-6]
 | `volume`           | float  | Option current candle volume.                        |
 | `volume_ma`        | float  | Option volume MA(20) simple.                         |
 | `is_green`         | bool   | Whether the current candle is bullish.               |
-| `vix`              | float  | Session India VIX (locked at bot start).             |
+| `vix`              | float  | Session India VIX (refreshed every bot.vix_refresh_minutes). |
 | `vix_regime`       | str    | `Low Vol` / `Normal` / `Elevated` / `High Vol`.      |
 | `opt_above_vwap_pct` | float | `(option_close - option_vwap) / option_vwap * 100`. Signed. |
 

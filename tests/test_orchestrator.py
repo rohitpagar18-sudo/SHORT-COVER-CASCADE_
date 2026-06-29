@@ -1449,3 +1449,96 @@ def test_adx_computed_once_per_symbol_scan(orch, monkeypatch) -> None:
     )
     # Sanity: _scan_strike got called for each (option_type x strike) combo.
     assert orch._scan_strike.call_count == 6  # 2 sides x 3 strikes
+
+
+# ======================================================================
+# Intraday VIX refresh (ISSUE B fix) — _maybe_refresh_vix
+#
+# VIX is read at session start and re-read every bot.vix_refresh_minutes
+# so an event-day spike resizes NEW-entry SLs. A garbage read (<=0) must
+# keep the last good value; 0 = locked-at-session-start (legacy).
+# ======================================================================
+
+from datetime import timedelta as _timedelta
+
+from src.risk.vix_regime import classify_vix
+
+
+def _make_vix_orch(*, refresh_minutes: int, start_vix: float, last_refresh):
+    """Build an Orchestrator (init bypassed) wired for _maybe_refresh_vix."""
+    orch = Orchestrator.__new__(Orchestrator)
+    orch.config = _NS(bot=_NS(vix_refresh_minutes=refresh_minutes))
+    orch.feed = MagicMock()
+    orch.session_vix = start_vix
+    orch.session_vix_info = classify_vix(start_vix)
+    orch.last_vix_refresh = last_refresh
+    return orch
+
+
+def test_vix_refresh_after_cadence_reclassifies_regime():
+    """Cadence elapsed + good read → VIX/regime updated, stamp advanced."""
+    now = datetime(2026, 6, 29, 13, 0, tzinfo=IST)
+    orch = _make_vix_orch(
+        refresh_minutes=30,
+        start_vix=14.0,                       # Normal
+        last_refresh=now - _timedelta(minutes=31),
+    )
+    orch.feed.get_india_vix.return_value = 22.5  # High Vol regime
+
+    orch._maybe_refresh_vix(now)
+
+    assert orch.session_vix == 22.5
+    assert orch.session_vix_info.regime.value == "High Vol"
+    assert orch.session_vix_info.method1_multiplier == 1.5
+    assert orch.last_vix_refresh == now
+    orch.feed.get_india_vix.assert_called_once()
+
+
+def test_vix_refresh_sentinel_keeps_prior_value_no_low_flip():
+    """A -1.0 sentinel read must keep the last good VIX — never flip to Low."""
+    now = datetime(2026, 6, 29, 13, 0, tzinfo=IST)
+    orch = _make_vix_orch(
+        refresh_minutes=30,
+        start_vix=18.0,                       # Elevated
+        last_refresh=now - _timedelta(minutes=40),
+    )
+    orch.feed.get_india_vix.return_value = -1.0  # feed error sentinel
+
+    orch._maybe_refresh_vix(now)
+
+    assert orch.session_vix == 18.0
+    assert orch.session_vix_info.regime.value == "Elevated"  # NOT "Low Vol"
+    assert orch.session_vix_info.method1_multiplier == 1.25
+
+
+def test_vix_refresh_minutes_zero_is_legacy_locked():
+    """vix_refresh_minutes=0 → never re-reads VIX (locked at session start)."""
+    now = datetime(2026, 6, 29, 13, 0, tzinfo=IST)
+    orch = _make_vix_orch(
+        refresh_minutes=0,
+        start_vix=14.0,                       # Normal
+        last_refresh=now - _timedelta(hours=3),
+    )
+    orch.feed.get_india_vix.return_value = 25.0  # would be High — must be ignored
+
+    orch._maybe_refresh_vix(now)
+
+    assert orch.session_vix == 14.0
+    assert orch.session_vix_info.regime.value == "Normal"
+    orch.feed.get_india_vix.assert_not_called()
+
+
+def test_vix_refresh_within_cadence_does_not_reread():
+    """Before the cadence elapses, no re-read happens (bounds API calls)."""
+    now = datetime(2026, 6, 29, 13, 0, tzinfo=IST)
+    orch = _make_vix_orch(
+        refresh_minutes=30,
+        start_vix=14.0,
+        last_refresh=now - _timedelta(minutes=10),  # only 10 min in
+    )
+    orch.feed.get_india_vix.return_value = 25.0
+
+    orch._maybe_refresh_vix(now)
+
+    assert orch.session_vix == 14.0
+    orch.feed.get_india_vix.assert_not_called()

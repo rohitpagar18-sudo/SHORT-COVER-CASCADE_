@@ -106,6 +106,9 @@ class Orchestrator:
         self.broker_name: str | None = None
         self.session_vix: float | None = None
         self.session_vix_info = None
+        # Intraday VIX refresh bookkeeping. Stamped at the session-start
+        # read in setup() and at each successful/attempted intraday refresh.
+        self.last_vix_refresh: datetime | None = None
         self.is_gap_day: bool = False
         self.gap_info: dict = {}
         self.gap_log_path: Path = PROJECT_ROOT / "logs" / "gap_log.jsonl"
@@ -180,9 +183,13 @@ class Orchestrator:
         self.nifty_lot = nifty_lot
         self.banknifty_lot = bn_lot
 
-        # 4. Lock VIX for the session.
+        # 4. Read VIX for the session. Re-read intraday on a cadence
+        #    (config.bot.vix_refresh_minutes) so an event-day spike resizes
+        #    NEW-entry SLs — see _maybe_refresh_vix. The session-start read
+        #    counts as the first refresh.
         self.session_vix = self.feed.get_india_vix()
         self.session_vix_info = classify_vix(self.session_vix)
+        self.last_vix_refresh = datetime.now(IST)
         logger.info(
             f"Session VIX: {self.session_vix:.2f} → "
             f"{self.session_vix_info.regime.value} "
@@ -1149,6 +1156,71 @@ class Orchestrator:
         extended["event_type"] = "would_alert_extended"
         self.signal_logger.log_signal(extended)
 
+    def _maybe_refresh_vix(self, now: datetime) -> None:
+        """Re-read India VIX on a cadence so intraday spikes resize NEW entries.
+
+        Controlled by ``config.bot.vix_refresh_minutes``:
+          - 0  → locked at session start (legacy behaviour, no intraday re-read).
+          - N  → re-read every N minutes before sizing a new entry.
+
+        SAFETY: a failed/garbage read (``<= 0`` — the feed's -1.0 sentinel)
+        is discarded; the last good VIX/regime is kept and a WARNING logged.
+        A bad read must NEVER flip the regime to Low. The cadence stamp is
+        updated on every *attempt* (success or failure) so a transient feed
+        glitch can't make us hammer the broker API on every strike.
+
+        Refreshed values apply to NEW entries only — open paper positions
+        keep their entry-time SL (this method never touches them).
+
+        Never raises: the scan loop must survive a VIX fetch error.
+        """
+        refresh_minutes = int(getattr(self.config.bot, "vix_refresh_minutes", 0))
+        if refresh_minutes <= 0:
+            return  # locked-at-session-start (legacy)
+
+        if self.last_vix_refresh is not None:
+            elapsed_min = (now - self.last_vix_refresh).total_seconds() / 60.0
+            if elapsed_min < refresh_minutes:
+                return
+
+        # Cadence elapsed — stamp now so we re-read at most once per cadence
+        # whether or not this read succeeds.
+        self.last_vix_refresh = now
+
+        try:
+            new_vix = self.feed.get_india_vix()
+        except Exception as e:
+            logger.warning(
+                "Intraday VIX refresh raised — keeping last good value "
+                f"{self.session_vix} ({self.session_vix_info.regime.value}): {e}"
+            )
+            return
+
+        if new_vix is None or new_vix <= 0:
+            logger.warning(
+                f"Intraday VIX refresh returned garbage ({new_vix}) — keeping "
+                f"last good value {self.session_vix} "
+                f"({self.session_vix_info.regime.value}). Regime NOT changed."
+            )
+            return
+
+        prev_regime = self.session_vix_info.regime.value
+        self.session_vix = float(new_vix)
+        self.session_vix_info = classify_vix(self.session_vix)
+        new_regime = self.session_vix_info.regime.value
+        if new_regime != prev_regime:
+            logger.info(
+                f"Intraday VIX refresh: {self.session_vix:.2f} → regime "
+                f"{prev_regime} → {new_regime} "
+                f"({self.session_vix_info.method1_multiplier}× multiplier). "
+                "Applies to NEW entries only."
+            )
+        else:
+            logger.debug(
+                f"Intraday VIX refresh: {self.session_vix:.2f} → "
+                f"regime unchanged ({new_regime})."
+            )
+
     def _fire_alert(
         self,
         symbol: str,
@@ -1162,6 +1234,10 @@ class Orchestrator:
     ) -> None:
         """Compute SL/TP/lots, log to alerts.jsonl, then send Telegram."""
         try:
+            # Before sizing this NEW entry, refresh VIX/regime if the
+            # configured cadence has elapsed (event-day spike protection).
+            self._maybe_refresh_vix(now)
+
             entry = snapshot.close
             is_expiry = is_expiry_day(self.feed, symbol, now.date())
 
@@ -1213,6 +1289,12 @@ class Orchestrator:
                 "below_min_risk_band": lot_result.below_min_risk_band,
                 "cheap_option_warning": cheap_option_warning,
                 "day_type": "Expiry" if is_expiry else "Normal",
+                # Re-stamp VIX/regime from the (possibly intraday-refreshed)
+                # session value so the alert record matches the regime that
+                # actually sized this SL — signal_record captured the
+                # pre-refresh value during the scan.
+                "vix": self.session_vix,
+                "vix_regime": self.session_vix_info.regime.value,
                 "vix_multiplier": self.session_vix_info.method1_multiplier,
                 "spot": signal_record["spot_price"],
                 "spot_position": (

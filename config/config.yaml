@@ -419,4 +419,5 @@ bot:
                                        # volume is far below the final value.
   api_retry_count: 3                   # Retry broker API calls N times on failure
   api_retry_delay_seconds: 2           # Wait N seconds between retries
+  vix_refresh_minutes: 30              # Re-read India VIX every N min for NEW-entry SL sizing (0 = lock at session start, legacy). Bad read (<=0) keeps last good value.
   state_persistence_enabled: ON        # ON = save daily state to logs/state.json

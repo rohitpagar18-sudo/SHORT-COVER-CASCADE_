@@ -207,6 +207,10 @@ def replay_exits(
         return None  # No post-alert candles for the day yet.
 
     current_sl = float(sl)
+    # Method-1 initial SL captured at entry — the hard floor the Method 3
+    # SMA trail can never loosen past (both directions). See
+    # ``compute_sma_trail_sl``.
+    method1_initial_sl = float(sl)
     tp1_hit = False
     intrabar_ambiguous = False
     mfe = 0.0
@@ -262,6 +266,7 @@ def replay_exits(
                     prev_sl=current_sl,
                     sma_value=sma_val,
                     follow_direction=trail_cfg.follow_direction,
+                    method1_initial_sl=method1_initial_sl,
                 )
                 if sma_val is not None and new_sl != current_sl:
                     trail_reason_parts.append(
@@ -523,7 +528,7 @@ def replay_alert(
                     getattr(sma_cfg, "update_interval_minutes", 15)
                 ),
                 follow_direction=str(
-                    getattr(sma_cfg, "follow_direction", "both")
+                    getattr(sma_cfg, "follow_direction", "ratchet")
                 ),
             )
 
@@ -580,7 +585,7 @@ def _build_exit_cfg_for_method(
                     getattr(sma_cfg, "update_interval_minutes", 15)
                 ),
                 follow_direction=str(
-                    getattr(sma_cfg, "follow_direction", "both")
+                    getattr(sma_cfg, "follow_direction", "ratchet")
                 ),
             )
 

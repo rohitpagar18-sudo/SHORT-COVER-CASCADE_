@@ -72,7 +72,7 @@ def evaluate_sma19(
     sma_period = int(params.get("sma_period", 19))
     activate_after_min = int(params.get("activate_after_minutes", 15))
     update_interval_min = int(params.get("update_interval_minutes", 15))
-    follow_direction = str(params.get("follow_direction", "both"))
+    follow_direction = str(params.get("follow_direction", "ratchet"))
     atr_period = int(params.get("atr_period", 14))
     tick = float(params.get("tick", TICK))
     hard_squareoff = _parse_hhmm(params.get("hard_squareoff_time", "15:00"))
@@ -103,6 +103,7 @@ def evaluate_sma19(
                 prev_sl=state.current_sl if new_sl is None else new_sl,
                 sma_value=sma_val,
                 follow_direction=follow_direction,
+                method1_initial_sl=initial_sl,
             )
             if sma_val is not None:
                 # Apply the shadow-baseline clamp: trailed SL stays

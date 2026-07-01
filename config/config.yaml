@@ -94,8 +94,9 @@ stop_loss:
                                        # then convert to SMA trail
     update_interval_minutes: 15        # Re-evaluate the trailing SL every N min
                                        # (matches the real-broker modify cadence)
-    follow_direction: both             # both    = SL follows the SMA up AND down
-                                       # ratchet = SL only moves up (never loosens)
+    follow_direction: ratchet          # ratchet = SL only moves up (default, safest for long options).
+                                       # both    = follows SMA up and down but never loosens past the
+                                       #           Method-1 initial SL floor (can never risk >1R).
 
 
 # ---------- RISK / REWARD ----------

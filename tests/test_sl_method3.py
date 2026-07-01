@@ -82,21 +82,59 @@ def _cfg_method3(trail: SmaTrailParams, hard_exit: bool = True) -> ExitConfig:
 
 
 def test_compute_sma_trail_sl_both_follows_up_and_down() -> None:
-    assert compute_sma_trail_sl(prev_sl=140.0, sma_value=152.0, follow_direction="both") == 152.0
-    assert compute_sma_trail_sl(prev_sl=152.0, sma_value=148.0, follow_direction="both") == 148.0
+    # Both directions honored while the SMA stays above the Method-1 floor.
+    assert compute_sma_trail_sl(
+        prev_sl=140.0, sma_value=152.0, follow_direction="both", method1_initial_sl=140.0
+    ) == 152.0
+    assert compute_sma_trail_sl(
+        prev_sl=152.0, sma_value=148.0, follow_direction="both", method1_initial_sl=140.0
+    ) == 148.0
 
 
 def test_compute_sma_trail_sl_ratchet_never_loosens() -> None:
     # Up moves are honored.
-    assert compute_sma_trail_sl(prev_sl=140.0, sma_value=148.0, follow_direction="ratchet") == 148.0
+    assert compute_sma_trail_sl(
+        prev_sl=140.0, sma_value=148.0, follow_direction="ratchet", method1_initial_sl=140.0
+    ) == 148.0
     # Down moves are clamped to prev_sl.
-    assert compute_sma_trail_sl(prev_sl=148.0, sma_value=140.0, follow_direction="ratchet") == 148.0
+    assert compute_sma_trail_sl(
+        prev_sl=148.0, sma_value=140.0, follow_direction="ratchet", method1_initial_sl=140.0
+    ) == 148.0
 
 
 def test_compute_sma_trail_sl_early_entry_holds_prev_when_sma_none() -> None:
     # When fewer than N candles exist, SMA is None and prev SL is held.
-    assert compute_sma_trail_sl(prev_sl=140.0, sma_value=None, follow_direction="both") == 140.0
-    assert compute_sma_trail_sl(prev_sl=140.0, sma_value=None, follow_direction="ratchet") == 140.0
+    assert compute_sma_trail_sl(
+        prev_sl=140.0, sma_value=None, follow_direction="both", method1_initial_sl=140.0
+    ) == 140.0
+    assert compute_sma_trail_sl(
+        prev_sl=140.0, sma_value=None, follow_direction="ratchet", method1_initial_sl=140.0
+    ) == 140.0
+
+
+def test_compute_sma_trail_sl_both_floored_at_method1_initial() -> None:
+    """ISSUE D fix: with ``both``, the SL can never loosen past the
+    Method-1 initial SL, even when the SMA drops below it on a pullback."""
+    # SMA = 130 < floor 140 → SL floored at 140, NOT 130.
+    assert compute_sma_trail_sl(
+        prev_sl=151.0, sma_value=130.0, follow_direction="both", method1_initial_sl=140.0
+    ) == 140.0
+    # SMA exactly at the floor.
+    assert compute_sma_trail_sl(
+        prev_sl=151.0, sma_value=140.0, follow_direction="both", method1_initial_sl=140.0
+    ) == 140.0
+    # SMA above the floor still followed down normally.
+    assert compute_sma_trail_sl(
+        prev_sl=151.0, sma_value=145.0, follow_direction="both", method1_initial_sl=140.0
+    ) == 145.0
+
+
+def test_compute_sma_trail_sl_ratchet_also_respects_floor() -> None:
+    """Ratchet is floored too (a no-op in practice — prev_sl already
+    >= the initial SL — but the invariant must hold)."""
+    assert compute_sma_trail_sl(
+        prev_sl=145.0, sma_value=120.0, follow_direction="ratchet", method1_initial_sl=140.0
+    ) == 145.0
 
 
 # ---------------------------------------------------------------------------
@@ -193,6 +231,33 @@ def test_method3_both_updates_sl_to_sma_on_tick() -> None:
     # 'Both' lifted SL from 140 → 151. Exit at the trailed SL.
     assert res.auto_exit_price == pytest.approx(151.0)
     assert "SMA-trail" in res.auto_exit_reason
+
+
+def test_method3_both_never_loosens_below_method1_floor_on_pullback() -> None:
+    """ISSUE D regression: with follow_direction=both, a sharp pullback
+    that drags the SMA BELOW the Method-1 initial SL must NOT loosen the
+    stop. The trail update at 10:15 computes SMA = (150+150+110)/3 =
+    136.67, which is below the ₹140 Method-1 floor. The floored SL must
+    stay at 140 — so the exit price is 140, never 136.67."""
+    rows = _session_prefix() + [
+        _candle(10, 5, 150, 152, 149, 150),
+        _candle(10, 10, 150, 152, 149, 150),
+        # 10:15 TICK n=3: closes [150, 150, 110] → SMA = 136.67 (< 140).
+        # 'both' would loosen to 136.67 WITHOUT the floor. The floored SL
+        # holds at 140; the candle low (112) then hits it @ 140.
+        _candle(10, 15, 150, 150, 112, 110),
+    ]
+    df = pd.DataFrame(rows)
+    res = replay_exits(
+        df, ENTRY, SL, TP1, TP2,
+        _cfg_method3(_trail(direction="both", n=3, activate=15, update=15)),
+        ALERT_TS,
+    )
+    assert res is not None
+    assert res.auto_order_status == SL_HIT
+    # Floored at the Method-1 initial SL of 140 — NOT the 136.67 SMA.
+    assert res.auto_exit_price == pytest.approx(140.0)
+    assert res.auto_exit_price >= SL
 
 
 def test_method3_ratchet_runs_to_completion_and_lifts_sl() -> None:

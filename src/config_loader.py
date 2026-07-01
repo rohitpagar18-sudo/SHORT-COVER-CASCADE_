@@ -114,14 +114,16 @@ class SmaTrailConfig(_Base):
     """SL Method 3 — 19-SMA trailing knobs.
 
     Active only when ``stop_loss.method == 3``. Defaults match the
-    strategy-doc N=19 / 15-min activate / 15-min update cadence and
-    bidirectional follow.
+    strategy-doc N=19 / 15-min activate / 15-min update cadence. Default
+    follow_direction is ``ratchet`` (up-only) — the safest for long
+    options. ``both`` follows the SMA both ways but is hard-floored at
+    the Method-1 initial SL, so it can never loosen past entry-time 1R.
     """
 
     sma_period: int = Field(default=19, gt=0)
     activate_after_minutes: int = Field(default=15, ge=0)
     update_interval_minutes: int = Field(default=15, gt=0)
-    follow_direction: Literal["both", "ratchet"] = Field(default="both")
+    follow_direction: Literal["both", "ratchet"] = Field(default="ratchet")
 
 
 class StopLossConfig(_Base):
@@ -583,7 +585,7 @@ class ShadowSlSma19Config(_ShadowMethodBase):
     sma_period: int = Field(default=19, gt=0)
     activate_after_minutes: int = Field(default=15, ge=0)
     update_interval_minutes: int = Field(default=15, gt=0)
-    follow_direction: Literal["both", "ratchet"] = Field(default="both")
+    follow_direction: Literal["both", "ratchet"] = Field(default="ratchet")
     tick: float = Field(default=0.05, gt=0)
 
 

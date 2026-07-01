@@ -201,7 +201,7 @@ class SmaTrailParams:
     sma_period: int            # N closes (default 19)
     activate_after_minutes: int  # first N min after entry uses the static SL
     update_interval_minutes: int  # re-evaluate cadence after activation
-    follow_direction: str       # "both" | "ratchet"
+    follow_direction: str       # "ratchet" (default) | "both"
 
 
 def compute_sma_trail_sl(
@@ -209,6 +209,7 @@ def compute_sma_trail_sl(
     prev_sl: float,
     sma_value: float | None,
     follow_direction: str,
+    method1_initial_sl: float,
 ) -> float:
     """One-shot SL update during a Method 3 trail tick.
 
@@ -216,21 +217,31 @@ def compute_sma_trail_sl(
         prev_sl: the SL currently in effect.
         sma_value: SMA of the last N option closes, or ``None`` when the
             early-entry fallback applies (fewer than N candles available).
-        follow_direction: ``"both"`` (SL = SMA, follows the SMA up AND
-            down) or ``"ratchet"`` (SL = ``max(prev_sl, sma)``, never
-            loosens).
+        follow_direction: ``"ratchet"`` (default — SL = ``max(prev_sl,
+            sma)``, never loosens) or ``"both"`` (SL follows the SMA up
+            AND down, but see the floor below).
+        method1_initial_sl: the entry-time Method-1 SL. The trailed SL is
+            HARD-FLOORED at this value for BOTH directions, so a Method-3
+            trade can never loosen its SL past entry-time 1R.
 
     Returns:
-        The new SL price. When ``sma_value is None`` the previous SL is
-        returned unchanged — Method 3's early-entry fallback (hold the
-        Method-1 SL until N candles exist).
+        The new SL price, never below ``method1_initial_sl``. When
+        ``sma_value is None`` the previous SL is returned unchanged —
+        Method 3's early-entry fallback (hold the Method-1 SL until N
+        candles exist).
     """
     if sma_value is None:
         return float(prev_sl)
-    direction = (follow_direction or "both").strip().lower()
+    direction = (follow_direction or "ratchet").strip().lower()
     if direction == "ratchet":
-        return float(max(prev_sl, sma_value))
-    return float(sma_value)
+        trailed = max(prev_sl, sma_value)
+    else:  # "both" — follows the SMA up and down
+        trailed = sma_value
+    # Hard floor (both directions): the trailed SL can never loosen past
+    # the Method-1 initial SL, so the trade never risks more than its
+    # entry-time 1R. For ratchet this is a no-op (prev_sl already >=
+    # initial); for both it is the safety cap spec §8A requires.
+    return float(max(method1_initial_sl, trailed))
 
 
 def check_hard_exit_red_candle(

@@ -219,9 +219,9 @@ Method 3 is the live trailing model. It keeps the §6/§7 initial SL calculation
 
 •         Update cadence: `update_interval_minutes` (default 15, matches the real-broker trail-modify cadence). The SL re-evaluates at each tick — NOT on every candle.
 
-•         `follow_direction`:
-    – `both` (default): SL \= SMA. Trails the SMA up AND down.
-    – `ratchet`: SL \= max(prev\_SL, SMA). Never loosens (only ratchets up).
+•         `follow_direction`: Method 3 trails via the N-SMA but the SL is **hard-floored at the Method-1 initial SL — it can never loosen past entry-time 1R.**
+    – `ratchet` (default, up-only): SL \= max(prev\_SL, SMA). Never loosens.
+    – `both`: SL follows the SMA both ways, but never below the Method-1 initial SL floor — i.e. `SL = max(method1_initial_SL, SMA)`.
 
 •         **Continues post-TP1.** After TP1 banks the first 50%, the remaining 50% keeps trailing on the SMA. Method 3 **overrides** `move_sl_to_breakeven_after_tp1` — breakeven does not apply when method=3.
 
@@ -237,7 +237,9 @@ Method 3 is the live trailing model. It keeps the §6/§7 initial SL calculation
 
 •         10:30 tick — SMA \= 151 → SL → 151 (both) or max(144, 151) \= 151 (ratchet).
 
-•         10:45 tick — SMA \= 148 → SL → 148 (both, loosens by 3) OR 151 (ratchet, holds).
+•         10:45 tick — SMA \= 148 → SL → 148 (both, loosens by 3 — still above the ₹140 floor) OR 151 (ratchet, holds).
+
+•         11:00 tick — SMA \= 135 → SL → **140** (both, floored at the Method-1 initial — NOT 135) OR 151 (ratchet, holds). The floor guarantees the trade never risks more than its entry-time 1R.
 
 Targets remain TP1 \= 165 and TP2 \= 175 throughout. The remaining 50% after a TP1 hit keeps trailing on the same SMA.
 

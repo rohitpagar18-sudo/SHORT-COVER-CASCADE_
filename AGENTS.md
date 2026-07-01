@@ -212,8 +212,11 @@ revisit without explicit user approval.
   trailing variant: initial SL = Method 1, then after
   `stop_loss.sma_trail.activate_after_minutes` (default 15) the SL
   trails the N-SMA of the option close (default N=19), re-evaluated
-  every `update_interval_minutes` (default 15). `follow_direction`
-  is `both` (SL follows SMA up AND down) or `ratchet` (up-only).
+  every `update_interval_minutes` (default 15). The trailed SL is
+  HARD-FLOORED at the Method-1 initial SL for BOTH directions — a
+  Method-3 trade can never loosen its SL past entry-time 1R.
+  `follow_direction` is `ratchet` (DEFAULT, up-only) or `both`
+  (follows SMA up AND down, but never below the Method-1 floor).
   Trailing continues through and after TP1 — Method 3 OVERRIDES
   `move_sl_to_breakeven_after_tp1`; breakeven does not apply.
   TP1/TP2 are fixed at entry from R; targets never move with the

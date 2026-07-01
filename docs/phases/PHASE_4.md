@@ -122,7 +122,9 @@ stop_loss:
     sma_period: 19                     # SMA period on the option close
     activate_after_minutes: 15         # First 15 min uses Method 1 SL
     update_interval_minutes: 15        # Re-evaluate SL every 15 min
-    follow_direction: both             # both | ratchet
+    follow_direction: ratchet          # ratchet = up-only (default, safest). both = follows SMA
+                                       # both ways but hard-floored at the Method-1 initial SL —
+                                       # neither direction can loosen past entry-time 1R.
 
 
 # ---------- RISK / REWARD ----------

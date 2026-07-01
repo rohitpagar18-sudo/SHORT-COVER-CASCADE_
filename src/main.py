@@ -1172,8 +1172,22 @@ class Orchestrator:
         Refreshed values apply to NEW entries only — open paper positions
         keep their entry-time SL (this method never touches them).
 
+        COST: skip the API call entirely when VIX cannot affect this SL —
+        that is ONLY Method 1 with the VIX multiplier toggled OFF. Method 2
+        always uses the VIX regime SL%, and Method 3's initial SL routes
+        through Method 2 in _fire_alert, so both always need a fresh regime.
+
         Never raises: the scan loop must survive a VIX fetch error.
         """
+        # No-op when VIX plays no part in the SL — saves a broker call.
+        sl_cfg = self.config.stop_loss
+        vix_unused = (
+            int(getattr(sl_cfg, "method", 1)) == 1
+            and not getattr(sl_cfg, "use_vix_multiplier", True)
+        )
+        if vix_unused:
+            return
+
         refresh_minutes = int(getattr(self.config.bot, "vix_refresh_minutes", 0))
         if refresh_minutes <= 0:
             return  # locked-at-session-start (legacy)

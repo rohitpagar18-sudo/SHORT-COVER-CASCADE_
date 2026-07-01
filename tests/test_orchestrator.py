@@ -1464,10 +1464,16 @@ from datetime import timedelta as _timedelta
 from src.risk.vix_regime import classify_vix
 
 
-def _make_vix_orch(*, refresh_minutes: int, start_vix: float, last_refresh):
+def _make_vix_orch(
+    *, refresh_minutes: int, start_vix: float, last_refresh,
+    sl_method: int = 3, use_vix_multiplier: bool = True,
+):
     """Build an Orchestrator (init bypassed) wired for _maybe_refresh_vix."""
     orch = Orchestrator.__new__(Orchestrator)
-    orch.config = _NS(bot=_NS(vix_refresh_minutes=refresh_minutes))
+    orch.config = _NS(
+        bot=_NS(vix_refresh_minutes=refresh_minutes),
+        stop_loss=_NS(method=sl_method, use_vix_multiplier=use_vix_multiplier),
+    )
     orch.feed = MagicMock()
     orch.session_vix = start_vix
     orch.session_vix_info = classify_vix(start_vix)
@@ -1542,3 +1548,39 @@ def test_vix_refresh_within_cadence_does_not_reread():
 
     assert orch.session_vix == 14.0
     orch.feed.get_india_vix.assert_not_called()
+
+
+def test_vix_refresh_skipped_when_method1_and_vix_multiplier_off():
+    """Method 1 + use_vix_multiplier OFF → VIX unused → no API call at all."""
+    now = datetime(2026, 6, 29, 13, 0, tzinfo=IST)
+    orch = _make_vix_orch(
+        refresh_minutes=30,
+        start_vix=14.0,
+        last_refresh=now - _timedelta(minutes=99),  # cadence long elapsed
+        sl_method=1,
+        use_vix_multiplier=False,
+    )
+    orch.feed.get_india_vix.return_value = 25.0
+
+    orch._maybe_refresh_vix(now)
+
+    assert orch.session_vix == 14.0
+    orch.feed.get_india_vix.assert_not_called()
+
+
+def test_vix_refresh_still_runs_for_method1_when_multiplier_on():
+    """Method 1 with the multiplier ON still needs a fresh regime."""
+    now = datetime(2026, 6, 29, 13, 0, tzinfo=IST)
+    orch = _make_vix_orch(
+        refresh_minutes=30,
+        start_vix=14.0,
+        last_refresh=now - _timedelta(minutes=40),
+        sl_method=1,
+        use_vix_multiplier=True,
+    )
+    orch.feed.get_india_vix.return_value = 22.5  # High Vol
+
+    orch._maybe_refresh_vix(now)
+
+    assert orch.session_vix == 22.5
+    orch.feed.get_india_vix.assert_called_once()
